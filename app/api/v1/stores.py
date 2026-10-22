@@ -1,5 +1,5 @@
 """
-Endpoints de tiendas: GET /api/v1/stores
+Endpoints de tiendas retail oficiales: GET /api/v1/stores
 """
 from typing import List
 from fastapi import APIRouter, Depends
@@ -19,7 +19,6 @@ router = APIRouter(prefix="/stores", tags=["Tiendas"])
 )
 def get_stores():
     """
-    Lista las 8 tiendas retail del Perú oficiales (Efe, Falabella, Ripley, Curacao, Hiraoka, Tottus, Metro, Wong)
-    junto al estado en tiempo real de su Circuit Breaker (CLOSED, OPEN, HALF_OPEN).
+    Lista las tiendas retail del Perú y el estado en tiempo real de su Circuit Breaker.
     """
     return catalog_service.get_stores()

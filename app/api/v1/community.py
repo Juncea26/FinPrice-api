@@ -3,10 +3,10 @@ Endpoints de ofertas físicas comunitarias: GET y POST /api/v1/community-offers
 """
 from typing import List, Optional
 from fastapi import APIRouter, Depends, Query, status
-from sqlalchemy.orm import Session
+from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.database import get_db
 from app.core.security import check_read_rate_limit, check_write_rate_limit, sanitize_input_text
-from app.models.domain import get_db
 from app.models.schemas import CommunityOfferCreateSchema, CommunityPhysicalOfferSchema
 from app.services.catalog_service import catalog_service
 
@@ -19,24 +19,23 @@ router = APIRouter(prefix="/community-offers", tags=["Comunidad"])
     summary="Listar ofertas físicas reportadas por la comunidad",
     dependencies=[Depends(check_read_rate_limit)],
 )
-def list_community_offers(
-    department: Optional[str] = Query(None, max_length=80, description="Filtrar por departamento peruano (ej. Lambayeque, Lima)"),
-    province: Optional[str] = Query(None, max_length=80, description="Filtrar por provincia (ej. Chiclayo, Lima)"),
-    district: Optional[str] = Query(None, max_length=80, description="Filtrar por distrito"),
-    product_id: Optional[str] = Query(None, max_length=80, description="Filtrar por ID de producto"),
-    db: Session = Depends(get_db),
+async def list_community_offers(
+    department: Optional[str] = Query(None, max_length=80),
+    province: Optional[str] = Query(None, max_length=80),
+    district: Optional[str] = Query(None, max_length=80),
+    product_id: Optional[str] = Query(None, max_length=80),
+    session: AsyncSession = Depends(get_db),
 ):
     """
-    Retorna la lista de ofertas físicas vistas por usuarios en tiendas y malls del Perú,
-    filtrables por ubicación geográfica y producto.
+    Retorna la lista de ofertas físicas reales reportadas por usuarios en tiendas y malls del Perú.
     """
     clean_dept = sanitize_input_text(department, max_length=80)
     clean_prov = sanitize_input_text(province, max_length=80)
     clean_dist = sanitize_input_text(district, max_length=80)
     clean_prod = sanitize_input_text(product_id, max_length=80)
 
-    return catalog_service.get_community_offers(
-        db=db,
+    return await catalog_service.get_community_offers(
+        session=session,
         department=clean_dept,
         province=clean_prov,
         district=clean_dist,
@@ -51,12 +50,12 @@ def list_community_offers(
     summary="Registrar una nueva oferta física de tienda retail",
     dependencies=[Depends(check_write_rate_limit)],
 )
-def create_community_offer(
+async def create_community_offer(
     offer_in: CommunityOfferCreateSchema,
-    db: Session = Depends(get_db),
+    session: AsyncSession = Depends(get_db),
 ):
     """
-    Registra una oferta física en vitrina o tienda local.
-    Valida departamento contra ubigeo oficial peruano, sanitiza comentarios y vincula al producto existente.
+    Registra una oferta física real encontrada en tienda local.
+    Valida departamento contra ubigeo peruano y vincula al producto existente.
     """
-    return catalog_service.create_community_offer(db=db, offer_in=offer_in)
+    return await catalog_service.create_community_offer(session=session, offer_in=offer_in)

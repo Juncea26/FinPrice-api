@@ -1,20 +1,13 @@
 """
-Esquemas Pydantic v2 alineados con el contrato del dominio móvil (camelCase)
+Esquemas Pydantic v2 en camelCase estricto alineados con el dominio móvil
 y esquemas de retrocompatibilidad para /products.
 """
-from typing import Any, Dict, List, Literal, Optional
+from typing import Any, Dict, List, Optional
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from pydantic.alias_generators import to_camel
 
 
-# ==============================================================================
-# BASE SCHEMA CON CONFIGURACIÓN CAMELCASE
-# ==============================================================================
-
 class CamelModel(BaseModel):
-    """
-    Modelo base con alias camelCase automático y compatibilidad bidireccional.
-    """
     model_config = ConfigDict(
         alias_generator=to_camel,
         populate_by_name=True,
@@ -22,25 +15,21 @@ class CamelModel(BaseModel):
     )
 
 
-# ==============================================================================
-# TIENDAS Y PRECIOS
-# ==============================================================================
-
 class StoreSchema(CamelModel):
-    id: str = Field(..., description="Identificador único (efe, falabella, ripley, curacao, hiraoka, tottus, metro, wong)")
-    name: str = Field(..., description="Nombre comercial oficial de la tienda retail")
+    id: str = Field(..., description="Identificador único del retailer (efe, falabella, ripley, etc.)")
+    name: str = Field(..., description="Nombre comercial oficial de la tienda")
     code: str = Field(..., description="Código en mayúsculas (EFE, FALABELLA, etc.)")
     is_enabled: bool = Field(default=True, description="Indica si la tienda está activa en el sistema")
-    circuit_status: Optional[str] = Field(default="CLOSED", description="Estado del Circuit Breaker (CLOSED, OPEN, HALF_OPEN)")
+    circuit_status: Optional[str] = Field(default="CLOSED", description="Estado del Circuit Breaker")
 
 
 class StorePriceSchema(CamelModel):
-    store_id: str = Field(..., description="Identificador de la tienda retail")
+    store_id: str = Field(..., description="ID del retailer peruano")
     store_name: str = Field(..., description="Nombre de la tienda")
-    price: float = Field(..., gt=0, description="Precio actual en Soles (PEN)")
-    original_price: Optional[float] = Field(default=None, description="Precio de lista o tachado si aplica")
-    offer_url: str = Field(..., description="URL https validada de la oferta")
-    is_best_price: bool = Field(default=False, description="True si es el precio más bajo entre todas las tiendas")
+    price: float = Field(..., gt=0, description="Precio real en Soles (PEN)")
+    original_price: Optional[float] = Field(default=None, description="Precio de lista real si existe")
+    offer_url: str = Field(..., description="URL real verificada de la oferta")
+    is_best_price: bool = Field(default=False, description="True si es la oferta con menor precio actual")
 
     @field_validator("price", "original_price", mode="before")
     @classmethod
@@ -51,45 +40,46 @@ class StorePriceSchema(CamelModel):
 
     @field_validator("offer_url")
     @classmethod
-    def validate_https_url(cls, v: str) -> str:
+    def validate_https(cls, v: str) -> str:
         if not v.startswith("https://"):
-            raise ValueError("La URL de la oferta debe comenzar con https://")
+            raise ValueError("La URL debe iniciar con https://")
         return v
 
 
 class PricePointSchema(CamelModel):
-    day_offset: int = Field(..., ge=-30, le=0, description="Días relativos desde hoy (-30 a 0)")
-    date_label: str = Field(..., description="Etiqueta legible en español (ej. '22 Sep', 'Hoy')")
-    price: float = Field(..., gt=0, description="Precio histórico en PEN")
+    day_offset: int = Field(..., description="Día relativo (0 = Hoy, -1, -2...)")
+    date_label: str = Field(..., description="Etiqueta en español (ej. 'Hoy', '22 Oct')")
+    price: float = Field(..., gt=0, description="Precio real observado en Soles (PEN)")
 
     @field_validator("price", mode="before")
     @classmethod
-    def round_price(cls, v: float) -> float:
+    def round_point(cls, v: float) -> float:
         return round(float(v), 2)
 
 
-# ==============================================================================
-# PRODUCTOS Y CATÁLOGO
-# ==============================================================================
-
 class ProductSchema(CamelModel):
-    id: str = Field(..., description="Identificador único del producto (ej. 'prod_1')")
-    title: str = Field(..., description="Título y modelo del producto")
+    id: str = Field(..., description="ID del producto (ej. 'prod_samsung_s25_ultra')")
+    title: str = Field(..., description="Nombre oficial del producto")
     category: str = Field(..., description="Categoría (Smartphones, Laptops, Tablets, TVs)")
-    best_price: float = Field(..., gt=0, description="Menor precio disponible actual en PEN")
-    original_price: float = Field(..., gt=0, description="Precio original o de lista en PEN")
-    best_store_name: str = Field(..., description="Nombre de la tienda con la mejor oferta")
-    discount_percentage: int = Field(default=0, ge=0, le=100, description="Porcentaje de descuento redondeado")
-    available_stores_count: int = Field(default=0, ge=0, description="Cantidad de tiendas que ofrecen el producto")
-    image_url: str = Field(..., description="URL de imagen del producto (https)")
+    best_price: float = Field(..., gt=0, description="Menor precio real encontrado en Soles (PEN)")
+    original_price: float = Field(..., gt=0, description="Precio de lista o tachado real")
+    best_store_name: str = Field(..., description="Tienda que ofrece el mejor precio actual")
+    discount_percentage: int = Field(default=0, ge=0, le=100, description="Porcentaje de descuento calculado")
+    available_stores_count: int = Field(default=0, ge=0, description="Cantidad de tiendas reales donde sí existe el producto")
+    image_url: str = Field(..., description="URL oficial de la imagen del producto")
     description: str = Field(..., description="Descripción detallada del producto")
     features: List[str] = Field(default_factory=list, description="Lista de características destacadas")
     is_favorite: bool = Field(default=False, description="Flag de favorito")
-    store_prices: List[StorePriceSchema] = Field(default_factory=list, description="Ofertas por tienda ordenadas de menor a mayor precio")
-    historical_min_price: Optional[float] = Field(default=None, description="Mínimo precio histórico registrado")
+    store_prices: List[StorePriceSchema] = Field(
+        default_factory=list,
+        description="Ofertas reales ordenadas de menor a mayor precio (solo tiendas donde existe)",
+    )
+    historical_min_price: Optional[float] = Field(default=None, description="Mínimo precio real observado en BD")
     tech_specs: Dict[str, str] = Field(default_factory=dict, description="Especificaciones técnicas normalizadas")
     is_historical_min: bool = Field(default=False, description="True si bestPrice es menor o igual al mínimo histórico")
-    price_history_30_days: List[PricePointSchema] = Field(default_factory=list, description="Serie temporal de precios de los últimos 30 días")
+    price_history_30_days: List[PricePointSchema] = Field(
+        default_factory=list, description="Historial de precios reales acumulado en BD"
+    )
 
     @field_validator("best_price", "original_price", "historical_min_price", mode="before")
     @classmethod
@@ -99,41 +89,37 @@ class ProductSchema(CamelModel):
         return v
 
 
-# ==============================================================================
-# OFERTAS FÍSICAS COMUNITARIAS
-# ==============================================================================
-
 class CommunityPhysicalOfferSchema(CamelModel):
     id: str = Field(..., description="UUID único de la oferta comunitaria")
     product_id: str = Field(..., description="ID del producto asociado")
-    product_name: str = Field(..., description="Nombre del producto asociado")
-    physical_store_name: str = Field(..., description="Nombre de la tienda física (ej. 'Falabella Mall Aventura Chiclayo')")
-    department: str = Field(..., description="Departamento peruano (ej. Lambayeque, Lima, Arequipa)")
+    product_name: str = Field(..., description="Nombre del producto")
+    physical_store_name: str = Field(..., description="Nombre de la tienda física (ej. 'Falabella Mall Aventura')")
+    department: str = Field(..., description="Departamento peruano (ej. Lambayeque, Lima)")
     province: str = Field(..., description="Provincia")
     district: str = Field(..., description="Distrito")
-    price_found: float = Field(..., gt=0, description="Precio encontrado en tienda física en PEN")
-    photo_uri: str = Field(default="", description="URI o URL de foto de prueba")
-    comment: str = Field(default="", description="Comentarios o condiciones de la oferta física")
+    price_found: float = Field(..., gt=0, description="Precio encontrado en vitrina en PEN")
+    photo_uri: str = Field(default="", description="Foto de prueba o comprobante")
+    comment: str = Field(default="", description="Comentarios o condiciones de la oferta")
     timestamp_millis: int = Field(..., description="Marca de tiempo en milisegundos")
-    formatted_date: str = Field(..., description="Fecha formateada (ej. '22 Oct 2026, 14:30')")
-    author_name: str = Field(default="Usuario FinPrice", description="Nombre del autor del reporte")
+    formatted_date: str = Field(..., description="Fecha formateada (ej. '22 Oct 2026, 10:30')")
+    author_name: str = Field(default="Usuario FinPrice", description="Nombre del autor")
 
 
 class CommunityOfferCreateSchema(CamelModel):
     product_id: str = Field(..., description="ID del producto existente")
     product_name: Optional[str] = None
-    physical_store_name: str = Field(..., min_length=2, max_length=120, description="Nombre de la tienda física")
-    department: str = Field(..., description="Departamento del Perú válido")
-    province: str = Field(..., min_length=2, max_length=100, description="Provincia")
-    district: str = Field(..., min_length=2, max_length=100, description="Distrito")
-    price_found: float = Field(..., gt=0, description="Precio en Soles (PEN)")
+    physical_store_name: str = Field(..., min_length=2, max_length=120)
+    department: str = Field(..., description="Departamento del Perú")
+    province: str = Field(..., min_length=2, max_length=100)
+    district: str = Field(..., min_length=2, max_length=100)
+    price_found: float = Field(..., gt=0)
     photo_uri: str = ""
     comment: str = ""
     author_name: str = "Usuario FinPrice"
 
 
 # ==============================================================================
-# RETROCOMPATIBILIDAD LEGADA (GET /products)
+# RETROCOMPATIBILIDAD (GET /products)
 # ==============================================================================
 
 class StoreOffer(BaseModel):
@@ -153,7 +139,7 @@ class ProductResponse(BaseModel):
 
 
 # ==============================================================================
-# DIAGNÓSTICO Y RESPUESTAS DEL SISTEMA
+# RESPUESTAS DEL SISTEMA Y DIAGNÓSTICO
 # ==============================================================================
 
 class HealthResponse(CamelModel):

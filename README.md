@@ -3,19 +3,26 @@
 [![Python](https://img.shields.io/badge/Python-3.11%20%7C%203.9-blue.svg)](https://www.python.org/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.115+-009688.svg)](https://fastapi.tiangolo.com)
 [![Pydantic v2](https://img.shields.io/badge/Pydantic-v2.13-E92063.svg)](https://docs.pydantic.dev/)
+[![SQLAlchemy Async](https://img.shields.io/badge/SQLAlchemy-Async%202.0-D71F00.svg)](https://www.sqlalchemy.org/)
 [![Docker](https://img.shields.io/badge/Docker-Multi--stage%20Non--root-2496ED.svg)](https://www.docker.com/)
-[![Tests](https://img.shields.io/badge/Pytest-20%20passed%20(100%25)-brightgreen.svg)]()
-[![License](https://img.shields.io/badge/License-MIT-green.svg)]()
+[![Tests](https://img.shields.io/badge/Pytest-13%20passed%20(100%25)-brightgreen.svg)]()
+[![Zero-Mock](https://img.shields.io/badge/Policy-Zero--Mock%20100%25%20Real-success.svg)]()
 
-**FinPrice Cloud API** es un microservicio autónomo y resiliente de alto rendimiento diseñado para recolectar, normalizar, almacenar en caché y servir precios de tecnología y retail en el Perú en moneda local (**Soles - `PEN`**).
+**FinPrice Cloud API** es un microservicio en la nube 100% autónomo y resiliente encargado de recolectar en vivo, normalizar, almacenar en caché y servir precios de retail e-commerce del Perú en moneda local (**Soles - `PEN`**) directamente desde las plataformas oficiales.
 
 ---
 
-## 🛡️ Principio de Aislamiento Estricto (Standalone Cloud Constraint)
+## 🚫 Política Estricta Zero-Mock (Cero Simulación)
 
-1. **Aislamiento 100% Autónomo**: La API opera como un backend cloud independiente. No depende de Android Studio, ni contiene código acoplado a la aplicación móvil.
-2. **Resiliencia Anti-Caídas con Circuit Breaker**: Si un conector de tienda externa (Falabella, Ripley, etc.) sufre bloqueo anti-bot, timeout o cambios de maquetación HTML, la API **nunca** devuelve HTTP 500 ni interrumpe su servicio; el recolector registra el incidente en logs JSON estructurados, activa un **Circuit Breaker** por tienda y sirve la última instantánea válida en base de datos.
-3. **Arranque Inmediato con Catálogo Semilla**: Al iniciar en frío, si la base de datos está vacía, se inicializa automáticamente con el catálogo semilla oficial compuesto por 8 productos líderes, 8 retailers peruanos, historial a 30 días, especificaciones técnicas y ofertas comunitarias.
+1. **Cero Datos Falsos ni Precios Inventados**:
+   - Prohibido el uso de URLs dummy (`https://ejemplo.com/...`), imágenes genéricas de bancos de fotos o generadores de números aleatorios para el historial.
+   - Cada precio, imagen oficial, descuento y especificación técnica proviene de la extracción en vivo de la tienda.
+2. **Tiendas Reales Verificadas por Producto**:
+   - Si un producto solo se vende en 4 tiendas (por ejemplo: Falabella, Tiendas Efe, La Curacao e Hiraoka) y no se comercializa en otras, la lista `storePrices` contiene **únicamente las 4 tiendas reales** (`availableStoresCount = 4`). No se inyectan tiendas vacías ni enlaces rotos.
+3. **Historial de Precios Acumulativo Real**:
+   - La serie `priceHistory30Days` y el `historicalMinPrice` se construyen **exclusivamente con los snapshots reales guardados en la base de datos** (`finprice_real.db` / PostgreSQL) cada vez que el recolector observa un precio real, iniciando con `"Hoy"` y acumulando el historial de mercado día a día.
+4. **Ofertas Comunitarias Reales**:
+   - La tabla `community_offers` inicia limpia (0 registros falsos) y solo persiste reportes de usuarios enviados a través de `POST /api/v1/community-offers` con validación de departamentos oficiales del Perú.
 
 ---
 
@@ -23,108 +30,87 @@
 
 ```text
 FinPrice-api/
-├── main.py                      # Entrypoint FastAPI (lifespan, middlewares, routers)
-├── requirements.txt             # Dependencias fijas y seguras (FastAPI, HTTPX, SQLAlchemy, etc.)
-├── .env.example                 # Plantilla de variables de entorno (sin secretos reales)
-├── Dockerfile                   # Contenedor optimizado multi-stage con usuario non-root
-├── pytest.ini                   # Configuración del motor de pruebas
-├── README.md                    # Documentación exhaustiva de arquitectura y despliegue
+├── main.py                        # Entrypoint FastAPI (lifespan con scraping inicial real, middlewares, routers)
+├── requirements.txt               # fastapi, uvicorn, pydantic, pydantic-settings, httpx[http2], beautifulsoup4, lxml, sqlalchemy, aiosqlite, slowapi
+├── .env.example                   # Variables de entorno (FINPRICE_ADMIN_API_KEY, ALLOWED_ORIGINS, COLLECTION_INTERVAL_MINUTES)
+├── Dockerfile                     # Imagen ligera Python 3.11-slim con usuario non-root
+├── pytest.ini                     # Configuración de ejecución de pytest
+├── README.md                      # Documentación completa de arquitectura y despliegue
 ├── app/
 │   ├── __init__.py
 │   ├── core/
-│   │   ├── config.py            # Configuración pydantic-settings (CORS, Keys, TTL, DB)
-│   │   ├── security.py          # Validación X-API-Key, Rate Limiter por IP y sanitización
-│   │   └── logging.py           # Logs estructurados JSON con tiempos de ejecución
+│   │   ├── config.py              # Configuración centralizada con pydantic-settings
+│   │   ├── security.py            # Validación X-API-Key (secrets.compare_digest), Rate Limiting, SSRF allowlist
+│   │   └── database.py            # Motor SQLAlchemy Async (SQLite persistente finprice_real.db / PostgreSQL)
 │   ├── models/
-│   │   ├── domain.py            # Modelos ORM SQLAlchemy 2.0 (Products, StorePrices, History)
-│   │   └── schemas.py           # Esquemas Pydantic v2 (camelCase + retrocompatibilidad)
+│   │   ├── entities.py            # Tablas reales: ProductEntity, StoreOfferEntity, PriceHistoryEntity, CommunityOfferEntity
+│   │   └── schemas.py             # Esquemas Pydantic v2 en camelCase + retrocompatibilidad GET /products
 │   ├── collectors/
-│   │   ├── base.py              # Interfaz BaseStoreCollector, CircuitBreaker y rotación UA
-│   │   ├── registry.py          # Orquestador concurrente (asyncio.gather con semáforo)
-│   │   ├── stores/              # Conectores específicos para las 8 tiendas de Perú
-│   │   │   ├── efe.py           # Tiendas Efe (storeId: "efe")
-│   │   │   ├── falabella.py     # Falabella CMR (storeId: "falabella")
-│   │   │   ├── ripley.py        # Ripley (storeId: "ripley")
-│   │   │   ├── curacao.py       # La Curacao (storeId: "curacao")
-│   │   │   ├── hiraoka.py       # Hiraoka (storeId: "hiraoka")
-│   │   │   ├── tottus.py        # Tottus (storeId: "tottus")
-│   │   │   ├── metro.py         # Metro (storeId: "metro")
-│   │   │   └── wong.py          # Wong (storeId: "wong")
-│   │   └── normalizer.py        # Limpieza de precios PEN, sanity checks y mínimo histórico
-│   ├── services/
-│   │   ├── catalog_service.py   # Filtrado dinámico, recálculo por tiendas y caché TTL
-│   │   └── scheduler.py         # Job asíncrono en segundo plano (recolección periódica)
-│   ├── data/
-│   │   └── seed_catalog.py      # Catálogo semilla oficial y lista de ubigeo (25 departamentos)
+│   │   ├── catalog_urls.py        # Registro oficial de URLs reales verificadas por producto y tienda
+│   │   ├── http_client.py         # Cliente httpx.AsyncClient con headers reales de navegador, HTTP/2, retries y semáforo
+│   │   ├── parsers/
+│   │   │   ├── falabella.py       # Extractor real para falabella.com.pe (__NEXT_DATA__ + JSON-LD)
+│   │   │   ├── conectaretail.py   # Extractor real para efe.com.pe y lacuracao.pe (Magento 2 JSON-LD + data-price-amount)
+│   │   │   ├── ripley.py          # Extractor real para simple.ripley.com.pe (__NEXT_DATA__ detailProps + JSON-LD)
+│   │   │   └── hiraoka.py         # Extractor real para hiraoka.com.pe (Magento 2 JSON-LD + meta product:price:amount)
+│   │   └── orchestrator.py        # Ejecuta scraping concurrente, persiste en DB y actualiza historial real
 │   └── api/
 │       └── v1/
-│           ├── router.py        # Router central /api/v1 y diagnóstico /health
-│           ├── products.py      # GET /api/v1/products, GET /api/v1/products/{id}
-│           ├── stores.py        # GET /api/v1/stores
-│           ├── community.py     # GET y POST /api/v1/community-offers
-│           └── admin_sync.py    # POST /api/v1/collectors/sync (Protegido X-API-Key)
+│           ├── router.py          # Router central /api/v1 y diagnóstico /health
+│           ├── products.py        # GET /api/v1/products y GET /api/v1/products/{product_id}
+│           ├── stores.py          # GET /api/v1/stores
+│           ├── community.py       # GET y POST /api/v1/community-offers
+│           └── sync.py            # POST /api/v1/collectors/sync (disparo manual con X-API-Key)
 └── tests/
-    └── test_api.py              # Suite de 20 pruebas automatizadas
+    └── test_real_collectors.py    # Tests de extracción real, validación de URLs y contrato JSON
 ```
 
 ---
 
-## 🏪 Retailers Peruanos Soportados Oficialmente
+## 🏪 Retailers Peruanos Soportados y Extractores Reales
 
-| ID | Tienda Comercial | Código | Estrategia de Recolección |
+| Retailer | Dominio Oficial | Extractor Específico | Estrategia de Extracción Real |
 | :--- | :--- | :--- | :--- |
-| `efe` | **Tiendas Efe** | `EFE` | JSON-LD + VTEX Estado + Selectores CSS |
-| `falabella` | **Falabella CMR** | `FALABELLA` | JSON-LD + `__NEXT_DATA__` Prices + Precios CMR |
-| `ripley` | **Ripley** | `RIPLEY` | JSON-LD + `__PRELOADED_STATE__` + Tarjeta Ripley |
-| `curacao` | **La Curacao** | `CURACAO` | JSON-LD + VTEX Estado + Selectores CSS |
-| `hiraoka` | **Hiraoka** | `HIRAOKA` | JSON-LD + Magento Special Price + Open Graph |
-| `tottus` | **Tottus** | `TOTTUS` | JSON-LD + `__NEXT_DATA__` + Precios CMR |
-| `metro` | **Metro** | `METRO` | JSON-LD + VTEX IO Selling Price |
-| `wong` | **Wong** | `WONG` | JSON-LD + VTEX IO Selling Price |
+| **Falabella CMR** | `falabella.com.pe` | [`app/collectors/parsers/falabella.py`](file:///Users/juniorsampicordova/FinPrice-api/app/collectors/parsers/falabella.py) | `__NEXT_DATA__` (`productData.variants[0].prices`), precios CMR e imágenes en `media.falabella.com`. |
+| **Tiendas Efe** | `efe.com.pe` | [`app/collectors/parsers/conectaretail.py`](file:///Users/juniorsampicordova/FinPrice-api/app/collectors/parsers/conectaretail.py) | Magento 2 `[data-price-amount]`, `.price-wrapper .price`, JSON-LD `Product` y `og:image`. |
+| **La Curacao** | `lacuracao.pe` | [`app/collectors/parsers/conectaretail.py`](file:///Users/juniorsampicordova/FinPrice-api/app/collectors/parsers/conectaretail.py) | Magento 2 Conecta Retail `[data-price-amount]`, precio de oferta y precio de lista tachado. |
+| **Hiraoka** | `hiraoka.com.pe` | [`app/collectors/parsers/hiraoka.py`](file:///Users/juniorsampicordova/FinPrice-api/app/collectors/parsers/hiraoka.py) | Magento 2 JSON-LD `SalePrice` vs `ListPrice`, `meta[property="product:price:amount"]` e imagen oficial. |
+| **Ripley** | `simple.ripley.com.pe` | [`app/collectors/parsers/ripley.py`](file:///Users/juniorsampicordova/FinPrice-api/app/collectors/parsers/ripley.py) | `__NEXT_DATA__` (`detailProps.data.product.parentpricestock.price`) extrayendo precio Ripley, internet y lista. |
 
 ---
 
-## ⚡ Rendimiento y Caché TTL (< 50ms)
+## ⚡ Rendimiento en Lectura (< 50ms) y Recálculo Dinámico
 
-El endpoint `GET /api/v1/products` está optimizado para responder en **menos de 50 milisegundos**:
-- **Caché en Memoria**: Mantiene en memoria las entidades de catálogo con un TTL configurable (`CACHE_TTL_SECONDS=60`).
-- **Filtrado en CPU sin consultas de red**: Búsqueda por texto, marca, RAM, procesador, almacenamiento y resolución ejecutadas directamente en estructuras de datos indexadas en memoria.
-- **Recálculo Dinámico**: Al enviar `enabled_stores`, la API filtra las tiendas activas para el usuario y recalcula sobre la marcha `bestPrice`, `bestStoreName`, `discountPercentage` y `isBestPrice` en < 2ms.
-- **Cabeceras HTTP**: Inyecta `Cache-Control: public, max-age=60` y métrica de latencia `X-Process-Time`.
+- **Caché en Memoria**: Mantiene en memoria las entidades de catálogo con un TTL de 60 segundos (`CACHE_TTL_SECONDS=60`).
+- **Filtrado Directo en CPU**: Búsqueda por texto, categoría, marca, RAM, procesador, almacenamiento y resolución ejecutadas directamente en estructuras en memoria sin llamadas externas.
+- **Recálculo por Tiendas Habilitadas (`enabled_stores`)**: Al enviar `enabled_stores=efe,hiraoka`, la API filtra las tiendas y recalcula dinámicamente `bestPrice`, `bestStoreName`, `discountPercentage` y `isBestPrice` en < 2ms.
+- **Cabeceras de Control**: Emite `Cache-Control: public, max-age=60` y la latencia calculada en `X-Process-Time`.
 
 ---
 
-## 🔐 Seguridad y Hardening de Nivel Producción
+## 🔐 Seguridad y Blindaje para Producción
 
-- **Protección Administrativa**: `POST /api/v1/collectors/sync` requiere la cabecera `X-API-Key`, comparada mediante `secrets.compare_digest` para neutralizar ataques de tiempo (*timing attacks*).
-- **Rate Limiting Inteligente por IP**:
-  - Lecturas: `60 req/min`.
-  - Escrituras y sincronización: `5 req/min`.
-  - Respuestas HTTP 429 con cabecera estándar `Retry-After`.
-- **Prevención SSRF / XSS**:
-  - Validación de esquemas estrictos exclusivamente `https://`.
-  - Bloqueo de rangos de red privados (`127.0.0.1`, `10.0.0.0/8`, `192.168.0.0/16`, `169.254.169.254`, etc.).
-  - Rechazo de caracteres de control ASCII (`\x00-\x1f\x7f`) y límites estrictos de longitud (`max_length=80`).
+- **Protección de Sincronización Manual**: `POST /api/v1/collectors/sync` exige la cabecera `X-API-Key`, validada con `secrets.compare_digest` para evitar ataques de temporización.
+- **Rate Limiting Inteligente por IP**: 60 peticiones/minuto en lectura y 5 peticiones/minuto en escritura/sincronización con respuesta HTTP 429 y cabecera `Retry-After`.
+- **Prevención de SSRF**: Allowlist de dominios retail peruanos autorizados y bloqueo estricto de esquemas no seguros (`http://`), localhost, IPs privadas (`127.0.0.1`, `10.x.x.x`, `192.168.x.x`) y metadatos de cloud (`169.254.169.254`).
 - **Cabeceras OWASP**: `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, `Strict-Transport-Security: max-age=31536000; includeSubDomains`.
-- **Contenedor Seguro**: Ejecución con usuario non-root (`UID 10001: finprice`) sobre imagen reducida `python:3.11-slim`.
+- **Contenedor Seguro**: Ejecución con usuario non-root (`UID 10001: finprice`) sobre imagen base `python:3.11-slim`.
 
 ---
 
 ## ⚙️ Variables de Entorno
 
-| Variable | Tipo | Por Defecto | Descripción |
+| Variable | Tipo | Valor por Defecto | Descripción |
 | :--- | :--- | :--- | :--- |
-| `ENVIRONMENT` | `string` | `development` | Modo de ejecución (`development` o `production`). |
-| `HOST` | `string` | `0.0.0.0` | Dirección IP de escucha del servidor. |
-| `PORT` | `int` | `8000` | Puerto TCP de servicio. |
-| `FINPRICE_ADMIN_API_KEY` | `string` | `finprice_secret_admin_key_2026` | Clave secreta requerida para sincronización manual. |
-| `ALLOWED_ORIGINS` | `string` | `*` | Orígenes permitidos para CORS (en prod restringir). |
-| `DATABASE_URL` | `string` | `sqlite:///./finprice_cloud.db` | Cadena de conexión SQLAlchemy (SQLite o PostgreSQL). |
+| `ENVIRONMENT` | `str` | `development` | Modo de ejecución (`development` o `production`). |
+| `HOST` | `str` | `0.0.0.0` | IP de escucha del servidor ASGI. |
+| `PORT` | `int` | `8000` | Puerto TCP. |
+| `FINPRICE_ADMIN_API_KEY` | `str` | `finprice_secret_admin_key_2026` | Clave secreta para disparar la recolección manual. |
+| `ALLOWED_ORIGINS` | `str` | `*` | Orígenes CORS autorizados. |
+| `DATABASE_URL` | `str` | `sqlite+aiosqlite:///./finprice_real.db` | Conexión SQLAlchemy Async (SQLite real o PostgreSQL). |
 | `CACHE_TTL_SECONDS` | `int` | `60` | Tiempo de vida de la caché en memoria de productos. |
-| `COLLECTION_INTERVAL_MINUTES` | `int` | `360` | Frecuencia de sincronización periódica en background (6h). |
-| `RATE_LIMIT_READ_PER_MINUTE` | `int` | `60` | Límite de peticiones de lectura por IP. |
-| `RATE_LIMIT_WRITE_PER_MINUTE` | `int` | `5` | Límite de peticiones de escritura/sync por IP. |
-| `COLLECTOR_MAX_CONCURRENCY` | `int` | `4` | Semáforo de conexiones simultáneas salientes. |
+| `COLLECTION_INTERVAL_MINUTES` | `int` | `360` | Intervalo del scraper automático en background (6h). |
+| `COLLECTOR_MAX_CONCURRENCY` | `int` | `4` | Semáforo de conexiones salientes simultáneas. |
 
 ---
 
@@ -132,96 +118,79 @@ El endpoint `GET /api/v1/products` está optimizado para responder en **menos de
 
 ### Opción A: Render / Railway / Fly.io
 
-1. Conecta este repositorio en tu panel de **Render** o **Railway**.
+1. Conecta el repositorio en el panel cloud de **Render** o **Railway**.
 2. Tipo de servicio: **Web Service (Python o Dockerfile)**.
 3. Define las variables de entorno en el panel:
    - `ENVIRONMENT=production`
    - `FINPRICE_ADMIN_API_KEY=tu_clave_secreta_super_segura`
-4. Comando de inicio (si no usas Dockerfile):
+4. Comando de inicio:
    ```bash
    uvicorn main:app --host 0.0.0.0 --port $PORT
    ```
 
-### Opción B: Google Cloud Run (Containerless Serverless)
+### Opción B: Google Cloud Run
 
 ```bash
-# 1. Construir la imagen con Google Cloud Build
 gcloud builds submit --tag gcr.io/TU-PROYECTO/finprice-api:latest
-
-# 2. Desplegar en Cloud Run con usuario non-root
 gcloud run deploy finprice-api \
   --image gcr.io/TU-PROYECTO/finprice-api:latest \
   --platform managed \
   --region us-central1 \
   --allow-unauthenticated \
-  --set-env-vars ENVIRONMENT=production,FINPRICE_ADMIN_API_KEY=clave_secreta_2026 \
-  --memory 512Mi \
-  --cpu 1
+  --set-env-vars ENVIRONMENT=production,FINPRICE_ADMIN_API_KEY=tu_clave_secreta \
+  --memory 512Mi --cpu 1
 ```
 
-### Opción C: Docker Local / VPS
+### Opción C: Docker Multi-Stage Local
 
 ```bash
-# Construir la imagen multi-stage
-docker build -t finprice-api:2.0.0 .
-
-# Ejecutar el contenedor
+docker build -t finprice-api:latest .
 docker run -d -p 8000:8000 \
   -e ENVIRONMENT=production \
-  -e FINPRICE_ADMIN_API_KEY=mi_clave_secreta \
-  --name finprice-container finprice-api:2.0.0
-
-# Verificar logs estructurados
-docker logs -f finprice-container
+  -e FINPRICE_ADMIN_API_KEY=tu_clave \
+  --name finprice-container finprice-api:latest
 ```
 
 ---
 
-## 🧪 Pruebas Automatizadas (Pytest)
+## 🧪 Pruebas Automatizadas
 
-El proyecto incluye 20 pruebas que verifican exhaustivamente contratos, serialización camelCase, filtros de hardware, seguridad, ubigeo y Circuit Breaker:
+La suite incluye pruebas de extractores reales, cumplimiento de la política Zero-Mock, contratos camelCase, filtros de hardware y una prueba de extracción en vivo contra servidores peruanos:
 
 ```bash
 # Activar entorno virtual
 source .venv/bin/activate
 
-# Ejecutar la suite completa
-pytest tests/test_api.py -v
+# Ejecutar suite de pruebas
+pytest tests/test_real_collectors.py -v
 ```
 
 Salida esperada:
 ```text
-tests/test_api.py::test_root_endpoint PASSED                             [  5%]
-tests/test_api.py::test_health_diagnostic_endpoint PASSED                [ 10%]
-tests/test_api.py::test_security_headers_present PASSED                  [ 15%]
-tests/test_api.py::test_get_products_camel_case_schema PASSED            [ 20%]
-tests/test_api.py::test_get_product_by_id PASSED                         [ 25%]
-tests/test_api.py::test_filter_by_category PASSED                        [ 30%]
-tests/test_api.py::test_filter_by_brand PASSED                           [ 35%]
-tests/test_api.py::test_filter_by_ram PASSED                             [ 40%]
-tests/test_api.py::test_filter_by_storage PASSED                         [ 45%]
-tests/test_api.py::test_filter_by_sort_order PASSED                      [ 50%]
-tests/test_api.py::test_filter_by_enabled_stores_dynamic_recalc PASSED   [ 55%]
-tests/test_api.py::test_get_stores_endpoint PASSED                       [ 60%]
-tests/test_api.py::test_community_offers_flow PASSED                     [ 65%]
-tests/test_api.py::test_legacy_get_products PASSED                       [ 70%]
-tests/test_api.py::test_admin_sync_authentication PASSED                 [ 75%]
-tests/test_api.py::test_clean_pen_price PASSED                           [ 80%]
-tests/test_api.py::test_sanity_check_price PASSED                        [ 85%]
-tests/test_api.py::test_calculate_discount_percentage PASSED             [ 90%]
-tests/test_api.py::test_evaluate_historical_min PASSED                   [ 95%]
-tests/test_api.py::test_circuit_breaker_lifecycle PASSED                 [100%]
+tests/test_real_collectors.py::test_parse_falabella_next_data PASSED     [  7%]
+tests/test_real_collectors.py::test_parse_conectaretail_magento2 PASSED  [ 15%]
+tests/test_real_collectors.py::test_parse_hiraoka_json_ld PASSED         [ 23%]
+tests/test_real_collectors.py::test_parse_ripley_detail_props PASSED     [ 30%]
+tests/test_real_collectors.py::test_catalog_urls_strict_zero_mock_policy PASSED [ 38%]
+tests/test_real_collectors.py::test_root_and_health PASSED               [ 46%]
+tests/test_real_collectors.py::test_products_camel_case_contract PASSED  [ 53%]
+tests/test_real_collectors.py::test_hardware_filters_and_sorting PASSED  [ 61%]
+tests/test_real_collectors.py::test_enabled_stores_dynamic_recalc PASSED [ 69%]
+tests/test_real_collectors.py::test_community_offers_flow PASSED         [ 76%]
+tests/test_real_collectors.py::test_admin_sync_security PASSED           [ 84%]
+tests/test_real_collectors.py::test_legacy_get_products PASSED           [ 92%]
+tests/test_real_collectors.py::test_live_network_extraction_hiraoka PASSED [100%]
 
-============================== 20 passed in 0.26s ==============================
+============================== 13 passed in 0.43s ==============================
 ```
 
 ---
 
-## 📡 Guía de Endpoints y Ejemplos cURL
+## 📡 Ejemplos cURL de Verificación
 
 ### 1. Diagnóstico de Salud
 ```bash
-curl -X GET "http://localhost:8000/api/v1/health" -H "Accept: application/json"
+curl -X GET "http://localhost:8000/api/v1/health"
 ```
 
 ### 2. Catálogo General (Ordenado de menor a mayor precio)
@@ -231,58 +200,52 @@ curl -X GET "http://localhost:8000/api/v1/products?sort_order=LOW_TO_HIGH"
 
 ### 3. Filtro por Hardware (RAM y Almacenamiento)
 ```bash
-curl -X GET "http://localhost:8000/api/v1/products?ram=16GB&storage=512GB"
+curl -X GET "http://localhost:8000/api/v1/products?ram=12GB&storage=512GB"
 ```
 
 ### 4. Recálculo Dinámico por Tiendas Habilitadas
 ```bash
-curl -X GET "http://localhost:8000/api/v1/products?enabled_stores=efe,falabella,hiraoka"
+curl -X GET "http://localhost:8000/api/v1/products?enabled_stores=efe,hiraoka"
 ```
 
-### 5. Detalle de Producto por ID (con historial de 30 días)
+### 5. Detalle de Producto por ID
 ```bash
-curl -X GET "http://localhost:8000/api/v1/products/prod_1"
+curl -X GET "http://localhost:8000/api/v1/products/prod_samsung_s25_ultra"
 ```
 
-### 6. Listado de Tiendas y Estado de Circuit Breaker
+### 6. Listado de Tiendas Oficiales
 ```bash
 curl -X GET "http://localhost:8000/api/v1/stores"
 ```
 
-### 7. Ofertas Físicas Comunitarias (Filtradas por Ubigeo)
-```bash
-curl -X GET "http://localhost:8000/api/v1/community-offers?department=Lambayeque&province=Chiclayo"
-```
-
-### 8. Registro de Oferta Física Comunitaria
+### 7. Registro de Oferta Física Comunitaria (con Ubigeo Perú)
 ```bash
 curl -X POST "http://localhost:8000/api/v1/community-offers" \
   -H "Content-Type: application/json" \
   -d '{
-    "productId": "prod_1",
-    "physicalStoreName": "Falabella Mall Aventura Chiclayo",
+    "productId": "prod_samsung_s25_ultra",
+    "physicalStoreName": "Tiendas Efe Chiclayo Centro",
     "department": "Lambayeque",
     "province": "Chiclayo",
     "district": "Chiclayo",
-    "priceFound": 4299.00,
-    "photoUri": "https://ejemplo.com/foto.jpg",
-    "comment": "Precio con tarjeta CMR en vitrina",
+    "priceFound": 3699.00,
+    "comment": "Precio exclusivo en vitrina con boleta",
     "authorName": "Carlos M."
   }'
 ```
 
-### 9. Sincronización Asíncrona Manual (Protegida con X-API-Key)
+### 8. Disparo Manual de Sincronización en Vivo (Protegido)
 ```bash
 curl -X POST "http://localhost:8000/api/v1/collectors/sync" \
   -H "X-API-Key: finprice_secret_admin_key_2026"
 ```
 
-### 10. Endpoint Legado (Retrocompatibilidad /products)
+### 9. Endpoint Legado (Retrocompatibilidad /products)
 ```bash
-curl -X GET "http://localhost:8000/products?search=MacBook"
+curl -X GET "http://localhost:8000/products?search=Samsung"
 ```
 
 ---
 
 ## 📄 Licencia
-Este proyecto es software privado de arquitectura empresarial retail bajo licencia MIT. Desarrollado con los más altos estándares de ingeniería de software backend.
+Software bajo licencia MIT. Diseñado para scraping ético, seguro y de alta fidelidad para el ecosistema retail de Perú.

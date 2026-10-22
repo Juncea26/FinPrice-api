@@ -1,5 +1,5 @@
 """
-Módulo de seguridad, validación X-API-Key, prevención de SSRF/XSS y Rate Limiter en memoria.
+Módulo de seguridad: Validación X-API-Key, Rate Limiting, SSRF allowlist y sanitización.
 """
 import html
 import ipaddress
@@ -15,20 +15,48 @@ from fastapi import Header, HTTPException, Request, status
 from app.core.config import settings
 from app.core.logging import get_logger
 
-logger = get_logger("security")
+logger = get_logger("core.security")
+
+# Dominios retail verificados permitidos
+ALLOWED_RETAIL_DOMAINS = {
+    "falabella.com.pe",
+    "www.falabella.com.pe",
+    "simple.ripley.com.pe",
+    "ripley.com.pe",
+    "www.ripley.com.pe",
+    "hiraoka.com.pe",
+    "www.hiraoka.com.pe",
+    "efe.com.pe",
+    "www.efe.com.pe",
+    "lacuracao.pe",
+    "www.lacuracao.pe",
+    "tottus.com.pe",
+    "www.tottus.com.pe",
+    "metro.pe",
+    "www.metro.pe",
+    "wong.pe",
+    "www.wong.pe",
+    "images.samsung.com",
+    "store.storeimages.cdn-apple.com",
+    "media.falabella.com",
+    "rimage.ripley.com.pe",
+    "dlcdnwebimgs.asus.com",
+    "i02.appmifile.com",
+    "www.lg.com",
+}
+
+CONTROL_CHAR_REGEX = re.compile(r"[\x00-\x1f\x7f]")
+HTML_TAG_REGEX = re.compile(r"<[^>]+>")
 
 
 # ==============================================================================
-# 1. AUTENTICACIÓN ADMINISTRATIVA (X-API-Key)
+# 1. AUTENTICACIÓN ADMINISTRATIVA (X-API-Key con secrets.compare_digest)
 # ==============================================================================
 
 async def verify_admin_api_key(
     x_api_key: Optional[str] = Header(None, alias="X-API-Key")
 ) -> str:
-    """
-    Valida la cabecera X-API-Key contra FINPRICE_ADMIN_API_KEY usando secrets.compare_digest
-    para mitigar ataques de temporización (timing attacks).
-    """
+    """Valida la cabecera X-API-Key usando secrets.compare_digest contra ataques de timing."""
     if not x_api_key:
         logger.warning("Intento de acceso administrativo sin cabecera X-API-Key")
         raise HTTPException(
@@ -49,17 +77,13 @@ async def verify_admin_api_key(
 
 
 # ==============================================================================
-# 2. RATE LIMITER EN MEMORIA (Sliding Window per IP)
+# 2. RATE LIMITER POR IP CON VENTANA DESLIZANTE Y SCOPES
 # ==============================================================================
 
 class InMemoryRateLimiter:
-    """
-    Implementación de rate limiting basada en ventana deslizante en memoria por IP y ámbito (scope).
-    Separa las cuotas de lectura de las cuotas de escritura/sincronización.
-    """
+    """Ventana deslizante que divide cuotas de lectura de cuotas de escritura."""
 
     def __init__(self):
-        # key: f"{scope}:{ip}" -> list of timestamps
         self._requests: Dict[str, List[float]] = defaultdict(list)
 
     def is_allowed(
@@ -69,7 +93,6 @@ class InMemoryRateLimiter:
         window_start = now - window_seconds
         key = f"{scope}:{client_ip}"
 
-        # Limpiar marcas de tiempo expiradas
         timestamps = [ts for ts in self._requests[key] if ts > window_start]
         self._requests[key] = timestamps
 
@@ -82,7 +105,7 @@ class InMemoryRateLimiter:
         return True, 0
 
     def reset(self) -> None:
-        """Reinicia los contadores (útil en pruebas)."""
+        """Reinicia los contadores para pruebas automatizadas."""
         self._requests.clear()
 
 
@@ -90,10 +113,9 @@ rate_limiter = InMemoryRateLimiter()
 
 
 def get_client_ip(request: Request) -> str:
-    """Extrae la IP real del cliente considerando proxies reversos comunes."""
+    """Obtiene la IP del cliente considerando cabeceras de proxy inverso."""
     forwarded = request.headers.get("X-Forwarded-For")
     if forwarded:
-        # Tomar la primera IP de la cadena (la del cliente original)
         return forwarded.split(",")[0].strip()
     real_ip = request.headers.get("X-Real-IP")
     if real_ip:
@@ -102,51 +124,41 @@ def get_client_ip(request: Request) -> str:
 
 
 async def check_read_rate_limit(request: Request) -> None:
-    """Dependencia para limitar peticiones de lectura (p. ej. 60 req/min)."""
+    """Limita lecturas a RATE_LIMIT_READ_PER_MINUTE."""
     ip = get_client_ip(request)
     allowed, retry_after = rate_limiter.is_allowed(
         ip, max_requests=settings.RATE_LIMIT_READ_PER_MINUTE, window_seconds=60, scope="read"
     )
     if not allowed:
-        logger.warning("Rate limit excedido para IP en lectura", extra={"client_ip": ip})
+        logger.warning("Rate limit de lectura excedido", extra={"client_ip": ip})
         raise HTTPException(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-            detail="Límite de peticiones de lectura excedido. Intenta de nuevo más tarde.",
+            detail="Límite de peticiones de lectura excedido. Intenta más tarde.",
             headers={"Retry-After": str(retry_after)},
         )
 
 
 async def check_write_rate_limit(request: Request) -> None:
-    """Dependencia para limitar peticiones de escritura/sincronización (p. ej. 5 req/min)."""
+    """Limita escrituras a RATE_LIMIT_WRITE_PER_MINUTE."""
     ip = get_client_ip(request)
     allowed, retry_after = rate_limiter.is_allowed(
         ip, max_requests=settings.RATE_LIMIT_WRITE_PER_MINUTE, window_seconds=60, scope="write"
     )
     if not allowed:
-        logger.warning("Rate limit excedido para IP en escritura", extra={"client_ip": ip})
+        logger.warning("Rate limit de escritura excedido", extra={"client_ip": ip})
         raise HTTPException(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-            detail="Límite de peticiones de escritura excedido. Intenta de nuevo más tarde.",
+            detail="Límite de peticiones de escritura excedido. Intenta más tarde.",
             headers={"Retry-After": str(retry_after)},
         )
 
 
 # ==============================================================================
-# 3. PREVENCIÓN DE SSRF, CONTROL CHARACTERS Y XSS
+# 3. PREVENCIÓN DE SSRF, XSS Y CARACTERES DE CONTROL
 # ==============================================================================
 
-# Caracteres de control no permitidos (0x00 - 0x1F, 0x7F)
-CONTROL_CHAR_REGEX = re.compile(r"[\x00-\x1f\x7f]")
-HTML_TAG_REGEX = re.compile(r"<[^>]+>")
-
-
 def sanitize_input_text(text: Optional[str], max_length: int = 80) -> Optional[str]:
-    """
-    Sanitiza strings de consulta:
-    - Limita longitud
-    - Rechaza o remueve caracteres de control
-    - Remueve etiquetas HTML y escapa entidades
-    """
+    """Sanitiza parámetros de consulta rechazando caracteres de control e inyecciones."""
     if text is None:
         return None
 
@@ -163,24 +175,24 @@ def sanitize_input_text(text: Optional[str], max_length: int = 80) -> Optional[s
             detail="El parámetro contiene caracteres de control no permitidos.",
         )
 
-    # Limpiar posibles inyecciones de etiquetas HTML
     cleaned = HTML_TAG_REGEX.sub("", cleaned)
     return html.escape(cleaned)
 
 
-def validate_safe_url(url: str) -> str:
+def validate_safe_url(url: str, check_allowlist: bool = False) -> str:
     """
     Valida estrictamente que una URL:
     - Utilice el esquema seguro 'https://'
-    - No apunte a rangos de IP privados, loopback (127.0.0.1) o metadata de cloud (169.254.169.254).
+    - No apunte a rangos de IP privados, loopback o metadata de cloud
+    - Opcionalmente pertenezca a la allowlist de retailers peruanos
     """
-    parsed = urlparse(url)
-    if parsed.scheme.lower() != "https":
+    if not url.startswith("https://"):
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="La URL debe utilizar obligatoriamente el protocolo seguro 'https://'.",
         )
 
+    parsed = urlparse(url)
     hostname = parsed.hostname
     if not hostname:
         raise HTTPException(
@@ -188,14 +200,12 @@ def validate_safe_url(url: str) -> str:
             detail="URL inválida: no contiene un nombre de host válido.",
         )
 
-    # Prohibir localhost explícito
     if hostname.lower() in {"localhost", "127.0.0.1", "0.0.0.0"}:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="Dirección host no permitida por políticas de seguridad.",
+            detail="Destino host no permitido por políticas de seguridad.",
         )
 
-    # Verificar si es una IP privada o reservada
     try:
         ip = ipaddress.ip_address(hostname)
         if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved:
@@ -204,7 +214,12 @@ def validate_safe_url(url: str) -> str:
                 detail="No se permiten destinos en redes privadas o reservadas.",
             )
     except ValueError:
-        # Es un nombre de dominio regular (FQDN), lo cual es lo esperado
         pass
+
+    if check_allowlist and hostname.lower() not in ALLOWED_RETAIL_DOMAINS:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"Dominio no autorizado en la lista blanca de retail: {hostname}",
+        )
 
     return url
