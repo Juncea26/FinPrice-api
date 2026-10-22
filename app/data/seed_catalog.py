@@ -1,0 +1,777 @@
+"""
+Catálogo Semilla Oficial de FinPrice API:
+- 8 Tiendas retail peruanas oficiales
+- 8 Productos base de alta demanda con especificaciones técnicas completas
+- Precios multitienda en Soles (PEN) con URLs HTTPS válidas
+- Histórico de precios a 30 días (-30, -27, -24, -21, -18, -15, -12, -9, -6, -3, 0)
+- Lista oficial de departamentos del Perú para validación de ubigeo
+- Ofertas físicas comunitarias iniciales
+"""
+from typing import Any, Dict, List
+
+# ==============================================================================
+# TIENDAS RETAIL PERUANAS OFICIALES
+# ==============================================================================
+
+OFFICIAL_STORES = [
+    {
+        "id": "efe",
+        "name": "Tiendas Efe",
+        "code": "EFE",
+        "base_url": "https://www.efe.com.pe",
+        "is_enabled": True,
+    },
+    {
+        "id": "falabella",
+        "name": "Falabella CMR",
+        "code": "FALABELLA",
+        "base_url": "https://www.falabella.com.pe",
+        "is_enabled": True,
+    },
+    {
+        "id": "ripley",
+        "name": "Ripley",
+        "code": "RIPLEY",
+        "base_url": "https://simple.ripley.com.pe",
+        "is_enabled": True,
+    },
+    {
+        "id": "curacao",
+        "name": "La Curacao",
+        "code": "CURACAO",
+        "base_url": "https://www.lacuracao.pe",
+        "is_enabled": True,
+    },
+    {
+        "id": "hiraoka",
+        "name": "Hiraoka",
+        "code": "HIRAOKA",
+        "base_url": "https://hiraoka.com.pe",
+        "is_enabled": True,
+    },
+    {
+        "id": "tottus",
+        "name": "Tottus",
+        "code": "TOTTUS",
+        "base_url": "https://www.tottus.com.pe",
+        "is_enabled": True,
+    },
+    {
+        "id": "metro",
+        "name": "Metro",
+        "code": "METRO",
+        "base_url": "https://www.metro.pe",
+        "is_enabled": True,
+    },
+    {
+        "id": "wong",
+        "name": "Wong",
+        "code": "WONG",
+        "base_url": "https://www.wong.pe",
+        "is_enabled": True,
+    },
+]
+
+# Mapa rápido para búsquedas por store_id
+STORES_BY_ID = {store["id"]: store for store in OFFICIAL_STORES}
+
+# ==============================================================================
+# UBIGEO PERÚ: DEPARTAMENTOS OFICIALES
+# ==============================================================================
+
+PERU_DEPARTMENTS = [
+    "Amazonas",
+    "Áncash",
+    "Apurímac",
+    "Arequipa",
+    "Ayacucho",
+    "Cajamarca",
+    "Callao",
+    "Cusco",
+    "Huancavelica",
+    "Huánuco",
+    "Ica",
+    "Junín",
+    "La Libertad",
+    "Lambayeque",
+    "Lima",
+    "Loreto",
+    "Madre de Dios",
+    "Moquegua",
+    "Pasco",
+    "Piura",
+    "Puno",
+    "San Martín",
+    "Tacna",
+    "Tumbes",
+    "Ucayali",
+]
+
+# ==============================================================================
+# PRODUCTOS BASE DEL CATÁLOGO
+# ==============================================================================
+
+SEED_PRODUCTS: List[Dict[str, Any]] = [
+    # --------------------------------------------------------------------------
+    # 1. SAMSUNG GALAXY S24 ULTRA 256GB
+    # --------------------------------------------------------------------------
+    {
+        "id": "prod_1",
+        "title": "Samsung Galaxy S24 Ultra 256GB Titanium Gray",
+        "category": "Smartphones",
+        "brand": "Samsung",
+        "original_price": 5499.00,
+        "image_url": "https://images.samsung.com/is/image/samsung/p6pim/pe/galaxy-s24/gallery/pe-galaxy-s24-ultra-sm-s928bztlpeo-thumb-539316499",
+        "description": "El buque insignia de Samsung con Galaxy AI integrada, chasis de titanio de grado aeroespacial, pantalla Dynamic AMOLED 2X de 6.8 pulgadas y sistema de cuatro cámaras con sensor principal de 200MP.",
+        "features": [
+            "Galaxy AI con traducción de llamadas en tiempo real y Circle to Search",
+            "Cámara principal de 200 MP con ProVisual Engine y Zoom 100x",
+            "Estructura reforzada en aleación de titanio con Corning Gorilla Armor",
+            "S-Pen integrado con baja latencia para notas y productividad",
+            "Batería de 5000 mAh con carga súper rápida de 45W",
+        ],
+        "tech_specs": {
+            "Procesador": "Qualcomm Snapdragon 8 Gen 3 for Galaxy",
+            "Memoria RAM": "12GB",
+            "Almacenamiento": "256GB",
+            "Pantalla": "6.8 Pulgadas Dynamic AMOLED 2X QHD+ 120Hz",
+            "Resolución": "3120 x 1440 píxeles",
+            "Cámara": "200MP + 50MP + 12MP + 10MP",
+        },
+        "store_prices": [
+            {
+                "store_id": "falabella",
+                "store_name": "Falabella CMR",
+                "price": 4399.00,
+                "original_price": 5499.00,
+                "offer_url": "https://www.falabella.com.pe/falabella-pe/product/19483011/Samsung-Galaxy-S24-Ultra-256GB/19483011",
+            },
+            {
+                "store_id": "ripley",
+                "store_name": "Ripley",
+                "price": 4449.00,
+                "original_price": 5399.00,
+                "offer_url": "https://simple.ripley.com.pe/samsung-galaxy-s24-ultra-256gb-titanium-2004319483293p",
+            },
+            {
+                "store_id": "hiraoka",
+                "store_name": "Hiraoka",
+                "price": 4499.00,
+                "original_price": 5499.00,
+                "offer_url": "https://hiraoka.com.pe/celular-samsung-galaxy-s24-ultra-256gb-titanio",
+            },
+            {
+                "store_id": "efe",
+                "store_name": "Tiendas Efe",
+                "price": 4529.00,
+                "original_price": 5499.00,
+                "offer_url": "https://www.efe.com.pe/samsung-galaxy-s24-ultra-256gb",
+            },
+            {
+                "store_id": "curacao",
+                "store_name": "La Curacao",
+                "price": 4599.00,
+                "original_price": 5499.00,
+                "offer_url": "https://www.lacuracao.pe/samsung-galaxy-s24-ultra-256gb",
+            },
+            {
+                "store_id": "tottus",
+                "store_name": "Tottus",
+                "price": 4699.00,
+                "original_price": 5499.00,
+                "offer_url": "https://www.tottus.com.pe/samsung-galaxy-s24-ultra/p",
+            },
+        ],
+        "price_history_30_days": [
+            {"day_offset": -30, "date_label": "22 Sep", "price": 4899.00},
+            {"day_offset": -27, "date_label": "25 Sep", "price": 4850.00},
+            {"day_offset": -24, "date_label": "28 Sep", "price": 4799.00},
+            {"day_offset": -21, "date_label": "01 Oct", "price": 4799.00},
+            {"day_offset": -18, "date_label": "04 Oct", "price": 4699.00},
+            {"day_offset": -15, "date_label": "07 Oct", "price": 4650.00},
+            {"day_offset": -12, "date_label": "10 Oct", "price": 4599.00},
+            {"day_offset": -9, "date_label": "13 Oct", "price": 4520.00},
+            {"day_offset": -6, "date_label": "16 Oct", "price": 4480.00},
+            {"day_offset": -3, "date_label": "19 Oct", "price": 4420.00},
+            {"day_offset": 0, "date_label": "Hoy", "price": 4399.00},
+        ],
+    },
+    # --------------------------------------------------------------------------
+    # 2. APPLE IPHONE 15 PRO MAX 256GB
+    # --------------------------------------------------------------------------
+    {
+        "id": "prod_2",
+        "title": "Apple iPhone 15 Pro Max 256GB Titanio Natural",
+        "category": "Smartphones",
+        "brand": "Apple",
+        "original_price": 5899.00,
+        "image_url": "https://store.storeimages.cdn-apple.com/4982/as-images.apple.com/is/iphone-15-pro-max-naturaltitanium-select?wid=470&hei=556&fmt=png-alpha",
+        "description": "Diseñado en titanio aeroespacial con el revolucionario chip A17 Pro, botón de Acción personalizable y el sistema de cámaras para iPhone más potente hasta la fecha con teleobjetivo 5x.",
+        "features": [
+            "Chip A17 Pro con GPU de 6 núcleos y Ray Tracing acelerado por hardware",
+            "Pantalla Super Retina XDR de 6.7 pulgadas con ProMotion 120Hz y Always-On",
+            "Cámara teleobjetivo 5x con tetraprisma y estabilización óptica 3D",
+            "Conector USB-C compatible con velocidades USB 3 de hasta 10 Gb/s",
+            "Detección de Choques y llamadas de emergencia satelitales",
+        ],
+        "tech_specs": {
+            "Procesador": "Apple A17 Pro (3nm)",
+            "Memoria RAM": "8GB",
+            "Almacenamiento": "256GB",
+            "Pantalla": "6.7 Pulgadas Super Retina XDR OLED",
+            "Resolución": "2796 x 1290 píxeles",
+            "Cámara": "48MP + 12MP + 12MP",
+        },
+        "store_prices": [
+            {
+                "store_id": "ripley",
+                "store_name": "Ripley",
+                "price": 5099.00,
+                "original_price": 5899.00,
+                "offer_url": "https://simple.ripley.com.pe/apple-iphone-15-pro-max-256gb-titanio-natural-2004313251293p",
+            },
+            {
+                "store_id": "falabella",
+                "store_name": "Falabella CMR",
+                "price": 5149.00,
+                "original_price": 5899.00,
+                "offer_url": "https://www.falabella.com.pe/falabella-pe/product/19324810/iPhone-15-Pro-Max-256GB/19324810",
+            },
+            {
+                "store_id": "hiraoka",
+                "store_name": "Hiraoka",
+                "price": 5199.00,
+                "original_price": 5799.00,
+                "offer_url": "https://hiraoka.com.pe/iphone-15-pro-max-256gb-titanio-natural",
+            },
+            {
+                "store_id": "wong",
+                "store_name": "Wong",
+                "price": 5299.00,
+                "original_price": 5899.00,
+                "offer_url": "https://www.wong.pe/iphone-15-pro-max-256gb/p",
+            },
+        ],
+        "price_history_30_days": [
+            {"day_offset": -30, "date_label": "22 Sep", "price": 5499.00},
+            {"day_offset": -27, "date_label": "25 Sep", "price": 5450.00},
+            {"day_offset": -24, "date_label": "28 Sep", "price": 5399.00},
+            {"day_offset": -21, "date_label": "01 Oct", "price": 5350.00},
+            {"day_offset": -18, "date_label": "04 Oct", "price": 5299.00},
+            {"day_offset": -15, "date_label": "07 Oct", "price": 5250.00},
+            {"day_offset": -12, "date_label": "10 Oct", "price": 5199.00},
+            {"day_offset": -9, "date_label": "13 Oct", "price": 5150.00},
+            {"day_offset": -6, "date_label": "16 Oct", "price": 5120.00},
+            {"day_offset": -3, "date_label": "19 Oct", "price": 5100.00},
+            {"day_offset": 0, "date_label": "Hoy", "price": 5099.00},
+        ],
+    },
+    # --------------------------------------------------------------------------
+    # 3. XIAOMI REDMI NOTE 13 PRO+ 5G
+    # --------------------------------------------------------------------------
+    {
+        "id": "prod_3",
+        "title": "Xiaomi Redmi Note 13 Pro+ 5G 512GB Midnight Black",
+        "category": "Smartphones",
+        "brand": "Xiaomi",
+        "original_price": 2199.00,
+        "image_url": "https://i02.appmifile.com/582_operator_pe/29/01/2024/7fae44ebae1da6eec6a917e761dfa6f4.png",
+        "description": "El exponente más avanzado de la serie Redmi con pantalla curva AMOLED 1.5K de 120Hz, cámara de 200MP con OIS, certificación IP68 y carga hiperrápida HyperCharge de 120W.",
+        "features": [
+            "Cámara estelar de 200MP con sensor Samsung HP3 y estabilización OIS",
+            "Carga ultra veloz HyperCharge 120W (100% en tan solo 19 minutos)",
+            "Protección contra agua y polvo IP68 de nivel premium",
+            "Pantalla CrystalRes AMOLED curva de 1.5K con brillo de hasta 1800 nits",
+            "Almacenamiento masivo de 512GB con 12GB de memoria RAM física",
+        ],
+        "tech_specs": {
+            "Procesador": "MediaTek Dimensity 7200 Ultra",
+            "Memoria RAM": "12GB",
+            "Almacenamiento": "512GB",
+            "Pantalla": "6.67 Pulgadas AMOLED Curva 1.5K 120Hz",
+            "Resolución": "2712 x 1220 píxeles",
+            "Cámara": "200MP + 8MP + 2MP",
+        },
+        "store_prices": [
+            {
+                "store_id": "efe",
+                "store_name": "Tiendas Efe",
+                "price": 1649.00,
+                "original_price": 2199.00,
+                "offer_url": "https://www.efe.com.pe/xiaomi-redmi-note-13-pro-plus-5g-512gb",
+            },
+            {
+                "store_id": "curacao",
+                "store_name": "La Curacao",
+                "price": 1669.00,
+                "original_price": 2199.00,
+                "offer_url": "https://www.lacuracao.pe/xiaomi-redmi-note-13-pro-plus-5g-512gb",
+            },
+            {
+                "store_id": "ripley",
+                "store_name": "Ripley",
+                "price": 1699.00,
+                "original_price": 2099.00,
+                "offer_url": "https://simple.ripley.com.pe/xiaomi-redmi-note-13-pro-plus-5g-512gb-2004318721293p",
+            },
+            {
+                "store_id": "falabella",
+                "store_name": "Falabella CMR",
+                "price": 1729.00,
+                "original_price": 2199.00,
+                "offer_url": "https://www.falabella.com.pe/falabella-pe/product/19512019/Xiaomi-Redmi-Note-13-Pro-Plus-512GB/19512019",
+            },
+            {
+                "store_id": "metro",
+                "store_name": "Metro",
+                "price": 1799.00,
+                "original_price": 2199.00,
+                "offer_url": "https://www.metro.pe/xiaomi-redmi-note-13-pro-plus-512gb/p",
+            },
+        ],
+        "price_history_30_days": [
+            {"day_offset": -30, "date_label": "22 Sep", "price": 1899.00},
+            {"day_offset": -27, "date_label": "25 Sep", "price": 1849.00},
+            {"day_offset": -24, "date_label": "28 Sep", "price": 1799.00},
+            {"day_offset": -21, "date_label": "01 Oct", "price": 1799.00},
+            {"day_offset": -18, "date_label": "04 Oct", "price": 1749.00},
+            {"day_offset": -15, "date_label": "07 Oct", "price": 1720.00},
+            {"day_offset": -12, "date_label": "10 Oct", "price": 1699.00},
+            {"day_offset": -9, "date_label": "13 Oct", "price": 1680.00},
+            {"day_offset": -6, "date_label": "16 Oct", "price": 1660.00},
+            {"day_offset": -3, "date_label": "19 Oct", "price": 1650.00},
+            {"day_offset": 0, "date_label": "Hoy", "price": 1649.00},
+        ],
+    },
+    # --------------------------------------------------------------------------
+    # 4. MACBOOK AIR M3 15 PULGADAS 512GB
+    # --------------------------------------------------------------------------
+    {
+        "id": "prod_4",
+        "title": "Apple MacBook Air 15 Pulgadas M3 16GB RAM 512GB SSD Midnight",
+        "category": "Laptops",
+        "brand": "Apple",
+        "original_price": 6799.00,
+        "image_url": "https://store.storeimages.cdn-apple.com/4982/as-images.apple.com/is/macbook-air-15-midnight-select-202402?wid=452&hei=420&fmt=jpeg&qlt=95",
+        "description": "Increíblemente delgada y rápida con el chip Apple M3 de última generación, pantalla Liquid Retina inmersiva de 15.3 pulgadas y hasta 18 horas de autonomía para profesionales exigentes.",
+        "features": [
+            "Chip M3 de Apple con CPU de 8 núcleos y GPU de 10 núcleos con trazado de rayos",
+            "Pantalla Liquid Retina de 15.3 pulgadas con 500 nits de brillo y color P3",
+            "Diseño de aluminio reciclado 100% sin ventilador y completamente silencioso",
+            "Sistema de sonido de 6 parlantes con audio espacial y Force Cancelling",
+            "Cámara FaceTime HD 1080p con micrófonos de calidad de estudio",
+        ],
+        "tech_specs": {
+            "Procesador": "Apple M3 (8-core CPU, 10-core GPU)",
+            "Memoria RAM": "16GB",
+            "Almacenamiento": "512GB SSD",
+            "Pantalla": "15.3 Pulgadas Liquid Retina",
+            "Resolución": "2880 x 1864 píxeles",
+            "Batería": "Hasta 18 horas de reproducción",
+        },
+        "store_prices": [
+            {
+                "store_id": "hiraoka",
+                "store_name": "Hiraoka",
+                "price": 5799.00,
+                "original_price": 6799.00,
+                "offer_url": "https://hiraoka.com.pe/macbook-air-15-m3-16gb-512gb-medianoche",
+            },
+            {
+                "store_id": "falabella",
+                "store_name": "Falabella CMR",
+                "price": 5899.00,
+                "original_price": 6799.00,
+                "offer_url": "https://www.falabella.com.pe/falabella-pe/product/19611200/MacBook-Air-15-M3-16GB-512GB/19611200",
+            },
+            {
+                "store_id": "ripley",
+                "store_name": "Ripley",
+                "price": 5949.00,
+                "original_price": 6699.00,
+                "offer_url": "https://simple.ripley.com.pe/macbook-air-15-m3-16gb-512gb-2004319081293p",
+            },
+        ],
+        "price_history_30_days": [
+            {"day_offset": -30, "date_label": "22 Sep", "price": 6299.00},
+            {"day_offset": -27, "date_label": "25 Sep", "price": 6199.00},
+            {"day_offset": -24, "date_label": "28 Sep", "price": 6150.00},
+            {"day_offset": -21, "date_label": "01 Oct", "price": 6099.00},
+            {"day_offset": -18, "date_label": "04 Oct", "price": 5999.00},
+            {"day_offset": -15, "date_label": "07 Oct", "price": 5950.00},
+            {"day_offset": -12, "date_label": "10 Oct", "price": 5899.00},
+            {"day_offset": -9, "date_label": "13 Oct", "price": 5850.00},
+            {"day_offset": -6, "date_label": "16 Oct", "price": 5820.00},
+            {"day_offset": -3, "date_label": "19 Oct", "price": 5800.00},
+            {"day_offset": 0, "date_label": "Hoy", "price": 5799.00},
+        ],
+    },
+    # --------------------------------------------------------------------------
+    # 5. ASUS ROG ZEPHYRUS G16 (2024)
+    # --------------------------------------------------------------------------
+    {
+        "id": "prod_5",
+        "title": "Asus ROG Zephyrus G16 GU605MI OLED 32GB RAM 1TB SSD Eclipse Gray",
+        "category": "Laptops",
+        "brand": "Asus",
+        "original_price": 9499.00,
+        "image_url": "https://dlcdnwebimgs.asus.com/gain/49EF2885-C11E-4137-97B5-2884A48BE879/w800",
+        "description": "Laptop gamer y de creación ultradelgada con pantalla OLED ROG Nebula 2.5K a 240Hz, procesador Intel Core Ultra 9 con NPU para IA y gráficos dedicados NVIDIA RTX 4070.",
+        "features": [
+            "Procesador Intel Core Ultra 9 con aceleración neuronal integrada por IA",
+            "Tarjeta de video NVIDIA GeForce RTX 4070 8GB GDDR6 (TGP 105W con Dynamic Boost)",
+            "Pantalla ROG Nebula OLED 2.5K (2560x1600) 240Hz 0.2ms con G-SYNC y VESA HDR 500",
+            "Chasis de aluminio mecanizado CNC premium de apenas 1.49 cm de grosor",
+            "Refrigeración avanzada con metal líquido y ventiladores Arc Flow de 2ª generación",
+        ],
+        "tech_specs": {
+            "Procesador": "Intel Core Ultra 9 185H",
+            "Memoria RAM": "32GB LPDDR5X",
+            "Almacenamiento": "1TB SSD NVMe PCIe 4.0",
+            "Pantalla": "16 Pulgadas OLED 2.5K 240Hz 0.2ms",
+            "Resolución": "2560 x 1600 píxeles",
+            "Tarjeta Gráfica": "NVIDIA GeForce RTX 4070 8GB",
+        },
+        "store_prices": [
+            {
+                "store_id": "falabella",
+                "store_name": "Falabella CMR",
+                "price": 7999.00,
+                "original_price": 9499.00,
+                "offer_url": "https://www.falabella.com.pe/falabella-pe/product/19721094/Asus-ROG-Zephyrus-G16-RTX4070/19721094",
+            },
+            {
+                "store_id": "ripley",
+                "store_name": "Ripley",
+                "price": 8199.00,
+                "original_price": 9299.00,
+                "offer_url": "https://simple.ripley.com.pe/asus-rog-zephyrus-g16-gu605-2004319401293p",
+            },
+            {
+                "store_id": "hiraoka",
+                "store_name": "Hiraoka",
+                "price": 8299.00,
+                "original_price": 9499.00,
+                "offer_url": "https://hiraoka.com.pe/laptop-asus-rog-zephyrus-g16-oled-rtx4070",
+            },
+        ],
+        "price_history_30_days": [
+            {"day_offset": -30, "date_label": "22 Sep", "price": 8799.00},
+            {"day_offset": -27, "date_label": "25 Sep", "price": 8650.00},
+            {"day_offset": -24, "date_label": "28 Sep", "price": 8500.00},
+            {"day_offset": -21, "date_label": "01 Oct", "price": 8450.00},
+            {"day_offset": -18, "date_label": "04 Oct", "price": 8399.00},
+            {"day_offset": -15, "date_label": "07 Oct", "price": 8299.00},
+            {"day_offset": -12, "date_label": "10 Oct", "price": 8199.00},
+            {"day_offset": -9, "date_label": "13 Oct", "price": 8150.00},
+            {"day_offset": -6, "date_label": "16 Oct", "price": 8099.00},
+            {"day_offset": -3, "date_label": "19 Oct", "price": 8050.00},
+            {"day_offset": 0, "date_label": "Hoy", "price": 7999.00},
+        ],
+    },
+    # --------------------------------------------------------------------------
+    # 6. APPLE IPAD AIR M2 11 PULGADAS 128GB
+    # --------------------------------------------------------------------------
+    {
+        "id": "prod_6",
+        "title": "Apple iPad Air 11 Pulgadas M2 Wi-Fi 128GB Azul",
+        "category": "Tablets",
+        "brand": "Apple",
+        "original_price": 3199.00,
+        "image_url": "https://store.storeimages.cdn-apple.com/4982/as-images.apple.com/is/ipad-air-storage-select-202405-11inch-blue?wid=470&hei=556&fmt=png-alpha",
+        "description": "Potenciado con la velocidad descomunal del procesador Apple M2, pantalla Liquid Retina antirreflejo, compatibilidad con Apple Pencil Pro y Magic Keyboard.",
+        "features": [
+            "Chip M2 con CPU de 8 núcleos y GPU de 10 núcleos para dibujo e ilustración profesional",
+            "Pantalla Liquid Retina de 11 pulgadas con gama cromática amplia P3 y True Tone",
+            "Cámara frontal ultra gran angular de 12 MP en horizontal con Encuadre Centrado",
+            "Conectividad Wi-Fi 6E ultrarrápida y puerto USB-C versátil",
+            "Compatible con Apple Pencil Pro y Magic Keyboard",
+        ],
+        "tech_specs": {
+            "Procesador": "Apple M2 (8-core CPU, 10-core GPU)",
+            "Memoria RAM": "8GB",
+            "Almacenamiento": "128GB",
+            "Pantalla": "11 Pulgadas Liquid Retina IPS",
+            "Resolución": "2360 x 1640 píxeles",
+            "Conectividad": "Wi-Fi 6E (802.11ax), Bluetooth 5.3",
+        },
+        "store_prices": [
+            {
+                "store_id": "falabella",
+                "store_name": "Falabella CMR",
+                "price": 2699.00,
+                "original_price": 3199.00,
+                "offer_url": "https://www.falabella.com.pe/falabella-pe/product/19712019/Apple-iPad-Air-11-M2-128GB/19712019",
+            },
+            {
+                "store_id": "ripley",
+                "store_name": "Ripley",
+                "price": 2749.00,
+                "original_price": 3099.00,
+                "offer_url": "https://simple.ripley.com.pe/apple-ipad-air-11-m2-128gb-azul-2004319111293p",
+            },
+            {
+                "store_id": "hiraoka",
+                "store_name": "Hiraoka",
+                "price": 2799.00,
+                "original_price": 3199.00,
+                "offer_url": "https://hiraoka.com.pe/ipad-air-11-m2-128gb-azul",
+            },
+            {
+                "store_id": "wong",
+                "store_name": "Wong",
+                "price": 2899.00,
+                "original_price": 3199.00,
+                "offer_url": "https://www.wong.pe/ipad-air-11-m2-128gb/p",
+            },
+        ],
+        "price_history_30_days": [
+            {"day_offset": -30, "date_label": "22 Sep", "price": 2999.00},
+            {"day_offset": -27, "date_label": "25 Sep", "price": 2949.00},
+            {"day_offset": -24, "date_label": "28 Sep", "price": 2899.00},
+            {"day_offset": -21, "date_label": "01 Oct", "price": 2850.00},
+            {"day_offset": -18, "date_label": "04 Oct", "price": 2799.00},
+            {"day_offset": -15, "date_label": "07 Oct", "price": 2780.00},
+            {"day_offset": -12, "date_label": "10 Oct", "price": 2750.00},
+            {"day_offset": -9, "date_label": "13 Oct", "price": 2720.00},
+            {"day_offset": -6, "date_label": "16 Oct", "price": 2710.00},
+            {"day_offset": -3, "date_label": "19 Oct", "price": 2700.00},
+            {"day_offset": 0, "date_label": "Hoy", "price": 2699.00},
+        ],
+    },
+    # --------------------------------------------------------------------------
+    # 7. SAMSUNG GALAXY TAB S9 FE 128GB
+    # --------------------------------------------------------------------------
+    {
+        "id": "prod_7",
+        "title": "Samsung Galaxy Tab S9 FE 10.9 Pulgadas 128GB Gray con S-Pen",
+        "category": "Tablets",
+        "brand": "Samsung",
+        "original_price": 1999.00,
+        "image_url": "https://images.samsung.com/is/image/samsung/p6pim/pe/sm-x510nzaapeo/gallery/pe-galaxy-tab-s9-fe-sm-x510-sm-x510nzaapeo-thumb-538661608",
+        "description": "Tablet todoterreno con certificación de resistencia al agua y polvo IP68 tanto para el cuerpo como para el lápiz S-Pen incluido, pantalla fluida de 90Hz y sonido Dolby Atmos.",
+        "features": [
+            "Resistencia al agua y al polvo con certificación IP68 real",
+            "Lápiz táctil S-Pen de baja latencia incluido en la caja sin costo adicional",
+            "Pantalla de 10.9 pulgadas de 90Hz con tecnología Vision Booster para exteriores",
+            "Batería de larga duración de 8000 mAh con carga rápida de 45W",
+            "Modo Samsung DeX para experiencia de computadora de escritorio",
+        ],
+        "tech_specs": {
+            "Procesador": "Samsung Exynos 1380 Octa-Core",
+            "Memoria RAM": "6GB",
+            "Almacenamiento": "128GB (Expandible hasta 1TB con MicroSD)",
+            "Pantalla": "10.9 Pulgadas WQXGA 90Hz",
+            "Resolución": "2304 x 1440 píxeles",
+            "Accesorios": "S-Pen IP68 incluido",
+        },
+        "store_prices": [
+            {
+                "store_id": "efe",
+                "store_name": "Tiendas Efe",
+                "price": 1399.00,
+                "original_price": 1999.00,
+                "offer_url": "https://www.efe.com.pe/samsung-galaxy-tab-s9-fe-128gb",
+            },
+            {
+                "store_id": "curacao",
+                "store_name": "La Curacao",
+                "price": 1419.00,
+                "original_price": 1999.00,
+                "offer_url": "https://www.lacuracao.pe/samsung-galaxy-tab-s9-fe-128gb",
+            },
+            {
+                "store_id": "hiraoka",
+                "store_name": "Hiraoka",
+                "price": 1449.00,
+                "original_price": 1899.00,
+                "offer_url": "https://hiraoka.com.pe/tablet-samsung-galaxy-tab-s9-fe-128gb",
+            },
+            {
+                "store_id": "ripley",
+                "store_name": "Ripley",
+                "price": 1479.00,
+                "original_price": 1999.00,
+                "offer_url": "https://simple.ripley.com.pe/samsung-galaxy-tab-s9-fe-128gb-2004317181293p",
+            },
+            {
+                "store_id": "falabella",
+                "store_name": "Falabella CMR",
+                "price": 1499.00,
+                "original_price": 1999.00,
+                "offer_url": "https://www.falabella.com.pe/falabella-pe/product/19421099/Samsung-Tab-S9-FE-128GB/19421099",
+            },
+            {
+                "store_id": "tottus",
+                "store_name": "Tottus",
+                "price": 1549.00,
+                "original_price": 1999.00,
+                "offer_url": "https://www.tottus.com.pe/samsung-galaxy-tab-s9-fe/p",
+            },
+        ],
+        "price_history_30_days": [
+            {"day_offset": -30, "date_label": "22 Sep", "price": 1699.00},
+            {"day_offset": -27, "date_label": "25 Sep", "price": 1649.00},
+            {"day_offset": -24, "date_label": "28 Sep", "price": 1599.00},
+            {"day_offset": -21, "date_label": "01 Oct", "price": 1550.00},
+            {"day_offset": -18, "date_label": "04 Oct", "price": 1499.00},
+            {"day_offset": -15, "date_label": "07 Oct", "price": 1470.00},
+            {"day_offset": -12, "date_label": "10 Oct", "price": 1449.00},
+            {"day_offset": -9, "date_label": "13 Oct", "price": 1420.00},
+            {"day_offset": -6, "date_label": "16 Oct", "price": 1410.00},
+            {"day_offset": -3, "date_label": "19 Oct", "price": 1400.00},
+            {"day_offset": 0, "date_label": "Hoy", "price": 1399.00},
+        ],
+    },
+    # --------------------------------------------------------------------------
+    # 8. LG OLED EVO C3 55 PULGADAS 4K UHD
+    # --------------------------------------------------------------------------
+    {
+        "id": "prod_8",
+        "title": "LG OLED evo C3 55 Pulgadas 4K UHD Smart TV OLED55C3PSA (2024)",
+        "category": "TVs",
+        "brand": "LG",
+        "original_price": 5499.00,
+        "image_url": "https://www.lg.com/pe/images/tvs/md07567794/gallery/medium01.jpg",
+        "description": "Televisor OLED autoiluminado con procesador α9 AI 4K Gen6, negros absolutos, contraste infinito, soporte Dolby Vision/Atmos y 4 puertos HDMI 2.1 a 120Hz para gaming.",
+        "features": [
+            "Píxeles autoemisivos OLED con contraste infinito y negros perfectos 100%",
+            "Procesador inteligente α9 AI 4K Gen6 con Dynamic Tone Mapping Pro",
+            "4 puertos HDMI 2.1 con VRR, NVIDIA G-SYNC, AMD FreeSync Premium y 120Hz",
+            "Experiencia cinematográfica con Dolby Vision IQ y audio Dolby Atmos inmersivo",
+            "Sistema webOS 23 con control Magic Remote y compatibilidad con Apple AirPlay 2",
+        ],
+        "tech_specs": {
+            "Procesador": "α9 AI Processor 4K Gen6",
+            "Resolución": "4K UHD (3840 x 2160)",
+            "Pantalla": "OLED evo 55 Pulgadas",
+            "Tasa de refresco": "120Hz Nativo (VRR compatible)",
+            "Audio": "40W (2.2 canales) Dolby Atmos",
+            "Puertos": "4 x HDMI 2.1, 3 x USB, Salida Óptica, Ethernet",
+        },
+        "store_prices": [
+            {
+                "store_id": "hiraoka",
+                "store_name": "Hiraoka",
+                "price": 3799.00,
+                "original_price": 5499.00,
+                "offer_url": "https://hiraoka.com.pe/televisor-lg-oled-55-c3-4k-uhd-smart-tv",
+            },
+            {
+                "store_id": "falabella",
+                "store_name": "Falabella CMR",
+                "price": 3899.00,
+                "original_price": 5499.00,
+                "offer_url": "https://www.falabella.com.pe/falabella-pe/product/19318900/LG-OLED-evo-C3-55-4K/19318900",
+            },
+            {
+                "store_id": "ripley",
+                "store_name": "Ripley",
+                "price": 3949.00,
+                "original_price": 5299.00,
+                "offer_url": "https://simple.ripley.com.pe/televisor-lg-oled-55-oled55c3psa-4k-2004313201293p",
+            },
+            {
+                "store_id": "efe",
+                "store_name": "Tiendas Efe",
+                "price": 3999.00,
+                "original_price": 5499.00,
+                "offer_url": "https://www.efe.com.pe/televisor-lg-oled-55-c3-4k",
+            },
+            {
+                "store_id": "curacao",
+                "store_name": "La Curacao",
+                "price": 4049.00,
+                "original_price": 5499.00,
+                "offer_url": "https://www.lacuracao.pe/televisor-lg-oled-55-c3-4k",
+            },
+            {
+                "store_id": "metro",
+                "store_name": "Metro",
+                "price": 4199.00,
+                "original_price": 5499.00,
+                "offer_url": "https://www.metro.pe/tv-lg-oled-55-c3/p",
+            },
+        ],
+        "price_history_30_days": [
+            {"day_offset": -30, "date_label": "22 Sep", "price": 4399.00},
+            {"day_offset": -27, "date_label": "25 Sep", "price": 4299.00},
+            {"day_offset": -24, "date_label": "28 Sep", "price": 4199.00},
+            {"day_offset": -21, "date_label": "01 Oct", "price": 4150.00},
+            {"day_offset": -18, "date_label": "04 Oct", "price": 4099.00},
+            {"day_offset": -15, "date_label": "07 Oct", "price": 3999.00},
+            {"day_offset": -12, "date_label": "10 Oct", "price": 3949.00},
+            {"day_offset": -9, "date_label": "13 Oct", "price": 3899.00},
+            {"day_offset": -6, "date_label": "16 Oct", "price": 3850.00},
+            {"day_offset": -3, "date_label": "19 Oct", "price": 3820.00},
+            {"day_offset": 0, "date_label": "Hoy", "price": 3799.00},
+        ],
+    },
+]
+
+# ==============================================================================
+# OFERTAS FÍSICAS COMUNITARIAS SEMILLA
+# ==============================================================================
+
+SEED_COMMUNITY_OFFERS: List[Dict[str, Any]] = [
+    {
+        "id": "comm_off_001",
+        "product_id": "prod_1",
+        "product_name": "Samsung Galaxy S24 Ultra 256GB Titanium Gray",
+        "physical_store_name": "Falabella Mall Aventura Chiclayo",
+        "department": "Lambayeque",
+        "province": "Chiclayo",
+        "district": "Chiclayo",
+        "price_found": 4299.00,
+        "photo_uri": "https://images.unsplash.com/photo-1610945415295-d9bbf067e59c?w=600",
+        "comment": "Precio exclusivo pagando con tarjeta CMR en tienda física, unidad de exhibición impecable.",
+        "timestamp_millis": 1729598400000,
+        "formatted_date": "21 Oct 2026, 16:20",
+        "author_name": "Carlos M. (Chiclayo)",
+    },
+    {
+        "id": "comm_off_002",
+        "product_id": "prod_3",
+        "product_name": "Xiaomi Redmi Note 13 Pro+ 5G 512GB Midnight Black",
+        "physical_store_name": "Tiendas Efe Pedro Ruiz",
+        "department": "Lambayeque",
+        "province": "Chiclayo",
+        "district": "Chiclayo",
+        "price_found": 1599.00,
+        "photo_uri": "https://images.unsplash.com/photo-1598327105666-5b89351aff97?w=600",
+        "comment": "Visto en liquidación de vitrina con boleta y garantía de 12 meses.",
+        "timestamp_millis": 1729605600000,
+        "formatted_date": "21 Oct 2026, 18:00",
+        "author_name": "Renzo V.",
+    },
+    {
+        "id": "comm_off_003",
+        "product_id": "prod_8",
+        "product_name": "LG OLED evo C3 55 Pulgadas 4K UHD Smart TV OLED55C3PSA (2024)",
+        "physical_store_name": "Hiraoka Miraflores",
+        "department": "Lima",
+        "province": "Lima",
+        "district": "Miraflores",
+        "price_found": 3699.00,
+        "photo_uri": "https://images.unsplash.com/photo-1593784991095-a205069470b6?w=600",
+        "comment": "Descuento directo en caja con cualquier medio de pago durante el fin de semana.",
+        "timestamp_millis": 1729584000000,
+        "formatted_date": "20 Oct 2026, 12:15",
+        "author_name": "Lucía P. (Lima)",
+    },
+    {
+        "id": "comm_off_004",
+        "product_id": "prod_7",
+        "product_name": "Samsung Galaxy Tab S9 FE 10.9 Pulgadas 128GB Gray con S-Pen",
+        "physical_store_name": "Ripley Mall Plaza Arequipa",
+        "department": "Arequipa",
+        "province": "Arequipa",
+        "district": "Cayma",
+        "price_found": 1349.00,
+        "photo_uri": "https://images.unsplash.com/photo-1544244015-0df4b3ffc6b0?w=600",
+        "comment": "Oferta relámpago con Tarjeta Ripley en zona de tecnología.",
+        "timestamp_millis": 1729512000000,
+        "formatted_date": "19 Oct 2026, 15:30",
+        "author_name": "Gonzalo T. (Arequipa)",
+    },
+]
