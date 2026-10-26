@@ -10,6 +10,7 @@ from urllib.parse import urljoin
 from bs4 import BeautifulSoup, Tag
 
 from app.core.logging import get_logger
+from app.collectors.spec_extractor import extract_product_specs
 from app.collectors.validators import validate_product_identity
 
 logger = get_logger("parsers.hiraoka")
@@ -148,6 +149,7 @@ def parse_hiraoka(
         unwanted.decompose()
 
     h1_title = _extract_main_h1_title(soup)
+    extracted_meta = extract_product_specs(html, title=h1_title, store_id="hiraoka")
 
     # 1. Estrategia JSON-LD del Producto Principal
     for s in soup.find_all("script", type="application/ld+json"):
@@ -198,12 +200,19 @@ def parse_hiraoka(
                     ):
                         return None
 
+                    if not h1_title and effective_title:
+                        extracted_meta = extract_product_specs(
+                            html, title=effective_title, store_id="hiraoka"
+                        )
                     return {
                         "title": effective_title,
                         "price": best,
                         "original_price": orig if orig and orig > best else best,
                         "image_url": official_img if isinstance(official_img, str) else None,
                         "offer_url": offer_url,
+                        "brand": extracted_meta["brand"],
+                        "tech_specs": extracted_meta["tech_specs"],
+                        "features": extracted_meta["features"],
                     }
         except Exception as e:
             logger.debug(f"Error parseando JSON-LD en Hiraoka: {e}")
@@ -249,6 +258,9 @@ def parse_hiraoka(
                     "original_price": orig if orig and orig > p else p,
                     "image_url": og_img.get("content") if og_img else None,
                     "offer_url": offer_url,
+                    "brand": extracted_meta["brand"],
+                    "tech_specs": extracted_meta["tech_specs"],
+                    "features": extracted_meta["features"],
                 }
 
     # 3. Estrategia Meta tags Open Graph de la ficha de producto

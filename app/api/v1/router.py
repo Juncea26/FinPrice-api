@@ -9,6 +9,7 @@ from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.v1.community import router as community_router
+from app.api.v1.filters import router as filters_router
 from app.api.v1.products import router as products_router
 from app.api.v1.stores import router as stores_router
 from app.api.v1.sync import router as sync_router
@@ -22,6 +23,7 @@ api_v1_router = APIRouter(prefix="/api/v1")
 
 # Subrouters
 api_v1_router.include_router(products_router)
+api_v1_router.include_router(filters_router)
 api_v1_router.include_router(stores_router)
 api_v1_router.include_router(community_router)
 api_v1_router.include_router(sync_router)

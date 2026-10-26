@@ -31,6 +31,13 @@ from app.collectors.parsers.conectaretail import parse_conectaretail
 from app.collectors.parsers.falabella import parse_falabella
 from app.collectors.parsers.hiraoka import parse_hiraoka
 from app.collectors.parsers.ripley import parse_ripley
+from app.collectors.spec_extractor import (
+    CANONICAL_SPEC_MAP,
+    extract_product_specs,
+    extract_specs_from_title_fallback,
+    generate_product_features,
+    merge_product_specs,
+)
 from app.collectors.validators import (
     ScrapedOffer,
     select_best_canonical_image,
@@ -680,14 +687,145 @@ def test_hardware_filters_and_sorting(client: TestClient):
     res_ram = client.get("/api/v1/products?ram=12GB")
     assert res_ram.status_code == 200
     for p in res_ram.json():
-        ram_spec = p["techSpecs"].get("Memoria RAM", "").lower()
-        title_ram = p["title"].lower()
+        ram_spec = p["techSpecs"].get("Memoria RAM", "").lower().replace(" ", "")
+        title_ram = p["title"].lower().replace(" ", "")
         assert "12gb" in ram_spec or "12gb" in title_ram
 
     res_sort = client.get("/api/v1/products?sort_order=LOW_TO_HIGH")
     assert res_sort.status_code == 200
     sorted_prices = [p["bestPrice"] for p in res_sort.json()]
     assert sorted_prices == sorted(sorted_prices)
+
+
+def test_spec_extractor_canonical_mapping_and_stores():
+    """
+    Verifica extracción y normalización automática de specs desde:
+    1. Magento 2 (#product-attribute-specs-table)
+    2. Falabella (__NEXT_DATA__ attributes)
+    3. Ripley (window.__PRELOADED_STATE__.product.product.attributes)
+    """
+    assert "Marca" in CANONICAL_SPEC_MAP
+    assert "Procesador" in CANONICAL_SPEC_MAP
+    assert "Memoria RAM" in CANONICAL_SPEC_MAP
+    assert "Almacenamiento" in CANONICAL_SPEC_MAP
+
+    magento_html = """
+    <html><body>
+      <table id="product-attribute-specs-table">
+        <tr><th>Marca</th><td>XIAOMI</td></tr>
+        <tr><th>Modelo del procesador</th><td>Snapdragon 7s Gen4</td></tr>
+        <tr><th>Capacidad de memoria RAM</th><td>12GB</td></tr>
+        <tr><th>Memoria interna</th><td>512GB</td></tr>
+        <tr><th>Tamaño de pantalla</th><td>6.8"</td></tr>
+        <tr><th>Tipo de pantalla</th><td>AMOLED Display</td></tr>
+        <tr><th>Resolución cámara posterior</th><td>200MP+8MP</td></tr>
+        <tr><th>Capacidad de batería</th><td>6500 mAh</td></tr>
+        <tr><th>Red móvil</th><td>5G</td></tr>
+      </table>
+    </body></html>
+    """
+    res_mag = extract_product_specs(
+        magento_html,
+        title="Xiaomi Redmi Note 15 Pro 5G 512GB 12GB RAM",
+        store_id="efe",
+    )
+    assert res_mag["brand"] == "Xiaomi"
+    specs = res_mag["tech_specs"]
+    assert specs["Marca"] == "Xiaomi"
+    assert specs["Procesador"] == "Snapdragon 7s Gen4"
+    assert specs["Memoria RAM"] == "12 GB"
+    assert specs["Almacenamiento"] == "512 GB"
+    assert specs["Pantalla"] == '6.8" AMOLED'
+    assert specs["Cámara Principal"] == "200 MP + 8 MP"
+    assert specs["Batería"] == "6500 mAh"
+    assert specs["Conectividad"] == "5G"
+    assert 4 <= len(res_mag["features"]) <= 6
+
+    ripley_html = """
+    <html><script>
+    window.__PRELOADED_STATE__ = {"product":{"product":{"brand":"SAMSUNG","attributes":[{"name":"Procesador","value":"Exynos 1580"},{"name":"Memoria RAM","value":"8GB"},{"name":"Almacenamiento","value":"256GB"}]}}};
+    </script></html>
+    """
+    res_rip = extract_product_specs(ripley_html, title="Samsung Galaxy A56", store_id="ripley")
+    assert res_rip["brand"] == "Samsung"
+    assert res_rip["tech_specs"]["Procesador"] == "Exynos 1580"
+    assert res_rip["tech_specs"]["Memoria RAM"] == "8 GB"
+    assert res_rip["tech_specs"]["Almacenamiento"] == "256 GB"
+
+
+def test_extract_specs_from_title_fallback_and_merge():
+    """
+    Verifica extract_specs_from_title_fallback en smartphones y laptops,
+    así como merge_product_specs entre múltiples tiendas.
+    """
+    s1 = extract_specs_from_title_fallback("Xiaomi Redmi Note 15 Pro 5G 512GB 12GB RAM")
+    assert s1["Marca"] == "Xiaomi"
+    assert s1["Memoria RAM"] == "12 GB"
+    assert s1["Almacenamiento"] == "512 GB"
+    assert s1["Conectividad"] == "5G"
+
+    s2 = extract_specs_from_title_fallback("Laptop Asus TUF Intel Core 5 16GB RAM 512GB SSD RTX 3050")
+    assert s2["Marca"] == "Asus"
+    assert s2["Procesador"] == "Intel Core 5"
+    assert s2["Memoria RAM"] == "16 GB"
+    assert s2["Almacenamiento"] == "512 GB"
+
+    s3 = extract_specs_from_title_fallback("Celular Honor Magic 8+256GB 5G")
+    assert s3["Marca"] == "Honor"
+    assert s3["Memoria RAM"] == "8 GB"
+    assert s3["Almacenamiento"] == "256 GB"
+    assert s3["Conectividad"] == "5G"
+
+    merged = merge_product_specs(
+        specs_list=[
+            {"Marca": "Xiaomi", "Memoria RAM": "12GB", "Pantalla": '6.8"'},
+            {"Memoria interna": "512GB", "Pantalla": '6.8" AMOLED 120Hz', "Batería": "6500 mAh"},
+        ],
+        title="Xiaomi Redmi Note 15 Pro 5G 512GB 12GB RAM",
+    )
+    assert merged["Memoria RAM"] == "12 GB"
+    assert merged["Almacenamiento"] == "512 GB"
+    assert merged["Pantalla"] == '6.8" AMOLED 120Hz'
+    assert merged["Batería"] == "6500 mAh"
+    feats = generate_product_features(None, merged, title="Xiaomi Redmi Note 15 Pro 5G")
+    assert 4 <= len(feats) <= 6
+
+
+def test_dynamic_filters_endpoint_and_dynamic_product_queries(client: TestClient):
+    """
+    Verifica que GET /api/v1/filters devuelva categories, brands_by_category y specs_by_category
+    calculados dinámicamente desde la base de datos y que GET /api/v1/products filtre con ellos.
+    """
+    res_f = client.get("/api/v1/filters")
+    assert res_f.status_code == 200
+    f_data = res_f.json()
+
+    assert "categories" in f_data
+    assert f_data["categories"][0] == "Todos"
+    assert "Smartphones" in f_data["categories"]
+
+    assert "brands_by_category" in f_data
+    assert f_data["brands_by_category"]["Todos"][0] == "Todas"
+    assert "Xiaomi" in f_data["brands_by_category"]["Smartphones"]
+
+    assert "specs_by_category" in f_data
+    smart_specs = f_data["specs_by_category"]["Smartphones"]
+    assert "Memoria RAM" in smart_specs
+    assert smart_specs["Memoria RAM"][0] == "Todas"
+    assert "12 GB" in smart_specs["Memoria RAM"]
+
+    assert "Almacenamiento" in smart_specs
+    assert smart_specs["Almacenamiento"][0] == "Todos"
+    assert "512 GB" in smart_specs["Almacenamiento"]
+
+    # Probar filtrado dinámico en GET /api/v1/products usando el formato '12 GB' y '512 GB'
+    res_p = client.get("/api/v1/products?category=Smartphones&ram=12%20GB&storage=512%20GB")
+    assert res_p.status_code == 200
+    items = res_p.json()
+    assert len(items) >= 1
+    for item in items:
+        assert item["techSpecs"]["Memoria RAM"] == "12 GB"
+        assert item["techSpecs"]["Almacenamiento"] == "512 GB"
 
 
 def test_enabled_stores_dynamic_recalc(client: TestClient):

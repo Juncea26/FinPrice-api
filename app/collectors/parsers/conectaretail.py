@@ -10,6 +10,7 @@ from urllib.parse import urljoin
 from bs4 import BeautifulSoup, Tag
 
 from app.core.logging import get_logger
+from app.collectors.spec_extractor import extract_product_specs
 from app.collectors.validators import validate_product_identity
 
 logger = get_logger("parsers.conectaretail")
@@ -147,6 +148,7 @@ def parse_conectaretail(
         unwanted.decompose()
 
     h1_title = _extract_main_h1_title(soup)
+    extracted_meta = extract_product_specs(html, title=h1_title, store_id="conectaretail")
 
     # Buscar imagen oficial en el bloque de galería principal o meta og:image de la ficha
     gallery_img = soup.select_one(
@@ -196,6 +198,9 @@ def parse_conectaretail(
                     "original_price": old_p if (old_p and old_p > current_p) else current_p,
                     "image_url": page_image,
                     "offer_url": offer_url,
+                    "brand": extracted_meta["brand"],
+                    "tech_specs": extracted_meta["tech_specs"],
+                    "features": extracted_meta["features"],
                 }
 
     # 2. Estrategia JSON-LD del Producto Principal
@@ -239,12 +244,19 @@ def parse_conectaretail(
                     ):
                         return None
 
+                    if not h1_title and effective_title:
+                        extracted_meta = extract_product_specs(
+                            html, title=effective_title, store_id="conectaretail"
+                        )
                     return {
                         "title": effective_title,
                         "price": best_p,
                         "original_price": orig_p if orig_p > best_p else best_p,
                         "image_url": ld_img if isinstance(ld_img, str) else page_image,
                         "offer_url": offer_url,
+                        "brand": extracted_meta["brand"],
+                        "tech_specs": extracted_meta["tech_specs"],
+                        "features": extracted_meta["features"],
                     }
         except Exception:
             pass
@@ -276,6 +288,9 @@ def parse_conectaretail(
                     "original_price": old_p if (old_p and old_p > p) else p,
                     "image_url": page_image,
                     "offer_url": offer_url,
+                    "brand": extracted_meta["brand"],
+                    "tech_specs": extracted_meta["tech_specs"],
+                    "features": extracted_meta["features"],
                 }
 
     return None

@@ -9,6 +9,7 @@ from typing import Any, Dict, Optional
 from bs4 import BeautifulSoup
 
 from app.core.logging import get_logger
+from app.collectors.spec_extractor import extract_product_specs
 from app.collectors.validators import validate_product_identity
 
 logger = get_logger("parsers.ripley")
@@ -100,6 +101,7 @@ def parse_ripley(
                 ):
                     return None
 
+                extracted_meta = extract_product_specs(html, title=prod_title, store_id="ripley")
                 best_p = min(extracted_prices)
                 list_p = orig_price or max(extracted_prices)
                 return {
@@ -108,6 +110,9 @@ def parse_ripley(
                     "original_price": list_p if list_p > best_p else best_p,
                     "image_url": official_img,
                     "offer_url": offer_url,
+                    "brand": extracted_meta["brand"],
+                    "tech_specs": extracted_meta["tech_specs"],
+                    "features": extracted_meta["features"],
                 }
         except Exception as e:
             logger.debug(f"Error parseando __NEXT_DATA__ en Ripley: {e}")

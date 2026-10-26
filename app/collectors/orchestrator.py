@@ -24,6 +24,11 @@ from app.collectors.parsers.conectaretail import parse_conectaretail
 from app.collectors.parsers.falabella import parse_falabella
 from app.collectors.parsers.hiraoka import parse_hiraoka
 from app.collectors.parsers.ripley import parse_ripley
+from app.collectors.spec_extractor import (
+    generate_product_features,
+    merge_product_specs,
+    normalize_brand,
+)
 from app.collectors.validators import (
     select_best_canonical_image,
     validate_cross_store_prices,
@@ -292,6 +297,24 @@ class CollectorOrchestrator:
                 prod.historical_min_price = hist_min
                 prod.is_historical_min = best_price <= hist_min
 
+                # Normalizar y enriquecer tech_specs, brand y features automáticamente
+                normalized_specs = merge_product_specs(
+                    specs_list=[tech_specs],
+                    base_specs=tech_specs,
+                    title=prod.title,
+                )
+                normalized_brand = normalized_specs.get("Marca") or normalize_brand(prod.brand, prod.title)
+                existing_feats = json.loads(prod.features_json) if prod.features_json else []
+                normalized_feats = generate_product_features(
+                    soup=None,
+                    tech_specs=normalized_specs,
+                    title=prod.title,
+                    existing_features=existing_feats,
+                )
+                prod.brand = normalized_brand
+                prod.tech_specs_json = json.dumps(normalized_specs, ensure_ascii=False)
+                prod.features_json = json.dumps(normalized_feats, ensure_ascii=False)
+
                 if needs_update:
                     recalculated_products_count += 1
 
@@ -363,6 +386,9 @@ class CollectorOrchestrator:
                         "original_price": res.get("original_price"),
                         "offer_url": res["offer_url"],
                         "image_url": res.get("image_url"),
+                        "brand": res.get("brand"),
+                        "tech_specs": res.get("tech_specs") or {},
+                        "features": res.get("features") or [],
                     })
 
             # CANDADO 3: Filtro estadístico anti-outliers de precio inter-tienda
@@ -399,6 +425,27 @@ class CollectorOrchestrator:
                 # priorizando Hiraoka, Falabella o Ripley (imágenes de catálogo de alta resolución)
                 real_image = select_best_canonical_image(verified_offers)
 
+                # Fusión Multi-Tienda de especificaciones técnicas, marca y características (features)
+                merged_specs = merge_product_specs(
+                    specs_list=[o.get("tech_specs", {}) for o in verified_offers],
+                    base_specs=tech_specs,
+                    title=canonical_title,
+                )
+                merged_brand = (
+                    merged_specs.get("Marca")
+                    or normalize_brand(item.get("brand"), canonical_title)
+                )
+                scraped_feats: List[str] = []
+                for o in verified_offers:
+                    scraped_feats.extend(o.get("features") or [])
+                scraped_feats.extend(item.get("features") or [])
+                merged_features = generate_product_features(
+                    soup=None,
+                    tech_specs=merged_specs,
+                    title=canonical_title,
+                    existing_features=scraped_feats,
+                )
+
                 prod_q = await session.execute(
                     select(ProductEntity).where(ProductEntity.id == prod_id)
                 )
@@ -409,7 +456,7 @@ class CollectorOrchestrator:
                         id=prod_id,
                         title=canonical_title,
                         category=item["category"],
-                        brand=item["brand"],
+                        brand=merged_brand,
                         best_price=best_price,
                         original_price=orig_price,
                         best_store_name=best_store,
@@ -417,18 +464,21 @@ class CollectorOrchestrator:
                         available_stores_count=available_count,
                         image_url=real_image,
                         description=item["description"],
-                        features_json=json.dumps(item["features"], ensure_ascii=False),
-                        tech_specs_json=json.dumps(item["tech_specs"], ensure_ascii=False),
+                        features_json=json.dumps(merged_features, ensure_ascii=False),
+                        tech_specs_json=json.dumps(merged_specs, ensure_ascii=False),
                         is_favorite=False,
                     )
                     session.add(prod_entity)
                 else:
                     prod_entity.title = canonical_title
+                    prod_entity.brand = merged_brand
                     prod_entity.best_price = best_price
                     prod_entity.original_price = orig_price
                     prod_entity.best_store_name = best_store
                     prod_entity.discount_percentage = discount
                     prod_entity.available_stores_count = available_count
+                    prod_entity.features_json = json.dumps(merged_features, ensure_ascii=False)
+                    prod_entity.tech_specs_json = json.dumps(merged_specs, ensure_ascii=False)
                     if real_image:
                         prod_entity.image_url = real_image
                     prod_entity.updated_at = datetime.now(timezone.utc)

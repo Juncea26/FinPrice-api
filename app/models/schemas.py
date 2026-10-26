@@ -61,6 +61,7 @@ class ProductSchema(CamelModel):
     id: str = Field(..., description="ID del producto (ej. 'prod_samsung_s25_ultra')")
     title: str = Field(..., description="Nombre oficial del producto")
     category: str = Field(..., description="Categoría (Smartphones, Laptops, Tablets, TVs)")
+    brand: str = Field(default="", description="Marca oficial normalizada (Samsung, Apple, Xiaomi, etc.)")
     best_price: float = Field(..., gt=0, description="Menor precio real encontrado en Soles (PEN)")
     original_price: float = Field(..., gt=0, description="Precio de lista o tachado real")
     best_store_name: str = Field(..., description="Tienda que ofrece el mejor precio actual")
@@ -158,3 +159,13 @@ class SyncResponse(CamelModel):
     status: str
     message: str
     triggered_at: str
+
+
+class DynamicFiltersSchema(BaseModel):
+    """Esquema de facetas dinámicas generadas desde los productos activos en base de datos."""
+
+    categories: List[str] = Field(default_factory=list)
+    brands_by_category: Dict[str, List[str]] = Field(default_factory=dict)
+    specs_by_category: Dict[str, Dict[str, List[str]]] = Field(default_factory=dict)
+    brandsByCategory: Optional[Dict[str, List[str]]] = None
+    specsByCategory: Optional[Dict[str, Dict[str, List[str]]]] = None

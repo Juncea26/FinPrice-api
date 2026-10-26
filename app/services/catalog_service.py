@@ -1,16 +1,18 @@
 """
 Servicio asíncrono de catálogo:
 - Caché en memoria TTL de alto rendimiento (< 50ms)
-- Filtrado avanzado en memoria (búsqueda, marca, hardware y resolución)
+- Generación dinámica de facetas de filtrado (GET /api/v1/filters)
+- Filtrado avanzado en memoria (búsqueda, categoría, marca, specs dinámicos y resolución)
 - Recálculo dinámico de ofertas cuando el usuario filtra por 'enabled_stores'
 - Manejo real de ofertas comunitarias en base de datos
 - Compatibilidad retroactiva con GET /products
 """
 import json
+import re
 import time
 import uuid
 from datetime import datetime, timezone
-from typing import List, Literal, Optional
+from typing import Dict, List, Literal, Optional
 
 from fastapi import HTTPException, status
 from sqlalchemy import select
@@ -21,6 +23,11 @@ from app.core.logging import get_logger
 from app.core.security import sanitize_input_text
 from app.collectors.catalog_urls import PERU_DEPARTMENTS
 from app.collectors.orchestrator import orchestrator
+from app.collectors.spec_extractor import (
+    generate_product_features,
+    merge_product_specs,
+    normalize_brand,
+)
 from app.collectors.validators import (
     validate_cross_store_prices,
     validate_product_identity,
@@ -32,6 +39,7 @@ from app.models.entities import (
 from app.models.schemas import (
     CommunityOfferCreateSchema,
     CommunityPhysicalOfferSchema,
+    DynamicFiltersSchema,
     PricePointSchema,
     ProductResponse,
     ProductSchema,
@@ -41,6 +49,43 @@ from app.models.schemas import (
 )
 
 logger = get_logger("services.catalog")
+
+FEMININE_SPEC_KEYS = {
+    "Memoria RAM",
+    "Conectividad",
+    "Pantalla",
+    "Resolución",
+    "Batería",
+    "Cámara Principal",
+}
+
+FACET_SPEC_KEYS_ORDER = (
+    "Memoria RAM",
+    "Almacenamiento",
+    "Procesador",
+    "Conectividad",
+    "Pantalla",
+    "Resolución",
+    "Cámara Principal",
+    "Batería",
+    "Sistema Operativo",
+)
+
+STANDARD_CATEGORY_ORDER = ("Smartphones", "Laptops", "Tablets", "TVs")
+
+
+def _capacity_sort_key(val: str) -> float:
+    """Ordena capacidades numéricamente (ej. '8 GB' < '12 GB' < '128 GB' < '1 TB')."""
+    m = re.search(r"(\d+(?:\.\d+)?)\s*(TB|GB|MB)?", str(val), flags=re.IGNORECASE)
+    if not m:
+        return 999999.0
+    num = float(m.group(1))
+    unit = (m.group(2) or "GB").upper()
+    if unit == "TB":
+        return num * 1024.0
+    if unit == "MB":
+        return num / 1024.0
+    return num
 
 
 class CatalogService:
@@ -62,15 +107,31 @@ class CatalogService:
         ):
             return self._cached_products
 
-        # Consultar base de datos de forma asíncrona
         stmt = select(ProductEntity)
         result = await session.execute(stmt)
         entities = result.scalars().all()
 
         schemas: List[ProductSchema] = []
         for p in entities:
-            features = json.loads(p.features_json) if p.features_json else []
-            tech_specs = json.loads(p.tech_specs_json) if p.tech_specs_json else {}
+            raw_features = json.loads(p.features_json) if p.features_json else []
+            raw_specs = json.loads(p.tech_specs_json) if p.tech_specs_json else {}
+
+            # Normalizar y asegurar specs completos y estandarizados
+            tech_specs = merge_product_specs(
+                specs_list=[raw_specs],
+                base_specs=raw_specs,
+                title=p.title,
+            )
+            brand = tech_specs.get("Marca") or normalize_brand(p.brand, p.title)
+            if brand:
+                tech_specs["Marca"] = brand
+
+            features = generate_product_features(
+                soup=None,
+                tech_specs=tech_specs,
+                title=p.title,
+                existing_features=raw_features,
+            )
 
             raw_store_prices: List[StorePriceSchema] = [
                 StorePriceSchema(
@@ -130,6 +191,7 @@ class CatalogService:
                     id=p.id,
                     title=p.title,
                     category=p.category,
+                    brand=brand,
                     best_price=eff_best_price,
                     original_price=eff_orig_price,
                     best_store_name=eff_best_store,
@@ -155,6 +217,76 @@ class CatalogService:
         self._cache_timestamp = now
         return schemas
 
+    async def get_dynamic_filters(self, session: AsyncSession) -> DynamicFiltersSchema:
+        """
+        Calcula dinámicamente las categorías, marcas por categoría y facetas de
+        especificaciones técnicas por categoría a partir de los productos activos en BD.
+        """
+        products = await self._get_base_products(session)
+
+        # 1. Categorías activas ordenadas
+        present_cats = {p.category for p in products if p.category}
+        ordered_cats = [c for c in STANDARD_CATEGORY_ORDER if c in present_cats]
+        for extra_cat in sorted(present_cats - set(ordered_cats)):
+            ordered_cats.append(extra_cat)
+
+        categories = ["Todos"] + ordered_cats
+
+        # 2. Marcas por categoría
+        all_brands = sorted(
+            {
+                (p.brand or p.tech_specs.get("Marca", "")).strip()
+                for p in products
+                if (p.brand or p.tech_specs.get("Marca", "")).strip()
+            }
+        )
+        brands_by_category: Dict[str, List[str]] = {
+            "Todos": ["Todas"] + all_brands,
+        }
+        for cat in ordered_cats:
+            cat_brands = sorted(
+                {
+                    (p.brand or p.tech_specs.get("Marca", "")).strip()
+                    for p in products
+                    if p.category == cat and (p.brand or p.tech_specs.get("Marca", "")).strip()
+                }
+            )
+            brands_by_category[cat] = ["Todas"] + cat_brands
+
+        # 3. Especificaciones técnicas por categoría
+        specs_by_category: Dict[str, Dict[str, List[str]]] = {}
+
+        for cat in ordered_cats:
+            cat_products = [p for p in products if p.category == cat]
+            cat_specs_map: Dict[str, List[str]] = {}
+
+            for spec_key in FACET_SPEC_KEYS_ORDER:
+                values_set = {
+                    p.tech_specs[spec_key].strip()
+                    for p in cat_products
+                    if spec_key in p.tech_specs and p.tech_specs[spec_key].strip()
+                }
+                if not values_set:
+                    continue
+
+                if spec_key in {"Memoria RAM", "Almacenamiento"}:
+                    sorted_vals = sorted(values_set, key=lambda v: (_capacity_sort_key(v), v))
+                else:
+                    sorted_vals = sorted(values_set)
+
+                default_prefix = "Todas" if spec_key in FEMININE_SPEC_KEYS else "Todos"
+                cat_specs_map[spec_key] = [default_prefix] + sorted_vals
+
+            specs_by_category[cat] = cat_specs_map
+
+        return DynamicFiltersSchema(
+            categories=categories,
+            brands_by_category=brands_by_category,
+            specs_by_category=specs_by_category,
+            brandsByCategory=brands_by_category,
+            specsByCategory=specs_by_category,
+        )
+
     async def get_products(
         self,
         session: AsyncSession,
@@ -165,6 +297,10 @@ class CatalogService:
         ram: Optional[str] = None,
         storage: Optional[str] = None,
         tv_resolution: Optional[str] = None,
+        connectivity: Optional[str] = None,
+        screen: Optional[str] = None,
+        os_filter: Optional[str] = None,
+        dynamic_specs: Optional[Dict[str, str]] = None,
         enabled_stores: Optional[str] = None,
         sort_order: Literal["LOW_TO_HIGH", "HIGH_TO_LOW"] = "LOW_TO_HIGH",
     ) -> List[ProductSchema]:
@@ -178,9 +314,14 @@ class CatalogService:
                 s.strip().lower() for s in enabled_stores.split(",") if s.strip()
             }
 
-        search_term = search.lower().strip() if search else None
-        category_term = category.strip() if category and category.lower() != "todos" else None
-        brand_term = brand.strip().lower() if brand and brand.lower() != "todas" else None
+        def _is_active_filter(val: Optional[str]) -> bool:
+            if not val:
+                return False
+            return val.strip().lower() not in {"", "todos", "todas", "all"}
+
+        search_term = search.lower().strip() if search and search.strip() else None
+        category_term = category.strip() if _is_active_filter(category) else None
+        brand_term = brand.strip().lower() if _is_active_filter(brand) else None
 
         for prod in products:
             if category_term and prod.category.lower() != category_term.lower():
@@ -191,33 +332,36 @@ class CatalogService:
                     search_term in prod.title.lower()
                     or search_term in prod.category.lower()
                     or search_term in prod.best_store_name.lower()
+                    or search_term in prod.brand.lower()
                 )
                 if not match_search:
                     continue
 
-            if brand_term and brand_term not in prod.title.lower():
-                continue
+            if brand_term:
+                prod_brand = (prod.brand or prod.tech_specs.get("Marca", "")).lower()
+                if brand_term not in prod.title.lower() and brand_term != prod_brand:
+                    continue
 
-            if processor:
-                p_query = processor.lower().strip()
+            if _is_active_filter(processor):
+                p_query = processor.lower().strip()  # type: ignore[union-attr]
                 p_spec = prod.tech_specs.get("Procesador", "").lower()
                 if p_query not in prod.title.lower() and p_query not in p_spec:
                     continue
 
-            if ram:
-                r_query = ram.lower().replace(" ", "")
+            if _is_active_filter(ram):
+                r_query = ram.lower().replace(" ", "")  # type: ignore[union-attr]
                 r_spec = prod.tech_specs.get("Memoria RAM", "").lower().replace(" ", "")
-                if r_query not in prod.title.lower().replace(" ", "") and r_query not in r_spec:
+                if r_query not in prod.title.lower().replace(" ", "") and r_query != r_spec and r_query not in r_spec:
                     continue
 
-            if storage:
-                s_query = storage.lower().replace(" ", "")
+            if _is_active_filter(storage):
+                s_query = storage.lower().replace(" ", "")  # type: ignore[union-attr]
                 s_spec = prod.tech_specs.get("Almacenamiento", "").lower().replace(" ", "")
-                if s_query not in prod.title.lower().replace(" ", "") and s_query not in s_spec:
+                if s_query not in prod.title.lower().replace(" ", "") and s_query != s_spec and s_query not in s_spec:
                     continue
 
-            if tv_resolution:
-                t_query = tv_resolution.lower().strip()
+            if _is_active_filter(tv_resolution):
+                t_query = tv_resolution.lower().strip()  # type: ignore[union-attr]
                 t_spec = prod.tech_specs.get("Resolución", "").lower()
                 feats = " ".join(prod.features).lower()
                 if (
@@ -225,6 +369,38 @@ class CatalogService:
                     and t_query not in t_spec
                     and t_query not in feats
                 ):
+                    continue
+
+            if _is_active_filter(connectivity):
+                c_query = connectivity.lower().strip()  # type: ignore[union-attr]
+                c_spec = prod.tech_specs.get("Conectividad", "").lower()
+                if c_query not in prod.title.lower() and c_query not in c_spec:
+                    continue
+
+            if _is_active_filter(screen):
+                sc_query = screen.lower().strip()  # type: ignore[union-attr]
+                sc_spec = prod.tech_specs.get("Pantalla", "").lower()
+                if sc_query not in prod.title.lower() and sc_query not in sc_spec:
+                    continue
+
+            if _is_active_filter(os_filter):
+                os_query = os_filter.lower().strip()  # type: ignore[union-attr]
+                os_spec = prod.tech_specs.get("Sistema Operativo", "").lower()
+                if os_query not in prod.title.lower() and os_query not in os_spec:
+                    continue
+
+            # Filtros dinámicos arbitrarios sobre tech_specs (ej. ?Memoria RAM=12 GB o ?Conectividad=5G)
+            if dynamic_specs:
+                matched_dynamic = True
+                for d_key, d_val in dynamic_specs.items():
+                    if not _is_active_filter(d_val):
+                        continue
+                    q_norm = d_val.lower().replace(" ", "")
+                    spec_val_norm = prod.tech_specs.get(d_key, "").lower().replace(" ", "")
+                    if q_norm not in spec_val_norm and q_norm not in prod.title.lower().replace(" ", ""):
+                        matched_dynamic = False
+                        break
+                if not matched_dynamic:
                     continue
 
             # Recálculo dinámico si se enviaron enabled_stores
@@ -262,6 +438,7 @@ class CatalogService:
                 id=prod.id,
                 title=prod.title,
                 category=prod.category,
+                brand=prod.brand,
                 best_price=effective_best_price,
                 original_price=effective_orig_price,
                 best_store_name=effective_best_store,
@@ -368,7 +545,6 @@ class CatalogService:
                 detail=f"Departamento inválido: '{offer_in.department}'. Debe ser un departamento oficial de Perú.",
             )
 
-        # Verificar existencia del producto
         prod_q = await session.execute(
             select(ProductEntity).where(ProductEntity.id == offer_in.product_id)
         )
@@ -428,7 +604,6 @@ class CatalogService:
             if search_lower and search_lower not in prod.title.lower():
                 continue
 
-            # Mapeo a entero
             int_id = abs(hash(prod.id)) % 10000
             offers = [
                 StoreOffer(
