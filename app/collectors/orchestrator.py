@@ -1,7 +1,9 @@
 """
-Orquestador concurrente de recolección real de precios multitienda.
-Scrapea en vivo desde falabella.com.pe, efe.com.pe, lacuracao.pe, hiraoka.com.pe y ripley.com.pe,
-normaliza precios en PEN, extrae imágenes oficiales y persiste en la base de datos asíncrona.
+Orquestador concurrente de recolección real de precios multitienda con Triple Candado de Integridad:
+1. Candado 1: Validación de identidad de producto (validate_product_identity)
+2. Candado 2: Parsers con aislamiento de DOM principal (.product-info-main)
+3. Candado 3: Filtro estadístico anti-outliers de precio (validate_cross_store_prices)
+   y protección de imagen oficial de alta resolución (select_best_canonical_image).
 """
 import asyncio
 import json
@@ -12,6 +14,7 @@ from typing import Any, Callable, Dict, List, Optional
 
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from app.core.config import settings
 from app.core.logging import get_logger
@@ -21,6 +24,11 @@ from app.collectors.parsers.conectaretail import parse_conectaretail
 from app.collectors.parsers.falabella import parse_falabella
 from app.collectors.parsers.hiraoka import parse_hiraoka
 from app.collectors.parsers.ripley import parse_ripley
+from app.collectors.validators import (
+    select_best_canonical_image,
+    validate_cross_store_prices,
+    validate_product_identity,
+)
 from app.models.entities import (
     PriceHistoryEntity,
     ProductEntity,
@@ -76,7 +84,7 @@ CIRCUIT_BREAKERS: Dict[str, StoreCircuitBreaker] = {
 }
 
 
-def get_parser_for_store(store_id: str) -> Optional[Callable[[str, str], Optional[Dict[str, Any]]]]:
+def get_parser_for_store(store_id: str) -> Optional[Callable[..., Optional[Dict[str, Any]]]]:
     if store_id == "falabella":
         return parse_falabella
     elif store_id in {"efe", "curacao"}:
@@ -109,8 +117,17 @@ class CollectorOrchestrator:
             })
         return result
 
-    async def scrape_store_url(self, store_id: str, url: str) -> Optional[Dict[str, Any]]:
-        """Descarga y parsea una URL real de tienda respetando el Circuit Breaker."""
+    async def scrape_store_url(
+        self,
+        store_id: str,
+        url: str,
+        canonical_title: Optional[str] = None,
+        tech_specs: Optional[Dict[str, Any]] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Descarga, parsea y valida una URL real de tienda respetando el Circuit Breaker
+        y el Candado 1 de Identidad de Producto.
+        """
         cb = CIRCUIT_BREAKERS.get(store_id)
         if cb and not cb.can_execute():
             logger.info(f"Omitiendo llamada a '{store_id}' (Circuit Breaker OPEN).")
@@ -127,20 +144,171 @@ class CollectorOrchestrator:
                     cb.record_failure("Respuesta vacía o error HTTP")
                 return None
 
-            data = parser(html, url)
-            if data and data.get("price") and data["price"] > 0:
-                if cb:
-                    cb.record_success()
-                return data
+            is_search = "/catalogsearch/result" in url or "?q=" in url or "&q=" in url
+            if is_search:
+                data = parser(html, url, canonical_title=canonical_title)
             else:
+                data = parser(html, url)
+
+            if not data or not data.get("price") or data["price"] <= 0:
                 if cb:
-                    cb.record_failure("No se pudo extraer precio")
+                    cb.record_failure("No se pudo extraer precio válido")
                 return None
+
+            # Registrar éxito de red/extracción en el Circuit Breaker
+            if cb:
+                cb.record_success()
+
+            # CANDADO 1: Validar identidad estricta del producto antes de aceptar la oferta
+            if canonical_title:
+                scraped_title = str(data.get("title") or "").strip()
+                scraped_url = str(data.get("offer_url") or url).strip()
+                if not validate_product_identity(
+                    canonical_title=canonical_title,
+                    scraped_title=scraped_title,
+                    scraped_url=scraped_url,
+                    store_id=store_id,
+                    tech_specs=tech_specs,
+                ):
+                    return None
+
+            return data
         except Exception as e:
             if cb:
                 cb.record_failure(e)
             logger.warning(f"Error procesando {url} ({store_id}): {e}")
             return None
+
+    async def sanitize_database_offers(
+        self,
+        session: AsyncSession,
+        on_cache_invalidate: Optional[Callable[[], None]] = None,
+    ) -> Dict[str, int]:
+        """
+        Rutina de saneamiento que se ejecuta en el arranque (lifespan) y durante sync:
+        1. Elimina de la BD cualquier store_price que falle validate_product_identity o validate_cross_store_prices.
+        2. Recalcula inmediatamente best_price, best_store_name, original_price, discount_percentage
+           y available_stores_count.
+        3. Limpia puntos contaminados en el historial de precios y protege la imagen oficial.
+        """
+        stmt = (
+            select(ProductEntity)
+            .options(
+                selectinload(ProductEntity.store_offers),
+                selectinload(ProductEntity.price_history),
+            )
+            .execution_options(populate_existing=True)
+        )
+        res = await session.execute(stmt)
+        products = res.scalars().all()
+
+        removed_offers_count = 0
+        recalculated_products_count = 0
+
+        for prod in products:
+            tech_specs = json.loads(prod.tech_specs_json) if prod.tech_specs_json else {}
+            current_offers = list(prod.store_offers)
+            if not current_offers:
+                continue
+
+            # 1. Filtrar por Candado 1: Identidad de Producto (sobre URL y título canónico)
+            identity_valid_offers: List[StoreOfferEntity] = []
+            for off in current_offers:
+                if validate_product_identity(
+                    canonical_title=prod.title,
+                    scraped_title="",
+                    scraped_url=off.offer_url,
+                    store_id=off.store_id,
+                    tech_specs=tech_specs,
+                ):
+                    identity_valid_offers.append(off)
+                else:
+                    await session.delete(off)
+                    removed_offers_count += 1
+
+            # 2. Filtrar por Candado 3: Anti-Outliers de Precio Inter-Tienda
+            clean_offers = validate_cross_store_prices(identity_valid_offers)
+            clean_ids = {id(o) for o in clean_offers}
+            for off in identity_valid_offers:
+                if id(off) not in clean_ids:
+                    await session.delete(off)
+                    removed_offers_count += 1
+
+            # 3. Recalcular métricas del producto si quedaron ofertas válidas
+            if clean_offers:
+                clean_offers.sort(key=lambda x: x.price)
+                for idx, off in enumerate(clean_offers):
+                    off.is_best_price = idx == 0
+
+                best_offer = clean_offers[0]
+                best_price = best_offer.price
+                best_store = best_offer.store_name
+                orig_price = best_offer.original_price or best_price
+                if orig_price < best_price:
+                    orig_price = best_price
+
+                discount = (
+                    round(((orig_price - best_price) / orig_price) * 100)
+                    if orig_price > best_price
+                    else 0
+                )
+
+                needs_update = (
+                    prod.best_price != best_price
+                    or prod.best_store_name != best_store
+                    or prod.original_price != orig_price
+                    or prod.discount_percentage != discount
+                    or prod.available_stores_count != len(clean_offers)
+                    or len(clean_offers) != len(current_offers)
+                )
+
+                prod.best_price = best_price
+                prod.best_store_name = best_store
+                prod.original_price = orig_price
+                prod.discount_percentage = discount
+                prod.available_stores_count = len(clean_offers)
+
+                # Si la imagen del producto pertenecía a una tienda descartada, limpiarla o actualizarla
+                valid_store_ids = {o.store_id.lower() for o in clean_offers}
+                if prod.image_url:
+                    img_lower = prod.image_url.lower()
+                    for s_id, s_info in STORES_INFO.items():
+                        domain_host = s_info["base_url"].replace("https://", "").replace("www.", "")
+                        if domain_host in img_lower and s_id not in valid_store_ids:
+                            prod.image_url = ""
+                            break
+
+                # Limpiar puntos de historial contaminados (outliers < 55% del best_price)
+                valid_history_prices: List[float] = []
+                for hp in list(prod.price_history):
+                    if hp.price < (best_price * 0.55):
+                        await session.delete(hp)
+                    else:
+                        if hp.day_offset == 0:
+                            hp.price = best_price
+                        valid_history_prices.append(hp.price)
+
+                hist_min = min(valid_history_prices) if valid_history_prices else best_price
+                prod.historical_min_price = hist_min
+                prod.is_historical_min = best_price <= hist_min
+
+                if needs_update:
+                    recalculated_products_count += 1
+
+        await session.commit()
+        if on_cache_invalidate:
+            on_cache_invalidate()
+
+        if removed_offers_count > 0 or recalculated_products_count > 0:
+            logger.info(
+                f"Saneamiento de BD completado: {removed_offers_count} ofertas intrusas/outliers eliminadas, "
+                f"{recalculated_products_count} productos recalculados."
+            )
+
+        return {
+            "removed_offers": removed_offers_count,
+            "recalculated_products": recalculated_products_count,
+        }
 
     async def sync_all_catalog_products(
         self,
@@ -148,52 +316,69 @@ class CollectorOrchestrator:
         on_cache_invalidate: Optional[Callable[[], None]] = None,
     ) -> Dict[str, Any]:
         """
-        Ejecuta la recolección en vivo de precios reales, imágenes y descuentos.
-        Persiste los datos reales en SQLite y actualiza el historial de precios.
+        Ejecuta la recolección en vivo de precios reales aplicando el Triple Candado de Integridad:
+        1. Filtra cada oferta extraída con validate_product_identity.
+        2. Filtra las ofertas del producto con validate_cross_store_prices.
+        3. Protege la imagen oficial canónica con select_best_canonical_image.
+        4. Ejecuta saneamiento integral de la base de datos.
         """
         if self._is_syncing:
             return {"status": "in_progress", "message": "Sincronización en ejecución."}
 
         self._is_syncing = True
         start_time = time.time()
-        logger.info("Iniciando recolección REAL en vivo desde tiendas retail peruanas...")
+        logger.info("Iniciando recolección REAL en vivo con Triple Candado de Integridad...")
+
+        # Primero sanear cualquier oferta inválida existente en BD
+        await self.sanitize_database_offers(session=session)
 
         total_offers_updated = 0
 
         for item in CATALOG_PRODUCTS:
             prod_id = item["id"]
+            canonical_title = item["title"]
+            tech_specs = item.get("tech_specs", {})
             store_urls: Dict[str, str] = item.get("store_urls", {})
-            verified_offers: List[Dict[str, Any]] = []
+            identity_verified_offers: List[Dict[str, Any]] = []
 
             # Scrapear concurrentemente las tiendas reales de este producto
             scrape_tasks = [
-                self.scrape_store_url(store_id, url)
+                self.scrape_store_url(
+                    store_id=store_id,
+                    url=url,
+                    canonical_title=canonical_title,
+                    tech_specs=tech_specs,
+                )
                 for store_id, url in store_urls.items()
             ]
             results = await asyncio.gather(*scrape_tasks, return_exceptions=True)
 
             for store_id, res in zip(store_urls.keys(), results):
                 if isinstance(res, dict) and res.get("price"):
-                    verified_offers.append({
+                    identity_verified_offers.append({
                         "store_id": store_id,
                         "store_name": STORES_INFO[store_id]["name"],
+                        "title": res.get("title", ""),
                         "price": res["price"],
                         "original_price": res.get("original_price"),
                         "offer_url": res["offer_url"],
                         "image_url": res.get("image_url"),
                     })
 
-            # Si no hubo respuesta en vivo (ej. falla de red temporal), buscar si ya existían ofertas previas en BD
+            # CANDADO 3: Filtro estadístico anti-outliers de precio inter-tienda
+            verified_offers = validate_cross_store_prices(identity_verified_offers)
+
+            # Si no hubo respuesta en vivo (ej. falla de red temporal), buscar si ya existían ofertas previas válidas en BD
             if not verified_offers:
                 existing_q = await session.execute(
                     select(ProductEntity).where(ProductEntity.id == prod_id)
                 )
                 existing_prod = existing_q.scalar_one_or_none()
                 if existing_prod and existing_prod.store_offers:
-                    logger.info(f"Conservando instantánea previa para '{prod_id}' ante error temporal de scraping.")
+                    logger.info(f"Conservando instantánea previa validada para '{prod_id}' ante error temporal de scraping.")
                     continue
 
-            # Si se obtuvieron ofertas reales, actualizar base de datos
+            # Si se obtuvieron ofertas reales verificadas, actualizar base de datos
             if verified_offers:
                 verified_offers.sort(key=lambda x: x["price"])
                 best_offer = verified_offers[0]
@@ -210,10 +395,10 @@ class CollectorOrchestrator:
                 )
                 available_count = len(verified_offers)
 
-                # Seleccionar la mejor imagen oficial extraída
-                real_image = next((o["image_url"] for o in verified_offers if o.get("image_url")), "")
+                # Protección de imagen oficial: solo de tiendas que aprobaron identidad y anti-outlier,
+                # priorizando Hiraoka, Falabella o Ripley (imágenes de catálogo de alta resolución)
+                real_image = select_best_canonical_image(verified_offers)
 
-                # Consultar si el producto ya existe en la base de datos
                 prod_q = await session.execute(
                     select(ProductEntity).where(ProductEntity.id == prod_id)
                 )
@@ -222,7 +407,7 @@ class CollectorOrchestrator:
                 if not prod_entity:
                     prod_entity = ProductEntity(
                         id=prod_id,
-                        title=item["title"],
+                        title=canonical_title,
                         category=item["category"],
                         brand=item["brand"],
                         best_price=best_price,
@@ -238,6 +423,7 @@ class CollectorOrchestrator:
                     )
                     session.add(prod_entity)
                 else:
+                    prod_entity.title = canonical_title
                     prod_entity.best_price = best_price
                     prod_entity.original_price = orig_price
                     prod_entity.best_store_name = best_store
@@ -286,9 +472,12 @@ class CollectorOrchestrator:
                     )
                     session.add(new_hist)
 
-                # Recalcular mínimo histórico real desde los snapshots guardados en BD
+                # Recalcular mínimo histórico real desde los snapshots válidos guardados en BD
                 all_hist_q = await session.execute(
-                    select(PriceHistoryEntity.price).where(PriceHistoryEntity.product_id == prod_id)
+                    select(PriceHistoryEntity.price).where(
+                        PriceHistoryEntity.product_id == prod_id,
+                        PriceHistoryEntity.price >= (best_price * 0.55),
+                    )
                 )
                 all_prices = all_hist_q.scalars().all()
                 hist_min = min(all_prices) if all_prices else best_price
@@ -305,7 +494,7 @@ class CollectorOrchestrator:
         self._is_syncing = False
 
         logger.info(
-            f"Sincronización en vivo finalizada en {total_duration:.2f}s. Ofertas reales actualizadas: {total_offers_updated}"
+            f"Sincronización en vivo finalizada en {total_duration:.2f}s. Ofertas reales verificadas: {total_offers_updated}"
         )
 
         return {

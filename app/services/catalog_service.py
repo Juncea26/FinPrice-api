@@ -21,6 +21,10 @@ from app.core.logging import get_logger
 from app.core.security import sanitize_input_text
 from app.collectors.catalog_urls import PERU_DEPARTMENTS
 from app.collectors.orchestrator import orchestrator
+from app.collectors.validators import (
+    validate_cross_store_prices,
+    validate_product_identity,
+)
 from app.models.entities import (
     CommunityOfferEntity,
     ProductEntity,
@@ -68,7 +72,7 @@ class CatalogService:
             features = json.loads(p.features_json) if p.features_json else []
             tech_specs = json.loads(p.tech_specs_json) if p.tech_specs_json else {}
 
-            store_prices: List[StorePriceSchema] = [
+            raw_store_prices: List[StorePriceSchema] = [
                 StorePriceSchema(
                     store_id=sp.store_id,
                     store_name=sp.store_name,
@@ -78,8 +82,37 @@ class CatalogService:
                     is_best_price=sp.is_best_price,
                 )
                 for sp in p.store_offers
+                if validate_product_identity(
+                    canonical_title=p.title,
+                    scraped_title="",
+                    scraped_url=sp.offer_url,
+                    store_id=sp.store_id,
+                    tech_specs=tech_specs,
+                )
             ]
+            store_prices = validate_cross_store_prices(raw_store_prices)
             store_prices.sort(key=lambda x: x.price)
+            for idx, sp_item in enumerate(store_prices):
+                sp_item.is_best_price = idx == 0
+
+            if store_prices:
+                eff_best_price = store_prices[0].price
+                eff_best_store = store_prices[0].store_name
+                eff_orig_price = store_prices[0].original_price or eff_best_price
+                if eff_orig_price < eff_best_price:
+                    eff_orig_price = eff_best_price
+                eff_discount = (
+                    round(((eff_orig_price - eff_best_price) / eff_orig_price) * 100)
+                    if eff_orig_price > eff_best_price
+                    else 0
+                )
+                eff_count = len(store_prices)
+            else:
+                eff_best_price = p.best_price
+                eff_best_store = p.best_store_name
+                eff_orig_price = p.original_price
+                eff_discount = p.discount_percentage
+                eff_count = p.available_stores_count
 
             price_history: List[PricePointSchema] = [
                 PricePointSchema(
@@ -88,6 +121,7 @@ class CatalogService:
                     price=hp.price,
                 )
                 for hp in p.price_history
+                if hp.price >= (eff_best_price * 0.55)
             ]
             price_history.sort(key=lambda x: x.day_offset)
 
@@ -96,17 +130,21 @@ class CatalogService:
                     id=p.id,
                     title=p.title,
                     category=p.category,
-                    best_price=p.best_price,
-                    original_price=p.original_price,
-                    best_store_name=p.best_store_name,
-                    discount_percentage=p.discount_percentage,
-                    available_stores_count=p.available_stores_count,
+                    best_price=eff_best_price,
+                    original_price=eff_orig_price,
+                    best_store_name=eff_best_store,
+                    discount_percentage=eff_discount,
+                    available_stores_count=eff_count,
                     image_url=p.image_url,
                     description=p.description,
                     features=features,
                     is_favorite=p.is_favorite,
                     store_prices=store_prices,
-                    historical_min_price=p.historical_min_price,
+                    historical_min_price=(
+                        min(hp.price for hp in price_history)
+                        if price_history
+                        else eff_best_price
+                    ),
                     tech_specs=tech_specs,
                     is_historical_min=p.is_historical_min,
                     price_history_30_days=price_history,

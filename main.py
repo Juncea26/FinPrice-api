@@ -64,7 +64,7 @@ async def lifespan(app: FastAPI):
     # 1. Crear tablas asíncronas
     await init_db()
 
-    # 2. Verificar si hay productos en BD o recolectar en vivo
+    # 2. Verificar si hay productos en BD o recolectar en vivo, aplicando saneamiento de integridad
     async with AsyncSessionLocal() as session:
         count_q = await session.execute(select(func.count(ProductEntity.id)))
         count = count_q.scalar() or 0
@@ -75,7 +75,11 @@ async def lifespan(app: FastAPI):
                 on_cache_invalidate=catalog_service.invalidate_cache,
             )
         else:
-            logger.info(f"Base de datos operativa con {count} productos reales previamente persistidos.")
+            logger.info(f"Base de datos operativa con {count} productos. Ejecutando saneamiento de integridad (Triple Candado)...")
+            await orchestrator.sanitize_database_offers(
+                session=session,
+                on_cache_invalidate=catalog_service.invalidate_cache,
+            )
 
     # 3. Iniciar bucle de scraping en segundo plano
     _background_task = asyncio.create_task(periodic_scraping_loop())

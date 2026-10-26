@@ -1,6 +1,7 @@
 """
 Extractor real para Ripley Perú (simple.ripley.com.pe).
-Extrae precios desde __NEXT_DATA__ (detailProps.data.product.parentpricestock) y JSON-LD.
+Extrae título real y precios desde __NEXT_DATA__ (detailProps.data.product.parentpricestock) y JSON-LD,
+aislando el nodo del producto principal e ignorando carruseles de recomendados.
 """
 import json
 import re
@@ -8,6 +9,7 @@ from typing import Any, Dict, Optional
 from bs4 import BeautifulSoup
 
 from app.core.logging import get_logger
+from app.collectors.validators import validate_product_identity
 
 logger = get_logger("parsers.ripley")
 
@@ -35,11 +37,23 @@ def clean_number(val: Any) -> Optional[float]:
         return None
 
 
-def parse_ripley(html: str, offer_url: str) -> Optional[Dict[str, Any]]:
+def parse_ripley(
+    html: str, offer_url: str, canonical_title: Optional[str] = None
+) -> Optional[Dict[str, Any]]:
     """
-    Extrae precio con Tarjeta Ripley o precio internet, precio lista e imagen oficial de Ripley.
+    Extrae título real, precio con Tarjeta Ripley o internet, precio lista e imagen oficial de Ripley.
     """
+    if not html:
+        return None
+
     soup = BeautifulSoup(html, "lxml")
+
+    # Eliminar carruseles de recomendados / relacionados en el DOM
+    for carousel in soup.select(".carousel, .related-products, .product-carousel, aside, footer"):
+        carousel.decompose()
+
+    h1_el = soup.select_one("section.product-header h1, .product-info h1, h1")
+    h1_title = h1_el.get_text(strip=True) if h1_el else ""
 
     # 1. Estrategia __NEXT_DATA__
     next_script = soup.find("script", id="__NEXT_DATA__")
@@ -51,6 +65,7 @@ def parse_ripley(html: str, offer_url: str) -> Optional[Dict[str, Any]]:
                 props.get("detailProps", {}).get("data", {}).get("product", {})
                 or props.get("product", {})
             )
+            prod_title = str(prod.get("name") or h1_title).strip()
             price_stock = prod.get("parentpricestock", {})
             price_dict = price_stock.get("price", {}) if isinstance(price_stock, dict) else {}
 
@@ -72,7 +87,6 @@ def parse_ripley(html: str, offer_url: str) -> Optional[Dict[str, Any]]:
             if master_p:
                 orig_price = master_p
 
-            # Imagen oficial
             official_img = None
             images = prod.get("images", [])
             if images and isinstance(images, list):
@@ -81,9 +95,15 @@ def parse_ripley(html: str, offer_url: str) -> Optional[Dict[str, Any]]:
                 official_img = prod.get("primaryImage")
 
             if extracted_prices:
+                if canonical_title and not validate_product_identity(
+                    canonical_title, prod_title, offer_url, store_id="ripley"
+                ):
+                    return None
+
                 best_p = min(extracted_prices)
                 list_p = orig_price or max(extracted_prices)
                 return {
+                    "title": prod_title,
                     "price": best_p,
                     "original_price": list_p if list_p > best_p else best_p,
                     "image_url": official_img,
@@ -98,7 +118,8 @@ def parse_ripley(html: str, offer_url: str) -> Optional[Dict[str, Any]]:
             continue
         try:
             j = json.loads(s.string)
-            if j.get("@type") == "Product":
+            if isinstance(j, dict) and j.get("@type") == "Product":
+                ld_title = str(j.get("name") or h1_title).strip()
                 offers = j.get("offers", [])
                 offers_list = offers if isinstance(offers, list) else [offers]
                 prices = []
@@ -108,8 +129,14 @@ def parse_ripley(html: str, offer_url: str) -> Optional[Dict[str, Any]]:
                         if p:
                             prices.append(p)
                 if prices:
+                    if canonical_title and not validate_product_identity(
+                        canonical_title, ld_title, offer_url, store_id="ripley"
+                    ):
+                        return None
+
                     og_img = soup.find("meta", property="og:image")
                     return {
+                        "title": ld_title,
                         "price": min(prices),
                         "original_price": max(prices),
                         "image_url": og_img.get("content") if og_img else None,
@@ -118,15 +145,25 @@ def parse_ripley(html: str, offer_url: str) -> Optional[Dict[str, Any]]:
         except Exception:
             pass
 
-    # 3. Selectores CSS
-    price_elem = soup.select_one(".catalog-prices__card-price, .catalog-prices__offer-price, .product-price")
+    # 3. Selectores CSS aislados al contenedor de producto
+    main_scope = soup.select_one(".product-info, .product-header, #product-page") or soup
+    price_elem = main_scope.select_one(
+        ".catalog-prices__card-price, .catalog-prices__offer-price, .product-price"
+    )
     if price_elem:
         p = clean_number(price_elem.get_text())
         if p:
-            list_elem = soup.select_one(".catalog-prices__list-price")
+            list_elem = main_scope.select_one(".catalog-prices__list-price")
             orig = clean_number(list_elem.get_text()) if list_elem else p
             og_img = soup.find("meta", property="og:image")
+
+            if canonical_title and not validate_product_identity(
+                canonical_title, h1_title, offer_url, store_id="ripley"
+            ):
+                return None
+
             return {
+                "title": h1_title,
                 "price": p,
                 "original_price": orig if orig and orig > p else p,
                 "image_url": og_img.get("content") if og_img else None,
