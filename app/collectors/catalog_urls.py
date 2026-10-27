@@ -67,6 +67,15 @@ CATALOG_PRODUCTS: List[Dict[str, Any]] = [
         "title": "Samsung Galaxy S25 Ultra 512GB 12GB RAM Titanio",
         "category": "Smartphones",
         "brand": "Samsung",
+        "fingerprint": {
+            "brand": "samsung",
+            "family_tokens": ["galaxy", "s25", "ultra"],
+            "screen_inches": None,
+            "storage_gb": 512,
+            "ram_gb": 12,
+            "network": None,
+            "forbidden_tokens": ["s24", "s23", "s26", "fe", "plus"],
+        },
         "description": "El estandarte de Samsung con Galaxy AI integrada, procesador Snapdragon 8 Elite for Galaxy, chasis de titanio de grado aeroespacial con S-Pen y cámara cuádruple de 200MP.",
         "features": [
             "Galaxy AI con traducción en tiempo real y Circle to Search",
@@ -96,6 +105,15 @@ CATALOG_PRODUCTS: List[Dict[str, Any]] = [
         "title": "Apple iPhone 16 128GB Negro",
         "category": "Smartphones",
         "brand": "Apple",
+        "fingerprint": {
+            "brand": "apple",
+            "family_tokens": ["iphone", "16"],
+            "screen_inches": None,
+            "storage_gb": 128,
+            "ram_gb": None,
+            "network": None,
+            "forbidden_tokens": ["pro", "max", "plus", "16e", "15", "14", "13"],
+        },
         "description": "Diseñado con Apple Intelligence, el revolucionario botón de Control de Cámara, chip A18 de segunda generación y cámara Fusion de 48 MP.",
         "features": [
             "Chip A18 ultrarrápido optimizado para Apple Intelligence",
@@ -126,6 +144,15 @@ CATALOG_PRODUCTS: List[Dict[str, Any]] = [
         "title": "Apple MacBook Air 13.6 Pulgadas M5 16GB RAM 512GB SSD Silver",
         "category": "Laptops",
         "brand": "Apple",
+        "fingerprint": {
+            "brand": "apple",
+            "family_tokens": ["macbook", "air", "m5"],
+            "screen_inches": 13,
+            "storage_gb": 512,
+            "ram_gb": 16,
+            "network": None,
+            "forbidden_tokens": ["pro", "m1", "m2", "m3", "m4"],
+        },
         "description": "Portátil ultradelgada y silenciosa con pantalla Liquid Retina de 13.6 pulgadas, chip M5, 16GB de memoria unificada, almacenamiento SSD de 512GB y autonomía de hasta 18 horas.",
         "features": [
             "Chip Apple M5 con CPU de alto rendimiento y GPU avanzada",
@@ -149,16 +176,25 @@ CATALOG_PRODUCTS: List[Dict[str, Any]] = [
         },
     },
     # --------------------------------------------------------------------------
-    # 4. LG OLED EVO AI C6 4K SMART TV
+    # 4. LG 55" OLED EVO AI C6 4K SMART TV 2026
     # --------------------------------------------------------------------------
     {
         "id": "prod_lg_oled_tv",
-        "title": "LG OLED evo AI C6 4K UHD Smart TV con Dolby Atmos",
+        "title": "LG 55\" OLED evo AI C6 4K Smart TV 2026",
         "category": "TVs",
         "brand": "LG",
-        "description": "Televisor inteligente con píxeles OLED autoemisivos, procesador inteligente α9 AI 4K con mapeo dinámico de tonos, soporte Dolby Vision/Atmos y puertos HDMI 2.1 para gaming a 120Hz.",
+        "fingerprint": {
+            "brand": "lg",
+            "family_tokens": ["oled", "c6"],
+            "screen_inches": 55,
+            "storage_gb": None,
+            "ram_gb": None,
+            "network": None,
+            "forbidden_tokens": ["b6", "b5", "b4", "c5", "c4", "g6", "g5", "g4", "qned", "nanocell"],
+        },
+        "description": "Televisor inteligente de 55 pulgadas con píxeles OLED evo autoemisivos, procesador inteligente α9 AI 4K con mapeo dinámico de tonos, soporte Dolby Vision/Atmos y puertos HDMI 2.1 para gaming a 120Hz.",
         "features": [
-            "Píxeles autoiluminados OLED evo con negros absolutos y contraste infinito",
+            "Píxeles autoiluminados OLED evo de 55\" con negros absolutos y contraste infinito",
             "Procesador inteligente α9 AI 4K con escalado y sonido optimizado por IA",
             "4 puertos HDMI 2.1 con VRR, G-SYNC, AMD FreeSync y tasa de refresco de 120Hz",
             "Audio cinematográfico Dolby Atmos y formato Dolby Vision",
@@ -173,6 +209,8 @@ CATALOG_PRODUCTS: List[Dict[str, Any]] = [
             "Puertos": "4 x HDMI 2.1, 3 x USB, Salida Óptica, LAN",
         },
         "store_urls": {
+            "falabella": "https://www.falabella.com.pe/falabella-pe/product/80046493/55-lg-oled-evo-ai-c6-4k-smart-tv-2026/80046493",
+            "ripley": "https://simple.ripley.com.pe/televisor-smart-tv-lg-55-oled-evo-ai-c6-4k-2026-2018371874913p",
             "hiraoka": "https://hiraoka.com.pe/televisor-lg-55-oled-evo-ai-c6-4k-smart-tv-2026",
             "efe": "https://www.efe.com.pe/55-lg-oled-evo-ai-c6-4k-smart-tv-2026-oled55c6psaotb.html",
             "curacao": "https://www.lacuracao.pe/55-lg-oled-evo-ai-c6-4k-smart-tv-2026-oled55c6psaotb.html",
@@ -186,6 +224,15 @@ CATALOG_PRODUCTS: List[Dict[str, Any]] = [
         "title": "Apple iPad 11 Pulgadas A16 Wi-Fi 128GB Azul",
         "category": "Tablets",
         "brand": "Apple",
+        "fingerprint": {
+            "brand": "apple",
+            "family_tokens": ["ipad", "a16"],
+            "screen_inches": 11,
+            "storage_gb": 128,
+            "ram_gb": None,
+            "network": None,
+            "forbidden_tokens": ["pro", "air", "mini", "m2", "m3", "m4"],
+        },
         "description": "Tablet potente y versátil con pantalla Liquid Retina de 11 pulgadas, procesador Apple Bionic A16, cámara frontal horizontal de 12MP y compatibilidad con Apple Pencil.",
         "features": [
             "Pantalla Liquid Retina de 11 pulgadas con tecnología True Tone",
@@ -215,6 +262,15 @@ CATALOG_PRODUCTS: List[Dict[str, Any]] = [
         "title": "Xiaomi Redmi Note 15 Pro 5G 512GB 12GB RAM Café Moca",
         "category": "Smartphones",
         "brand": "Xiaomi",
+        "fingerprint": {
+            "brand": "xiaomi",
+            "family_tokens": ["redmi", "note", "15", "pro"],
+            "screen_inches": None,
+            "storage_gb": 512,
+            "ram_gb": 12,
+            "network": "5g",
+            "forbidden_tokens": ["a7", "a3", "14c", "13c", "note 14", "note 13", "4g"],
+        },
         "description": "Smartphone con pantalla AMOLED curva de 120Hz a resolución 1.5K, cámara de 200MP con OIS, resistencia al agua y polvo IP68 y carga hiperrápida.",
         "features": [
             "Cámara principal de 200MP con sensor avanzado y estabilización óptica OIS",

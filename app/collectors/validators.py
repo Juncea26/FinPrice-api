@@ -159,6 +159,11 @@ def normalize_url_slug(url: str) -> str:
     norm = re.sub(r"\b(note)(\d+)(pro)?\b", r"\1 \2 \3", norm)
     norm = re.sub(r"\b(\d+)(pro)\b", r"\1 \2", norm)
     norm = re.sub(r"\b(\d+gb|\d+tb)(ram|ssd)?\b", r"\1 \2", norm)
+    norm = re.sub(
+        r"\b(oled|qned|nanocell)(\d{2})([bcgmrwz]\d)([a-z0-9]*)\b",
+        r"\1 \2 \3 \4",
+        norm,
+    )
     norm = re.sub(r"\s+", " ", norm).strip()
     return norm
 

@@ -11,6 +11,7 @@ from bs4 import BeautifulSoup, Tag
 
 from app.core.logging import get_logger
 from app.collectors.spec_extractor import extract_product_specs
+from app.collectors.url_utils import canonicalize_store_url
 from app.collectors.validators import validate_product_identity
 
 logger = get_logger("parsers.conectaretail")
@@ -134,10 +135,12 @@ def parse_conectaretail(
     if not html:
         return None
 
-    soup = BeautifulSoup(html, "lxml")
-
-    # Detectar si es una página de resultados de búsqueda
     is_search_url = "/catalogsearch/result" in offer_url or "?q=" in offer_url or "&q=" in offer_url
+    if not is_search_url:
+        _, clean_offer_url = canonicalize_store_url(offer_url)
+        offer_url = clean_offer_url or offer_url
+
+    soup = BeautifulSoup(html, "lxml")
     main_info_box: Optional[Tag] = soup.select_one(".product-info-main")
 
     if is_search_url or (not main_info_box and soup.select(".product-item-info, li.product-item")):

@@ -19,16 +19,25 @@ from sqlalchemy.orm import selectinload
 from app.core.config import settings
 from app.core.logging import get_logger
 from app.collectors.catalog_urls import CATALOG_PRODUCTS, STORES_INFO
+from app.collectors.fingerprint_matcher import (
+    ProductFingerprint,
+    build_fingerprint_from_catalog_item,
+    discover_product_across_8_stores,
+    matches_fingerprint,
+)
 from app.collectors.http_client import fetch_page
 from app.collectors.parsers.conectaretail import parse_conectaretail
 from app.collectors.parsers.falabella import parse_falabella
 from app.collectors.parsers.hiraoka import parse_hiraoka
 from app.collectors.parsers.ripley import parse_ripley
+from app.collectors.parsers.tottus import parse_tottus
+from app.collectors.parsers.vtex_cencosud import parse_vtex_cencosud
 from app.collectors.spec_extractor import (
     generate_product_features,
     merge_product_specs,
     normalize_brand,
 )
+from app.collectors.url_utils import canonicalize_store_url
 from app.collectors.validators import (
     select_best_canonical_image,
     validate_cross_store_prices,
@@ -92,12 +101,16 @@ CIRCUIT_BREAKERS: Dict[str, StoreCircuitBreaker] = {
 def get_parser_for_store(store_id: str) -> Optional[Callable[..., Optional[Dict[str, Any]]]]:
     if store_id == "falabella":
         return parse_falabella
+    elif store_id == "tottus":
+        return parse_tottus
     elif store_id in {"efe", "curacao"}:
         return parse_conectaretail
     elif store_id == "ripley":
         return parse_ripley
     elif store_id == "hiraoka":
         return parse_hiraoka
+    elif store_id in {"metro", "wong"}:
+        return parse_vtex_cencosud
     return None
 
 
@@ -128,10 +141,12 @@ class CollectorOrchestrator:
         url: str,
         canonical_title: Optional[str] = None,
         tech_specs: Optional[Dict[str, Any]] = None,
+        fingerprint: Optional[ProductFingerprint] = None,
     ) -> Optional[Dict[str, Any]]:
         """
-        Descarga, parsea y valida una URL real de tienda respetando el Circuit Breaker
-        y el Candado 1 de Identidad de Producto.
+        Descarga, parsea y valida una URL real de tienda respetando el Circuit Breaker,
+        la canonicalización de URLs de las 8 tiendas, el Candado 1 de Identidad de Producto
+        y la Huella Técnica (ProductFingerprint).
         """
         cb = CIRCUIT_BREAKERS.get(store_id)
         if cb and not cb.can_execute():
@@ -142,18 +157,26 @@ class CollectorOrchestrator:
         if not parser:
             return None
 
+        is_search = any(
+            m in url
+            for m in ("/catalogsearch/result", "/api/catalog_system/", "?q=", "&q=", "?ft=", "?s=")
+        )
+        target_url = url
+        if not is_search:
+            _, clean_u = canonicalize_store_url(url)
+            target_url = clean_u or url
+
         try:
-            html = await fetch_page(url)
+            html = await fetch_page(target_url)
             if not html:
                 if cb:
                     cb.record_failure("Respuesta vacía o error HTTP")
                 return None
 
-            is_search = "/catalogsearch/result" in url or "?q=" in url or "&q=" in url
             if is_search:
-                data = parser(html, url, canonical_title=canonical_title)
+                data = parser(html, target_url, canonical_title=canonical_title)
             else:
-                data = parser(html, url)
+                data = parser(html, target_url)
 
             if not data or not data.get("price") or data["price"] <= 0:
                 if cb:
@@ -164,16 +187,29 @@ class CollectorOrchestrator:
             if cb:
                 cb.record_success()
 
+            raw_offer_url = str(data.get("offer_url") or target_url).strip()
+            _, clean_offer_url = canonicalize_store_url(raw_offer_url)
+            data["offer_url"] = clean_offer_url or raw_offer_url
+            scraped_title = str(data.get("title") or "").strip()
+
             # CANDADO 1: Validar identidad estricta del producto antes de aceptar la oferta
             if canonical_title:
-                scraped_title = str(data.get("title") or "").strip()
-                scraped_url = str(data.get("offer_url") or url).strip()
                 if not validate_product_identity(
                     canonical_title=canonical_title,
                     scraped_title=scraped_title,
-                    scraped_url=scraped_url,
+                    scraped_url=data["offer_url"],
                     store_id=store_id,
-                    tech_specs=tech_specs,
+                    tech_specs=data.get("tech_specs") or tech_specs,
+                ):
+                    return None
+
+            # Verificación adicional por Huella Técnica (ProductFingerprint) si está disponible
+            if fingerprint is not None:
+                if not matches_fingerprint(
+                    fingerprint=fingerprint,
+                    candidate_title=scraped_title,
+                    candidate_specs=data.get("tech_specs") or tech_specs,
+                    candidate_url=data["offer_url"],
                 ):
                     return None
 
@@ -181,7 +217,7 @@ class CollectorOrchestrator:
         except Exception as e:
             if cb:
                 cb.record_failure(e)
-            logger.warning(f"Error procesando {url} ({store_id}): {e}")
+            logger.warning(f"Error procesando {target_url} ({store_id}): {e}")
             return None
 
     async def sanitize_database_offers(
@@ -210,22 +246,44 @@ class CollectorOrchestrator:
         removed_offers_count = 0
         recalculated_products_count = 0
 
+        catalog_map = {item["id"]: item for item in CATALOG_PRODUCTS}
+
         for prod in products:
+            cat_item = catalog_map.get(prod.id)
+            if cat_item and prod.title != cat_item["title"]:
+                prod.title = cat_item["title"]
+
+            fingerprint = build_fingerprint_from_catalog_item(cat_item) if cat_item else None
             tech_specs = json.loads(prod.tech_specs_json) if prod.tech_specs_json else {}
             current_offers = list(prod.store_offers)
             if not current_offers:
                 continue
 
-            # 1. Filtrar por Candado 1: Identidad de Producto (sobre URL y título canónico)
+            # 1. Filtrar por Candado 1: Identidad de Producto + Huella Técnica + Canonicalización de URL
             identity_valid_offers: List[StoreOfferEntity] = []
             for off in current_offers:
-                if validate_product_identity(
+                _, clean_u = canonicalize_store_url(off.offer_url)
+                if clean_u and clean_u != off.offer_url:
+                    off.offer_url = clean_u
+
+                is_valid_id = validate_product_identity(
                     canonical_title=prod.title,
                     scraped_title="",
                     scraped_url=off.offer_url,
                     store_id=off.store_id,
                     tech_specs=tech_specs,
-                ):
+                )
+                is_valid_fp = (
+                    matches_fingerprint(
+                        fingerprint=fingerprint,
+                        candidate_title="",
+                        candidate_specs=tech_specs,
+                        candidate_url=off.offer_url,
+                    )
+                    if fingerprint is not None
+                    else True
+                )
+                if is_valid_id and is_valid_fp:
                     identity_valid_offers.append(off)
                 else:
                     await session.delete(off)
@@ -362,34 +420,18 @@ class CollectorOrchestrator:
             canonical_title = item["title"]
             tech_specs = item.get("tech_specs", {})
             store_urls: Dict[str, str] = item.get("store_urls", {})
-            identity_verified_offers: List[Dict[str, Any]] = []
+            fingerprint = build_fingerprint_from_catalog_item(item)
 
-            # Scrapear concurrentemente las tiendas reales de este producto
-            scrape_tasks = [
-                self.scrape_store_url(
-                    store_id=store_id,
-                    url=url,
-                    canonical_title=canonical_title,
-                    tech_specs=tech_specs,
-                )
-                for store_id, url in store_urls.items()
-            ]
-            results = await asyncio.gather(*scrape_tasks, return_exceptions=True)
-
-            for store_id, res in zip(store_urls.keys(), results):
-                if isinstance(res, dict) and res.get("price"):
-                    identity_verified_offers.append({
-                        "store_id": store_id,
-                        "store_name": STORES_INFO[store_id]["name"],
-                        "title": res.get("title", ""),
-                        "price": res["price"],
-                        "original_price": res.get("original_price"),
-                        "offer_url": res["offer_url"],
-                        "image_url": res.get("image_url"),
-                        "brand": res.get("brand"),
-                        "tech_specs": res.get("tech_specs") or {},
-                        "features": res.get("features") or [],
-                    })
+            # Descubrir y verificar ofertas concurrentemente con ProductFingerprint y canonicalize_store_url
+            identity_verified_offers = await discover_product_across_8_stores(
+                fingerprint=fingerprint,
+                direct_store_urls=store_urls,
+                canonical_title=canonical_title,
+                tech_specs=tech_specs,
+                scrape_fn=self.scrape_store_url,
+                stores_to_check=list(store_urls.keys()),
+                enable_live_search_discovery=False,
+            )
 
             # CANDADO 3: Filtro estadístico anti-outliers de precio inter-tienda
             verified_offers = validate_cross_store_prices(identity_verified_offers)

@@ -10,6 +10,7 @@ from bs4 import BeautifulSoup
 
 from app.core.logging import get_logger
 from app.collectors.spec_extractor import extract_product_specs
+from app.collectors.url_utils import canonicalize_store_url
 from app.collectors.validators import validate_product_identity
 
 logger = get_logger("parsers.ripley")
@@ -46,6 +47,9 @@ def parse_ripley(
     """
     if not html:
         return None
+
+    _, clean_offer_url = canonicalize_store_url(offer_url)
+    offer_url = clean_offer_url or offer_url
 
     soup = BeautifulSoup(html, "lxml")
 

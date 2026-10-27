@@ -26,11 +26,20 @@ from unittest.mock import AsyncMock, patch
 from app.core.config import settings
 from app.core.database import AsyncSessionLocal, init_db
 from app.collectors.catalog_urls import CATALOG_PRODUCTS, STORES_INFO
-from app.collectors.orchestrator import orchestrator
+from app.collectors.fingerprint_matcher import (
+    ProductFingerprint,
+    build_compact_search_query,
+    build_fingerprint_from_catalog_item,
+    discover_product_across_8_stores,
+    matches_fingerprint,
+)
+from app.collectors.orchestrator import get_parser_for_store, orchestrator
 from app.collectors.parsers.conectaretail import parse_conectaretail
 from app.collectors.parsers.falabella import parse_falabella
 from app.collectors.parsers.hiraoka import parse_hiraoka
 from app.collectors.parsers.ripley import parse_ripley
+from app.collectors.parsers.tottus import parse_tottus
+from app.collectors.parsers.vtex_cencosud import parse_vtex_cencosud
 from app.collectors.spec_extractor import (
     CANONICAL_SPEC_MAP,
     extract_product_specs,
@@ -38,6 +47,7 @@ from app.collectors.spec_extractor import (
     generate_product_features,
     merge_product_specs,
 )
+from app.collectors.url_utils import canonicalize_store_url
 from app.collectors.validators import (
     ScrapedOffer,
     select_best_canonical_image,
@@ -74,51 +84,44 @@ def client():
     """Cliente de pruebas con lifespan activo (inicializa tablas y orquestador)."""
     def mock_fetch(url, *args, **kwargs):
         matched_title = _title_for_url(url)
+        is_lg_oled = "oled" in url.lower() and "c6" in url.lower()
         if "falabella" in url:
+            f_price = "3,599.00" if is_lg_oled else "3,499.00"
             return """
             <html><script id="__NEXT_DATA__" type="application/json">
-            {"props":{"pageProps":{"productData":{"name":"__TITLE__","variants":[{"prices":[{"type":"cmrPrice","price":["3,499.00"],"crossed":false},{"type":"normalPrice","price":["5,499.00"],"crossed":true}],"medias":[{"url":"https://media.falabella.com/falabellaPE/prod1/image.jpg"}]}]}}}}
+            {"props":{"pageProps":{"productData":{"name":"__TITLE__","variants":[{"prices":[{"type":"cmrPrice","price":["__PRICE__"],"crossed":false},{"type":"normalPrice","price":["4,999.00"],"crossed":true}],"medias":[{"url":"https://media.falabella.com/falabellaPE/prod1/image.jpg"}]}]}}}}
             </script></html>
-            """.replace("__TITLE__", matched_title)
+            """.replace("__TITLE__", matched_title).replace("__PRICE__", f_price)
         elif "efe" in url or "curacao" in url:
+            e_price = "5139.00" if is_lg_oled else "1899.00"
             return """
             <html><head><meta property="og:image" content="https://www.efe.com.pe/media/catalog/product/prod1.jpg" /></head>
             <body>
               <div class="product-info-main">
                 <h1 class="page-title"><span data-ui-id="page-title-wrapper">__TITLE__</span></h1>
-                <span class="price-wrapper" data-price-type="finalPrice" data-price-amount="1899.00"><span class="price">S/ 1,899.00</span></span>
+                <span class="price-wrapper" data-price-type="finalPrice" data-price-amount="__PRICE__"><span class="price">S/ __PRICE__</span></span>
               </div>
             </body></html>
-            """.replace("__TITLE__", matched_title)
+            """.replace("__TITLE__", matched_title).replace("__PRICE__", e_price)
         elif "hiraoka" in url:
+            h_price = "3899.00" if is_lg_oled else "1829.00"
             return """
             <html><body>
               <div class="product-info-main">
                 <h1 class="page-title"><span data-ui-id="page-title-wrapper">__TITLE__</span></h1>
               </div>
               <script type="application/ld+json">
-              {"@type":"Product","name":"__TITLE__","image":"https://hiraoka.com.pe/pub/media/catalog/product/img.jpg","offers":[{"@type":"Offer","price":"1829.00","priceSpecification":{"priceType":"https://schema.org/SalePrice","price":"1829.00"}}]}
+              {"@type":"Product","name":"__TITLE__","image":"https://hiraoka.com.pe/pub/media/catalog/product/img.jpg","offers":[{"@type":"Offer","price":"__PRICE__","priceSpecification":{"priceType":"https://schema.org/SalePrice","price":"__PRICE__"}}]}
               </script>
             </body></html>
-            """.replace("__TITLE__", matched_title)
+            """.replace("__TITLE__", matched_title).replace("__PRICE__", h_price)
         elif "ripley" in url:
+            r_price = "3599" if is_lg_oled else "3399"
             return """
             <html><script id="__NEXT_DATA__" type="application/json">
-            {"props":{"pageProps":{"detailProps":{"data":{"product":{"name":"__TITLE__","images":["https://rimage.ripley.com.pe/img.jpg"],"parentpricestock":{"price":{"ripley":{"valueNumber":3399},"master":{"valueNumber":5399}}}}}}}}}
+            {"props":{"pageProps":{"detailProps":{"data":{"product":{"name":"__TITLE__","images":["https://rimage.ripley.com.pe/img.jpg"],"parentpricestock":{"price":{"ripley":{"valueNumber":__PRICE__},"master":{"valueNumber":4999}}}}}}}}}
             </script></html>
-            """.replace("__TITLE__", matched_title)
-        elif "hiraoka.com.pe" in url:
-            matched_title = _title_for_url(url)
-            return """
-            <html><body>
-              <div class="product-info-main">
-                <h1 class="page-title"><span data-ui-id="page-title-wrapper">__TITLE__</span></h1>
-              </div>
-              <script type="application/ld+json">
-              {"@type":"Product","name":"__TITLE__","image":"https://hiraoka.com.pe/pub/media/catalog/product/img.jpg","offers":[{"@type":"Offer","price":"3499.00","priceSpecification":{"priceType":"https://schema.org/SalePrice","price":"3499.00"}}]}
-              </script>
-            </body></html>
-            """.replace("__TITLE__", matched_title)
+            """.replace("__TITLE__", matched_title).replace("__PRICE__", r_price)
         return None
 
     with patch("app.collectors.orchestrator.fetch_page", side_effect=mock_fetch):
@@ -924,3 +927,358 @@ async def test_live_network_extraction_hiraoka():
     assert data["offer_url"] == url
     assert "hiraoka.com.pe" in data["image_url"]
     assert validate_product_identity(canonical, data["title"], url, store_id="hiraoka") is True
+
+
+# ==============================================================================
+# 6. SOPORTE DE LAS 8 TIENDAS DEL RETAIL PERUANO Y HUELLA TÉCNICA (FINGERPRINT)
+# ==============================================================================
+
+def test_canonicalize_store_url_all_8_stores_and_ad_params():
+    """
+    Verifica que canonicalize_store_url identifique cada una de las 8 tiendas
+    (falabella, tottus, ripley, metro, wong, efe, curacao, hiraoka) y limpie todos
+    los parámetros basura de publicidad (kid, gclsrc, gad_source, gad_campaignid,
+    gbraid, gsImpressionId, s, pos, catPos, p, ps, orig, searchTerm, color_80, utm_*).
+    """
+    cases = [
+        (
+            "https://www.falabella.com.pe/falabella-pe/product/80046493/55-lg-oled-evo-ai-c6-4k-smart-tv-2026/80046493?kid=bnnext288707&gad_source=1&utm_campaign=cyber",
+            "falabella",
+            "https://www.falabella.com.pe/falabella-pe/product/80046493/55-lg-oled-evo-ai-c6-4k-smart-tv-2026/80046493",
+        ),
+        (
+            "https://www.tottus.com.pe/tottus-pe/articulo/153301442/televisor-jvc-40-qled-fhd-roku-tv/153301443?utm_source=google&gclsrc=aw.ds",
+            "tottus",
+            "https://www.tottus.com.pe/tottus-pe/articulo/153301442/televisor-jvc-40-qled-fhd-roku-tv/153301443",
+        ),
+        (
+            "https://simple.ripley.com.pe/televisor-smart-tv-lg-55-oled-evo-ai-c6-4k-2026-2018371874913p?color_80=negro&s=mdco",
+            "ripley",
+            "https://simple.ripley.com.pe/televisor-smart-tv-lg-55-oled-evo-ai-c6-4k-2026-2018371874913p",
+        ),
+        (
+            "https://www.metro.pe/impresora-multifuncional-epson-l3350-wifi-1069770/p?utm_medium=cpc&gad_source=1",
+            "metro",
+            "https://www.metro.pe/impresora-multifuncional-epson-l3350-wifi-1069770/p",
+        ),
+        (
+            "https://www.wong.pe/televisor-samsung-65-uhd-u8000h-vision-ai-smart-tv-2026-1067739/p?gbraid=0AAAAADl2B2Z",
+            "wong",
+            "https://www.wong.pe/televisor-samsung-65-uhd-u8000h-vision-ai-smart-tv-2026-1067739/p",
+        ),
+        (
+            "https://www.efe.com.pe/55-lg-oled-evo-ai-c6-4k-smart-tv-2026-oled55c6psaotb.html?kid=bnnext288707&gclsrc=aw.ds&gad_source=1&gad_campaignid=20434711906&gbraid=0AAAAADl2B2Z_1t2gP5iB7-tO5c9l5jW5u",
+            "efe",
+            "https://www.efe.com.pe/55-lg-oled-evo-ai-c6-4k-smart-tv-2026-oled55c6psaotb.html",
+        ),
+        (
+            "https://www.lacuracao.pe/celular-honor-magic-8-lite-8-256gb-5g-negro-magic8lite-b.html?pos=1&catPos=1&p=1&ps=12&orig=search&searchTerm=celular",
+            "curacao",
+            "https://www.lacuracao.pe/celular-honor-magic-8-lite-8-256gb-5g-negro-magic8lite-b.html",
+        ),
+        (
+            "https://hiraoka.com.pe/televisor-lg-55-oled-evo-ai-c6-4k-smart-tv-2026?gsImpressionId=236c0f76-0d99-4d3b-a3e8-ab56d72b11db",
+            "hiraoka",
+            "https://hiraoka.com.pe/televisor-lg-55-oled-evo-ai-c6-4k-smart-tv-2026",
+        ),
+    ]
+
+    for dirty_url, expected_store, expected_clean_url in cases:
+        store_id, clean_url = canonicalize_store_url(dirty_url)
+        assert store_id == expected_store
+        assert clean_url == expected_clean_url
+        assert "?" not in clean_url
+        assert get_parser_for_store(store_id) is not None
+
+
+def test_product_fingerprint_matcher_lg_oled_55_c6_zero_false_positives_and_negatives():
+    """
+    Verifica que matches_fingerprint:
+    1. Acepte las variantes reales de redacción comercial del LG 55" OLED evo AI C6 4K Smart TV 2026
+       en Falabella, Ripley, Hiraoka, Efe y La Curacao (Cero Falsos Negativos).
+    2. Rechace tamaños distintos (42", 48", 65", 77") aunque sean OLED C6 y modelos distintos
+       como OLED B6 (OLED55B6PSA), OLED G6, C5 o QNED (Cero Falsos Positivos).
+    """
+    fp = ProductFingerprint(
+        brand="lg",
+        family_tokens=["oled", "c6"],
+        screen_inches=55,
+        forbidden_tokens=["b6", "b5", "b4", "c5", "c4", "g6", "g5", "qned", "nanocell"],
+    )
+
+    assert build_compact_search_query(fp) == "LG OLED 55 C6"
+
+    # 1. Coincidencias reales exactas en las tiendas donde sí existe
+    assert matches_fingerprint(
+        fp,
+        candidate_title='Televisor LG 55" OLED evo AI C6 4K Smart TV 2026',
+        candidate_specs={"Marca": "LG", "Pantalla": '55" OLED'},
+        candidate_url="https://www.falabella.com.pe/falabella-pe/product/80046493/55-lg-oled-evo-ai-c6-4k-smart-tv-2026/80046493",
+    ) is True
+
+    assert matches_fingerprint(
+        fp,
+        candidate_title='Televisor Smart TV LG 55" OLED evo AI C6 4K 2026',
+        candidate_specs={"Marca": "LG", "Pantalla": '55"'},
+        candidate_url="https://simple.ripley.com.pe/televisor-smart-tv-lg-55-oled-evo-ai-c6-4k-2026-2018371874913p",
+    ) is True
+
+    assert matches_fingerprint(
+        fp,
+        candidate_title='Televisor LG 55" OLED evo AI C6 4K Smart TV 2026',
+        candidate_specs={"Marca": "LG"},
+        candidate_url="https://hiraoka.com.pe/televisor-lg-55-oled-evo-ai-c6-4k-smart-tv-2026",
+    ) is True
+
+    assert matches_fingerprint(
+        fp,
+        candidate_title='55" LG OLED evo AI C6 4K Smart TV 2026 OLED55C6PSA',
+        candidate_specs={"Marca": "LG"},
+        candidate_url="https://www.efe.com.pe/55-lg-oled-evo-ai-c6-4k-smart-tv-2026-oled55c6psaotb.html",
+    ) is True
+
+    # 2. Rechazo de otros tamaños del mismo modelo C6 (42", 48", 65", 77")
+    for wrong_inches in (42, 48, 65, 77):
+        assert matches_fingerprint(
+            fp,
+            candidate_title=f'Televisor LG {wrong_inches}" OLED evo AI C6 4K Smart TV 2026',
+            candidate_specs={"Marca": "LG"},
+            candidate_url=f"https://www.falabella.com.pe/falabella-pe/product/80046490/{wrong_inches}-lg-oled-evo-ai-c6-4k-smart-tv-2026/80046490",
+        ) is False
+
+    # 3. Rechazo de otros modelos en 55" (ej. LG OLED B6 en Metro/Wong o LG OLED G6)
+    assert matches_fingerprint(
+        fp,
+        candidate_title="Televisor LG OLED 55 OLED55B6PSA 4K Smart TV",
+        candidate_specs={"Marca": "LG"},
+        candidate_url="https://www.wong.pe/televisor-lg-oled-55-oled55b6psa/p",
+    ) is False
+
+    assert matches_fingerprint(
+        fp,
+        candidate_title='Televisor LG 55" OLED evo AI G6 4K Smart TV 2026',
+        candidate_specs={"Marca": "LG"},
+        candidate_url="https://hiraoka.com.pe/televisor-lg-55-oled-evo-ai-g6-4k-smart-tv-2026",
+    ) is False
+
+
+@pytest.mark.asyncio
+async def test_discover_product_across_8_stores_includes_matches_and_omits_non_existing_stores():
+    """
+    Verifica que discover_product_across_8_stores evalúe las 8 tiendas concurrentemente:
+    - Incluye Falabella (S/ 3599), Ripley (S/ 3599), Hiraoka (S/ 3899), Efe y Curacao (S/ 5139)
+      con sus URLs canonicalizadas.
+    - Omite limpiamente Tottus, Metro y Wong cuando sus búsquedas devuelven otros televisores
+      (ej. JVC 40" QLED en Tottus, LG OLED 55 B6 en Metro y Samsung 65" U8000H en Wong).
+    """
+    fp = ProductFingerprint(
+        brand="lg",
+        family_tokens=["oled", "c6"],
+        screen_inches=55,
+        forbidden_tokens=["b6", "b5", "g6", "qned"],
+    )
+    direct_urls = {
+        "falabella": "https://www.falabella.com.pe/falabella-pe/product/80046493/55-lg-oled-evo-ai-c6-4k-smart-tv-2026/80046493?kid=bnnext288707",
+        "ripley": "https://simple.ripley.com.pe/televisor-smart-tv-lg-55-oled-evo-ai-c6-4k-2026-2018371874913p?color_80=negro&s=mdco",
+        "hiraoka": "https://hiraoka.com.pe/televisor-lg-55-oled-evo-ai-c6-4k-smart-tv-2026?gsImpressionId=236c0f76",
+        "efe": "https://www.efe.com.pe/55-lg-oled-evo-ai-c6-4k-smart-tv-2026-oled55c6psaotb.html?gad_source=1",
+        "curacao": "https://www.lacuracao.pe/55-lg-oled-evo-ai-c6-4k-smart-tv-2026-oled55c6psaotb.html?pos=1",
+    }
+
+    async def fake_8_store_scraper(store_id: str, url: str, **kwargs):
+        if store_id == "falabella":
+            return {
+                "title": '55" LG OLED evo AI C6 4K Smart TV 2026',
+                "price": 3599.00,
+                "original_price": 4999.00,
+                "offer_url": url,
+            }
+        if store_id == "ripley":
+            return {
+                "title": 'Televisor Smart TV LG 55" OLED evo AI C6 4K 2026',
+                "price": 3599.00,
+                "original_price": 4999.00,
+                "offer_url": url,
+            }
+        if store_id == "hiraoka":
+            return {
+                "title": 'Televisor LG 55" OLED evo AI C6 4K Smart TV 2026',
+                "price": 3899.00,
+                "original_price": 4999.00,
+                "offer_url": url,
+            }
+        if store_id in {"efe", "curacao"}:
+            return {
+                "title": '55" LG OLED evo AI C6 4K Smart TV 2026 OLED55C6PSA',
+                "price": 5139.00,
+                "original_price": 6769.00,
+                "offer_url": url,
+            }
+        # En Tottus, Metro y Wong no existe el LG OLED 55 C6; sus buscadores devuelven otros TVs:
+        if store_id == "tottus":
+            return {
+                "title": 'Televisor JVC 40" QLED FHD Roku TV',
+                "price": 489.00,
+                "original_price": 899.00,
+                "offer_url": "https://www.tottus.com.pe/tottus-pe/articulo/153301442/televisor-jvc-40-qled-fhd-roku-tv/153301443",
+            }
+        if store_id == "metro":
+            return {
+                "title": "Televisor LG OLED 55 OLED55B6PSA",
+                "price": 3499.00,
+                "original_price": 4599.00,
+                "offer_url": "https://www.metro.pe/televisor-lg-oled-55-oled55b6psa/p",
+            }
+        if store_id == "wong":
+            return {
+                "title": 'Televisor Samsung 65" UHD U8000H Vision AI Smart TV 2026',
+                "price": 1799.00,
+                "original_price": 2499.00,
+                "offer_url": "https://www.wong.pe/televisor-samsung-65-uhd-u8000h-vision-ai-smart-tv-2026-1067739/p",
+            }
+        return None
+
+    verified = await discover_product_across_8_stores(
+        fingerprint=fp,
+        direct_store_urls=direct_urls,
+        canonical_title='LG 55" OLED evo AI C6 4K Smart TV 2026',
+        scrape_fn=fake_8_store_scraper,
+        enable_live_search_discovery=True,
+    )
+
+    store_ids = [o["store_id"] for o in verified]
+    assert len(verified) == 5
+    assert "falabella" in store_ids
+    assert "ripley" in store_ids
+    assert "hiraoka" in store_ids
+    assert "efe" in store_ids
+    assert "curacao" in store_ids
+    # Tottus, Metro y Wong deben haber sido omitidos limpiamente
+    assert "tottus" not in store_ids
+    assert "metro" not in store_ids
+    assert "wong" not in store_ids
+    assert verified[0]["price"] == 3599.00
+    assert all("?" not in o["offer_url"] for o in verified)
+
+
+def test_parse_vtex_cencosud_metro_wong_and_parse_tottus():
+    """
+    Verifica los extractores dedicados para:
+    - Metro (metro.pe) y Wong (wong.pe) mediante VTEX API JSON y HTML /p con JSON-LD/Apollo
+    - Tottus (tottus.com.pe) mediante #__NEXT_DATA__ y JSON-LD
+    """
+    wong_vtex_json = json.dumps([
+        {
+            "productName": 'Televisor Samsung 65" UHD U8000H Vision AI Smart TV 2026',
+            "brand": "Samsung",
+            "link": "https://www.wong.pe/televisor-samsung-65-uhd-u8000h-vision-ai-smart-tv-2026-1067739/p?utm_source=vtex",
+            "allSpecifications": ["Tamaño de Pantalla", "Resolución de video"],
+            "Tamaño de Pantalla": ["65 Pulgadas"],
+            "Resolución de video": ["4K UHD"],
+            "items": [
+                {
+                    "images": [{"imageUrl": "https://wongfood.vtexassets.com/arquivos/ids/750000/tv.jpg"}],
+                    "sellers": [
+                        {
+                            "commertialOffer": {
+                                "Price": 1899.0,
+                                "ListPrice": 2599.0,
+                                "AvailableQuantity": 8,
+                                "IsAvailable": True,
+                            }
+                        }
+                    ],
+                }
+            ],
+        }
+    ])
+    res_wong = parse_vtex_cencosud(
+        wong_vtex_json,
+        "https://www.wong.pe/televisor-samsung-65-uhd-u8000h-vision-ai-smart-tv-2026-1067739/p",
+    )
+    assert res_wong is not None
+    assert res_wong["price"] == 1899.0
+    assert res_wong["original_price"] == 2599.0
+    assert res_wong["brand"] == "Samsung"
+    assert res_wong["offer_url"] == "https://www.wong.pe/televisor-samsung-65-uhd-u8000h-vision-ai-smart-tv-2026-1067739/p"
+
+    # Producto sin stock (AvailableQuantity = 0) en Metro debe descartarse
+    metro_out_of_stock_json = json.dumps([
+        {
+            "productName": "Impresora Multifuncional Epson L3350 WiFi",
+            "brand": "Epson",
+            "link": "https://www.metro.pe/impresora-multifuncional-epson-l3350-wifi-1069770/p",
+            "items": [
+                {
+                    "sellers": [
+                        {
+                            "commertialOffer": {
+                                "Price": 699.0,
+                                "ListPrice": 899.0,
+                                "AvailableQuantity": 0,
+                                "IsAvailable": False,
+                            }
+                        }
+                    ]
+                }
+            ],
+        }
+    ])
+    assert parse_vtex_cencosud(
+        metro_out_of_stock_json,
+        "https://www.metro.pe/impresora-multifuncional-epson-l3350-wifi-1069770/p",
+    ) is None
+
+    # Tottus Next.js + JSON-LD
+    tottus_html = """
+    <html>
+    <script id="__NEXT_DATA__" type="application/json">
+    {"props":{"pageProps":{"productData":{"name":"Televisor JVC 40\\" QLED FHD Roku TV","variants":[{"prices":[{"type":"cmrPrice","price":["489.00"],"crossed":false},{"type":"normalPrice","price":["899.00"],"crossed":true}],"medias":[{"url":"https://media.tottus.com.pe/tottusPE/153301443/public"}]}]}}}}
+    </script>
+    <script type="application/ld+json">
+    {"@type":"Product","name":"Televisor JVC 40\\" QLED FHD Roku TV","brand":{"@type":"Brand","name":"JVC"},"offers":{"@type":"Offer","price":"489.00"}}
+    </script>
+    </html>
+    """
+    res_tottus = parse_tottus(
+        tottus_html,
+        "https://www.tottus.com.pe/tottus-pe/articulo/153301442/televisor-jvc-40-qled-fhd-roku-tv/153301443?kid=test",
+    )
+    assert res_tottus is not None
+    assert res_tottus["price"] == 489.0
+    assert res_tottus["original_price"] == 899.0
+    assert res_tottus["brand"] == "JVC"
+    assert res_tottus["offer_url"] == "https://www.tottus.com.pe/tottus-pe/articulo/153301442/televisor-jvc-40-qled-fhd-roku-tv/153301443"
+
+
+def test_lg_oled_55_c6_has_falabella_ripley_and_hiraoka_with_best_price_3599(client: TestClient):
+    """
+    Verifica que el televisor LG 55" OLED evo AI C6 4K Smart TV 2026 (prod_lg_oled_tv)
+    incluya las ofertas reales de Falabella (S/ 3,599.00), Ripley (S/ 3,599.00) e Hiraoka (S/ 3,899.00),
+    con bestPrice = 3599.0 y URLs canónicas limpias.
+    """
+    res = client.get("/api/v1/products/prod_lg_oled_tv")
+    assert res.status_code == 200
+    tv = res.json()
+
+    assert tv["id"] == "prod_lg_oled_tv"
+    assert tv["bestPrice"] == 3599.0
+
+    by_store = {sp["storeId"]: sp for sp in tv["storePrices"]}
+    assert "falabella" in by_store
+    assert "ripley" in by_store
+    assert "hiraoka" in by_store
+
+    assert by_store["falabella"]["price"] == 3599.0
+    assert by_store["falabella"]["offerUrl"] == (
+        "https://www.falabella.com.pe/falabella-pe/product/80046493/55-lg-oled-evo-ai-c6-4k-smart-tv-2026/80046493"
+    )
+    assert by_store["ripley"]["price"] == 3599.0
+    assert by_store["ripley"]["offerUrl"] == (
+        "https://simple.ripley.com.pe/televisor-smart-tv-lg-55-oled-evo-ai-c6-4k-2026-2018371874913p"
+    )
+    assert by_store["hiraoka"]["price"] == 3899.0
+    assert by_store["hiraoka"]["offerUrl"] == (
+        "https://hiraoka.com.pe/televisor-lg-55-oled-evo-ai-c6-4k-smart-tv-2026"
+    )
+
