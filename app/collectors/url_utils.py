@@ -62,7 +62,7 @@ CANONICAL_HOSTS: Dict[str, str] = {
 STORE_PRODUCT_PATH_PATTERNS: Dict[str, re.Pattern] = {
     "falabella": re.compile(r"^/falabella-pe/product/[^/]+/[^/]+(?:/[^/]+)?/?$", re.IGNORECASE),
     "tottus": re.compile(r"^/tottus-pe/(?:articulo|product)/[^/]+/[^/]+(?:/[^/]+)?/?$", re.IGNORECASE),
-    "ripley": re.compile(r"^/[a-z0-9\-]+-(?:\d+p|pmp\d+|20\d{9,12})/?$", re.IGNORECASE),
+    "ripley": re.compile(r"^/[a-z0-9\-]+-(?:\d+p|pmp\d+|\d{7,15})/?$", re.IGNORECASE),
     "metro": re.compile(r"^/[a-z0-9\-]+/p/?$", re.IGNORECASE),
     "wong": re.compile(r"^/[a-z0-9\-]+/p/?$", re.IGNORECASE),
     "efe": re.compile(r"^/[a-z0-9\-_]+\.html$", re.IGNORECASE),
@@ -197,13 +197,18 @@ def build_store_search_url(store_id: str, compact_query: str) -> Optional[str]:
 def build_external_dork_search_url(store_id: str, compact_query: str) -> Optional[str]:
     """
     Construye una URL de búsqueda externa (Canal 3 de SearchInternetNode) usando
-    el dork site:{canonical_host} {compact_query}.
+    el dork site:{canonical_host_or_path} {compact_query}.
     """
     q_clean = re.sub(r"\s+", " ", (compact_query or "")).strip()
     if not q_clean or store_id not in CANONICAL_HOSTS:
         return None
     host = CANONICAL_HOSTS[store_id]
-    dork = f"site:{host} {q_clean}"
+    if store_id == "falabella":
+        dork = f"site:falabella.com.pe/falabella-pe/product {q_clean}"
+    elif store_id == "tottus":
+        dork = f"site:tottus.com.pe/tottus-pe/articulo {q_clean}"
+    else:
+        dork = f"site:{host} {q_clean}"
     return f"https://html.duckduckgo.com/html/?q={quote_plus(dork)}"
 
 

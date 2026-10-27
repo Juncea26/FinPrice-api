@@ -62,11 +62,12 @@ def parse_falabella(
             data = json.loads(next_script.string)
             props = data.get("props", {}).get("pageProps", {})
 
-            # Si es una página de resultados de búsqueda en __NEXT_DATA__, validar cada resultado
+            # Si es una página de resultados de búsqueda en __NEXT_DATA__, evaluar todos los colores/resultados válidos y elegir el más barato
             search_results = props.get("results")
             if isinstance(search_results, list) and search_results and not props.get("productData"):
                 if not canonical_title:
                     return None
+                best_search_candidate: Optional[Dict[str, Any]] = None
                 for item in search_results:
                     if not isinstance(item, dict):
                         continue
@@ -92,14 +93,16 @@ def parse_falabella(
                         list_p = orig_p or max(extracted_p)
                         media_urls = item.get("mediaUrls", [])
                         img_u = media_urls[0] if isinstance(media_urls, list) and media_urls else None
-                        return {
+                        cand_dict = {
                             "title": item_title,
                             "price": best_p,
                             "original_price": list_p if list_p > best_p else best_p,
                             "image_url": img_u,
                             "offer_url": item_url,
                         }
-                return None
+                        if best_search_candidate is None or best_p < best_search_candidate["price"]:
+                            best_search_candidate = cand_dict
+                return best_search_candidate
 
             prod = props.get("productData", {}) or props.get("product", {})
             prod_title = str(prod.get("name") or prod.get("displayName") or h1_title).strip()
@@ -120,7 +123,9 @@ def parse_falabella(
             variant_id = ""
 
             if variants and isinstance(variants, list):
-                # Determinar qué variante SKU seleccionar (Multi-SKU Variant Resolution)
+                # Multi-SKU & Multi-Color Variant Resolution:
+                # Evaluar TODAS las variantes (todos los colores) que cumplan la capacidad buscada
+                # y seleccionar la que tenga el PRECIO MÁS BARATO.
                 url_parts = [p for p in offer_url.split("/") if p]
                 url_tail_sku = url_parts[-1] if len(url_parts) >= 6 else ""
 
@@ -130,32 +135,62 @@ def parse_falabella(
                     if m_st:
                         req_storage_tok = re.sub(r"\s+", "", m_st.group(1)).lower()
 
-                selected_v = None
-                # 1. Coincidencia por SKU ID explícito en la URL
-                if url_tail_sku:
-                    for v_cand in variants:
-                        if isinstance(v_cand, dict) and str(v_cand.get("id") or "") == url_tail_sku:
-                            selected_v = v_cand
-                            break
+                all_storage_tokens = {"64gb", "128gb", "256gb", "512gb", "1024gb", "1tb", "2tb"}
 
-                # 2. Coincidencia por capacidad de almacenamiento (ej. 128GB, 256GB, 512GB) dentro de variants[]
-                if selected_v is None and req_storage_tok:
-                    for v_cand in variants:
-                        if not isinstance(v_cand, dict):
+                def _variant_min_price(v_obj: Dict[str, Any]) -> Optional[float]:
+                    v_prices = []
+                    for p_it in v_obj.get("prices", []) or []:
+                        if not isinstance(p_it, dict):
                             continue
-                        v_blob = json.dumps(v_cand, ensure_ascii=False).lower().replace(" ", "")
-                        if req_storage_tok in v_blob and v_cand.get("prices"):
-                            selected_v = v_cand
-                            break
+                        p_v = p_it.get("price", [])
+                        r_v = p_v[0] if isinstance(p_v, list) and p_v else p_v
+                        n_v = clean_number(r_v)
+                        if n_v:
+                            v_prices.append(n_v)
+                    return min(v_prices) if v_prices else None
 
-                # 3. Fallback a la primera variante con precios activos
-                if selected_v is None:
-                    for v_cand in variants:
-                        if isinstance(v_cand, dict) and v_cand.get("prices"):
-                            selected_v = v_cand
-                            break
-                    if selected_v is None:
-                        selected_v = variants[0]
+                priced_variants = [
+                    v_c for v_c in variants if isinstance(v_c, dict) and _variant_min_price(v_c) is not None
+                ]
+
+                matching_capacity_variants = []
+                if req_storage_tok and priced_variants:
+                    # 1. Variantes que declaran explícitamente la capacidad buscada (ej. 128gb)
+                    explicit_cap = [
+                        v_c
+                        for v_c in priced_variants
+                        if req_storage_tok in json.dumps(v_c, ensure_ascii=False).lower().replace(" ", "")
+                    ]
+                    if explicit_cap:
+                        matching_capacity_variants = explicit_cap
+                    else:
+                        # 2. Variantes que no declaran una capacidad conflictiva distinta
+                        other_caps = all_storage_tokens - {req_storage_tok}
+                        matching_capacity_variants = [
+                            v_c
+                            for v_c in priced_variants
+                            if not any(
+                                oc in json.dumps(v_c, ensure_ascii=False).lower().replace(" ", "")
+                                for oc in other_caps
+                            )
+                        ]
+                else:
+                    matching_capacity_variants = priced_variants
+
+                selected_v = None
+                if matching_capacity_variants:
+                    # Ordenar por menor precio vigente; en caso de empate de precio, priorizar el SKU de la URL
+                    matching_capacity_variants.sort(
+                        key=lambda v_c: (
+                            _variant_min_price(v_c) or float("inf"),
+                            0 if str(v_c.get("id") or "") == url_tail_sku else 1,
+                        )
+                    )
+                    selected_v = matching_capacity_variants[0]
+                elif priced_variants:
+                    selected_v = priced_variants[0]
+                else:
+                    selected_v = variants[0]
 
                 v = selected_v
                 variant_id = str(v.get("id") or "").strip()

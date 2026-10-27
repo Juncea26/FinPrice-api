@@ -156,6 +156,22 @@ def parse_ripley(
                     num_o = clean_number(v_o.get("valueNumber") if isinstance(v_o, dict) else v_o)
                     if num_o:
                         orig_p = num_o
+
+            # Evaluar también todos los SKUs/colores con stock en prod.SKUs o prod.variants y tomar el más barato
+            skus_list = prod.get("SKUs") or prod.get("variants") or []
+            if isinstance(skus_list, list):
+                for sku_item in skus_list:
+                    if not isinstance(sku_item, dict):
+                        continue
+                    if sku_item.get("inStock") is False or sku_item.get("quantity", 1) == 0:
+                        continue
+                    sku_prices = sku_item.get("prices", {})
+                    if isinstance(sku_prices, dict):
+                        for k_p in ("cardPrice", "offerPrice", "ripley", "sale"):
+                            v_p = sku_prices.get(k_p)
+                            num_p = clean_number(v_p.get("valueNumber") if isinstance(v_p, dict) else v_p)
+                            if num_p:
+                                extracted_p.append(num_p)
             if extracted_p:
                 extracted_meta = extract_product_specs(html, title=prod_title, store_id="ripley")
                 if canonical_title and not validate_product_identity(

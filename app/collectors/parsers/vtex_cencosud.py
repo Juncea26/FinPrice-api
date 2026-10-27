@@ -291,6 +291,7 @@ def parse_vtex_cencosud(
         try:
             data = json.loads(stripped)
             if isinstance(data, list):
+                best_vtex_candidate: Optional[Dict[str, Any]] = None
                 for item in data:
                     parsed = parse_vtex_api_item(item, default_url=clean_url)
                     if not parsed:
@@ -303,8 +304,9 @@ def parse_vtex_cencosud(
                         tech_specs=parsed.get("tech_specs"),
                     ):
                         continue
-                    return parsed
-                return None
+                    if best_vtex_candidate is None or parsed["price"] < best_vtex_candidate["price"]:
+                        best_vtex_candidate = parsed
+                return best_vtex_candidate
         except Exception:
             pass
 

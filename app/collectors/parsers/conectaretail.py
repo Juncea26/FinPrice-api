@@ -63,14 +63,15 @@ def _parse_search_results(
     soup: BeautifulSoup, search_url: str, canonical_title: Optional[str]
 ) -> Optional[Dict[str, Any]]:
     """
-    Itera sobre las tarjetas de búsqueda y selecciona únicamente aquella cuyo título
-    apruebe validate_product_identity(canonical_title, item_title, item_url).
-    Jamás toma el primer resultado a ciegas.
+    Itera sobre TODAS las tarjetas de búsqueda (todos los colores disponibles),
+    filtra aquellas que aprueben validate_product_identity(canonical_title, item_title, item_url)
+    y selecciona la que tenga el MENOR precio vigente.
     """
     if not canonical_title:
         logger.warning(f"Búsqueda en {search_url} rechazada: se requiere canonical_title para validar tarjetas.")
         return None
 
+    best_candidate: Optional[Dict[str, Any]] = None
     cards = soup.select(".product-item-info, li.product-item")
     for card in cards:
         link_el = card.select_one("a.product-item-link")
@@ -114,15 +115,17 @@ def _parse_search_results(
         if img_el:
             img_url = img_el.get("src") or img_el.get("data-src")
 
-        return {
+        cand = {
             "title": item_title,
             "price": current_p,
             "original_price": old_p if (old_p and old_p > current_p) else current_p,
             "image_url": img_url,
             "offer_url": item_url,
         }
+        if best_candidate is None or current_p < best_candidate["price"]:
+            best_candidate = cand
 
-    return None
+    return best_candidate
 
 
 def parse_conectaretail(

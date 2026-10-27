@@ -63,13 +63,15 @@ def _parse_search_results(
     soup: BeautifulSoup, search_url: str, canonical_title: Optional[str]
 ) -> Optional[Dict[str, Any]]:
     """
-    Itera sobre resultados de búsqueda en Hiraoka y selecciona únicamente aquel cuyo título
-    apruebe validate_product_identity(canonical_title, item_title, item_url).
+    Itera sobre TODOS los resultados de búsqueda en Hiraoka (todos los colores disponibles),
+    filtra aquellos que aprueben validate_product_identity(canonical_title, item_title, item_url)
+    y selecciona el que tenga el MENOR precio vigente.
     """
     if not canonical_title:
         logger.warning(f"Búsqueda en {search_url} rechazada: se requiere canonical_title.")
         return None
 
+    best_candidate: Optional[Dict[str, Any]] = None
     cards = soup.select(".product-item-info, li.product-item")
     for card in cards:
         # En Hiraoka puede haber un primer link con la marca y un segundo con el nombre del producto
@@ -116,15 +118,17 @@ def _parse_search_results(
         img_el = card.select_one("img.product-image-photo, img")
         img_url = (img_el.get("src") or img_el.get("data-src")) if img_el else None
 
-        return {
+        cand = {
             "title": item_title,
             "price": current_p,
             "original_price": old_p if (old_p and old_p > current_p) else current_p,
             "image_url": img_url,
             "offer_url": item_url,
         }
+        if best_candidate is None or current_p < best_candidate["price"]:
+            best_candidate = cand
 
-    return None
+    return best_candidate
 
 
 def parse_hiraoka(

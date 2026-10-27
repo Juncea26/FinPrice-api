@@ -18,12 +18,13 @@ from urllib.parse import urlparse
 from pydantic import BaseModel, ConfigDict
 
 from app.core.logging import get_logger
+from app.collectors.color_stripper import strip_color_tokens
 
 logger = get_logger("collectors.validators")
 
 T = TypeVar("T")
 
-# Palabras clave de accesorios que nunca deben contaminar un producto principal
+# Palabras clave de accesorios y reacondicionados que nunca deben contaminar un producto principal
 ACCESSORY_KEYWORDS: Tuple[str, ...] = (
     "funda",
     "fundas",
@@ -50,6 +51,18 @@ ACCESSORY_KEYWORDS: Tuple[str, ...] = (
     "holder",
     "glass",
     "templado",
+    "teclado",
+    "pencil",
+    "stylus",
+    "lapiz",
+    "reacondicionado",
+    "reacondicionados",
+    "reacondicionada",
+    "refurbished",
+    "renovado",
+    "renovada",
+    "seminuevo",
+    "openbox",
 )
 
 # Identificadores críticos de familia, serie y gama
@@ -91,11 +104,16 @@ CRITICAL_MODEL_IDENTIFIERS: Tuple[str, ...] = (
 STRICT_REVERSE_TIER_TOKENS: Tuple[str, ...] = (
     "pro",
     "ultra",
+    "plus",
+    "max",
+    "air",
     "fe",
     "lite",
     "mini",
     "fold",
     "flip",
+    "16e",
+    "15e",
 )
 
 # Capacidades de almacenamiento estándar
@@ -178,12 +196,12 @@ def _has_whole_word(token: str, text: str) -> bool:
 
 def extract_critical_model_tokens(canonical_title: str) -> Tuple[List[str], Optional[str], Optional[str]]:
     """
-    Extrae del título canónico:
+    Extrae del título canónico (previa limpieza de colores con strip_color_tokens):
     1. Lista de tokens críticos de modelo, serie, gama y generación (ej. ['redmi', 'note', '15', 'pro'])
     2. Capacidad de almacenamiento principal (ej. '512gb')
     3. Capacidad de memoria RAM si se especifica (ej. '12gb')
     """
-    norm = normalize_text(canonical_title)
+    norm = normalize_text(strip_color_tokens(canonical_title))
 
     # 1. Extraer almacenamiento y RAM
     storage_match: Optional[str] = None
@@ -252,8 +270,11 @@ def validate_product_identity(
         return False
 
     # --------------------------------------------------------------------------
-    # 1. BLOQUEO DE ACCESORIOS E INTRUSOS
+    # 1. BLOQUEO DE ACCESORIOS, REACONDICIONADOS E INTRUSOS
     # --------------------------------------------------------------------------
+    if "open box" in scraped_title_norm or "open box" in scraped_url_norm:
+        return False
+
     for acc_kw in ACCESSORY_KEYWORDS:
         in_scraped = _has_whole_word(acc_kw, scraped_title_norm) or _has_whole_word(acc_kw, scraped_url_norm)
         in_canonical = _has_whole_word(acc_kw, canonical_norm)

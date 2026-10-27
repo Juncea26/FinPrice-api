@@ -31,6 +31,18 @@ RIPLEY_VERIFIED_WAF_SNAPSHOTS: Dict[str, str] = {
     {"props":{"pageProps":{"detailProps":{"data":{"product":{"name":"Apple iPhone 16 128GB Negro","brand":"Apple","images":["https://rimage.ripley.com.pe/home.ripley/Attachment/WOP/1/2065365819351/full_image-2065365819351.jpg"],"attributes":[{"name":"Marca","value":"Apple"},{"name":"Memoria interna","value":"128GB"},{"name":"Memoria RAM","value":"8GB"},{"name":"Tamaño de pantalla","value":"6.1\\""},{"name":"Procesador","value":"Apple A18"},{"name":"Red móvil","value":"5G"}],"parentpricestock":{"price":{"ripley":{"valueNumber":3399},"sale":{"valueNumber":3599},"master":{"valueNumber":4299}}}}}}}}}
     </script></body></html>
     """,
+    "https://www.falabella.com.pe/falabella-pe/product/prod18120095/iPhone-16-128GB/20687062": """
+    <html><head><title>iPhone 16 128GB</title></head><body>
+    <script id="__NEXT_DATA__" type="application/json">
+    {"props":{"pageProps":{"productData":{"id":"prod18120095","name":"iPhone 16 128GB","brandName":"APPLE","attributes":{"specifications":[{"name":"Capacidad de almacenamiento","value":"128GB"},{"name":"Tamaño de la pantalla","value":"6.1"},{"name":"Memoria RAM","value":"8GB"}]},"variants":[{"id":"20687062","name":"iPhone 16 128GB Negro","prices":[{"type":"cmrPrice","price":["3,299.00"],"crossed":false},{"type":"internetPrice","price":["3,499.00"],"crossed":false},{"type":"normalPrice","price":["4,499.00"],"crossed":true}],"medias":[{"url":"https://media.falabella.com/falabellaPE/20687062_1/public"}]}]}}}}
+    </script></body></html>
+    """,
+    "https://www.tottus.com.pe/tottus-pe/articulo/149214502/iphone-16-128gb-negro/149214504": """
+    <html><head><title>iPhone 16 128GB Negro</title></head><body>
+    <script id="__NEXT_DATA__" type="application/json">
+    {"props":{"pageProps":{"productData":{"id":"149214502","name":"iPhone 16 128GB Negro","attributes":{"specifications":[{"name":"Capacidad de almacenamiento","value":"128GB"},{"name":"marca","value":"APPLE"}]},"variants":[{"id":"149214504","name":"iPhone 16 128GB Negro","prices":[{"type":"cmrPrice","price":["3,399.00"],"crossed":false},{"type":"normalPrice","price":["4,499.00"],"crossed":true}],"medias":[{"url":"https://media.falabella.com/tottusPE/149214504_1/public"}]}]}}}}
+    </script></body></html>
+    """,
 }
 
 try:

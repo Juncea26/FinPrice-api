@@ -22,6 +22,7 @@ from app.core.config import settings
 from app.core.logging import get_logger
 from app.core.security import sanitize_input_text
 from app.collectors.catalog_urls import PERU_DEPARTMENTS
+from app.collectors.color_stripper import strip_color_tokens
 from app.collectors.orchestrator import orchestrator
 from app.collectors.spec_extractor import (
     generate_product_features,
@@ -113,6 +114,7 @@ class CatalogService:
 
         schemas: List[ProductSchema] = []
         for p in entities:
+            clean_title = strip_color_tokens(p.title) or p.title
             raw_features = json.loads(p.features_json) if p.features_json else []
             raw_specs = json.loads(p.tech_specs_json) if p.tech_specs_json else {}
 
@@ -120,16 +122,16 @@ class CatalogService:
             tech_specs = merge_product_specs(
                 specs_list=[raw_specs],
                 base_specs=raw_specs,
-                title=p.title,
+                title=clean_title,
             )
-            brand = tech_specs.get("Marca") or normalize_brand(p.brand, p.title)
+            brand = tech_specs.get("Marca") or normalize_brand(p.brand, clean_title)
             if brand:
                 tech_specs["Marca"] = brand
 
             features = generate_product_features(
                 soup=None,
                 tech_specs=tech_specs,
-                title=p.title,
+                title=clean_title,
                 existing_features=raw_features,
             )
 
@@ -144,7 +146,7 @@ class CatalogService:
                 )
                 for sp in p.store_offers
                 if validate_product_identity(
-                    canonical_title=p.title,
+                    canonical_title=clean_title,
                     scraped_title="",
                     scraped_url=sp.offer_url,
                     store_id=sp.store_id,
@@ -189,7 +191,7 @@ class CatalogService:
             schemas.append(
                 ProductSchema(
                     id=p.id,
-                    title=p.title,
+                    title=clean_title,
                     category=p.category,
                     brand=brand,
                     best_price=eff_best_price,

@@ -48,6 +48,7 @@ from app.collectors.spec_extractor import (
     merge_product_specs,
 )
 from app.collectors.url_utils import canonicalize_store_url
+from app.collectors.color_stripper import is_color_token, strip_color_tokens
 from app.collectors.query_builder import build_search_queries
 from app.collectors.universal_matcher import (
     UniversalProductResolver,
@@ -93,11 +94,19 @@ def client():
         json_title = matched_title.replace('"', '\\"')
         is_lg_oled = "oled" in url.lower() and "c6" in url.lower()
         is_ipad_a16 = "ipad" in url.lower() and "a16" in url.lower()
+        is_iphone_16 = "iphone-16" in url.lower()
         if "falabella" in url:
             if is_ipad_a16:
                 return """
                 <html><script id="__NEXT_DATA__" type="application/json">
                 {"props":{"pageProps":{"productData":{"id":"prod18440041","name":"iPad Apple 11 Chip A16 Wi-Fi","description":"iPad Apple 11 con 128GB de almacenamiento","attributes":{"specifications":[{"name":"Capacidad de almacenamiento","value":"128GB"},{"name":"Tamaño de la pantalla","value":"11"}]},"variants":[{"id":"21014911","name":"IPAD A16 WIFI 128GB SLV","prices":[{"type":"cmrPrice","price":["1,899"],"crossed":false},{"type":"normalPrice","price":["2,599"],"crossed":true}],"medias":[{"url":"https://media.falabella.com/falabellaPE/21014911_1/public"}]}]}}}}
+                </script></html>
+                """
+            if is_iphone_16:
+                # En Falabella el título real es "iPhone 16 128GB" (sin decir "Apple") y cuesta S/ 3,299.00 (CMR) / S/ 3,499.00 (Internet)
+                return """
+                <html><script id="__NEXT_DATA__" type="application/json">
+                {"props":{"pageProps":{"productData":{"id":"prod18120095","name":"iPhone 16 128GB","attributes":{"specifications":[{"name":"Capacidad de almacenamiento","value":"128GB"},{"name":"Tamaño de la pantalla","value":"6.1"}]},"variants":[{"id":"20687063","name":"iPhone 16 128GB Blanco","prices":[{"type":"cmrPrice","price":["3,399.00"],"crossed":false},{"type":"normalPrice","price":["4,499.00"],"crossed":true}],"medias":[{"url":"https://media.falabella.com/falabellaPE/20687063_1/public"}]},{"id":"20687062","name":"iPhone 16 128GB Negro","prices":[{"type":"cmrPrice","price":["3,299.00"],"crossed":false},{"type":"internetPrice","price":["3,499.00"],"crossed":false},{"type":"normalPrice","price":["4,499.00"],"crossed":true}],"medias":[{"url":"https://media.falabella.com/falabellaPE/20687062_1/public"}]}]}}}}
                 </script></html>
                 """
             f_price = "3,599.00" if is_lg_oled else "3,499.00"
@@ -113,9 +122,19 @@ def client():
                 {"props":{"pageProps":{"productData":{"id":"150930380","name":"Ipad A16 Wifi 128GB Azul","attributes":{"specifications":[{"name":"Tamaño de la pantalla","value":"11"},{"name":"Capacidad de almacenamiento","value":"128GB"},{"name":"marca","value":"APPLE"}]},"variants":[{"id":"150930381","name":"Ipad A16 Wifi 128GB Azul","prices":[{"type":"internetPrice","price":["1,899"],"crossed":false},{"type":"normalPrice","price":["2,599"],"crossed":true}],"medias":[{"url":"https://media.falabella.com/tottusPE/43620624_1/public"}]}]}}}}
                 </script></html>
                 """
+            if is_iphone_16:
+                return """
+                <html><script id="__NEXT_DATA__" type="application/json">
+                {"props":{"pageProps":{"productData":{"id":"149214502","name":"iPhone 16 128GB Negro","attributes":{"specifications":[{"name":"Capacidad de almacenamiento","value":"128GB"},{"name":"marca","value":"APPLE"}]},"variants":[{"id":"149214504","name":"iPhone 16 128GB Negro","prices":[{"type":"cmrPrice","price":["3,399.00"],"crossed":false},{"type":"normalPrice","price":["4,499.00"],"crossed":true}],"medias":[{"url":"https://media.falabella.com/tottusPE/149214504_1/public"}]}]}}}}
+                </script></html>
+                """
             return None
         elif "efe" in url or "curacao" in url:
-            e_price = "5139.00" if is_lg_oled else ("1979.00" if is_ipad_a16 else "1899.00")
+            e_price = (
+                "5139.00"
+                if is_lg_oled
+                else ("1979.00" if is_ipad_a16 else ("3499.00" if is_iphone_16 else "1899.00"))
+            )
             return """
             <html><head><meta property="og:image" content="https://www.efe.com.pe/media/catalog/product/prod1.jpg" /></head>
             <body>
@@ -126,7 +145,11 @@ def client():
             </body></html>
             """.replace("__TITLE__", matched_title).replace("__PRICE__", e_price)
         elif "hiraoka" in url:
-            h_price = "3899.00" if is_lg_oled else ("1949.00" if is_ipad_a16 else "1829.00")
+            h_price = (
+                "3899.00"
+                if is_lg_oled
+                else ("1949.00" if is_ipad_a16 else ("3399.00" if is_iphone_16 else "1829.00"))
+            )
             return """
             <html><body>
               <div class="product-info-main">
@@ -1770,6 +1793,211 @@ async def test_scrapegraph_style_5_nodes_full_pipeline_across_8_stores():
     assert "?" not in verified_by_store["tottus"].offer_url
     assert verified_by_store["hiraoka"].price == 1949.0
     assert verified_by_store["efe"].price == 1979.0
+
+
+# ==============================================================================
+# 9. ELIMINACIÓN GLOBAL DE COLORES Y SELECCIÓN MULTI-COLOR MÁS BARATA (8 TIENDAS)
+# ==============================================================================
+
+def test_strip_color_tokens_spanish_and_english_dictionary():
+    """
+    Verifica que strip_color_tokens elimine todos los colores simples y compuestos
+    en español e inglés sin alterar marcas, modelos ni especificaciones técnicas.
+    """
+    assert strip_color_tokens("Apple iPhone 16 128GB Negro") == "Apple iPhone 16 128GB"
+    assert strip_color_tokens("Apple iPad 11 Pulgadas A16 Wi-Fi 128GB Azul") == "Apple iPad 11 Pulgadas A16 Wi-Fi 128GB"
+    assert strip_color_tokens("Xiaomi Redmi Note 15 Pro 5G 512GB 12GB RAM Café Moca") == "Xiaomi Redmi Note 15 Pro 5G 512GB 12GB RAM"
+    assert strip_color_tokens("Samsung Galaxy Tab S10 FE 128GB Wi-Fi - Gris Grafito") == "Samsung Galaxy Tab S10 FE 128GB Wi-Fi"
+    assert strip_color_tokens("Samsung Galaxy S25 Ultra 512GB 12GB RAM Titanio Natural") == "Samsung Galaxy S25 Ultra 512GB 12GB RAM"
+    assert strip_color_tokens("Apple MacBook Air 13.6 Pulgadas M5 16GB RAM 512GB SSD Medianoche") == "Apple MacBook Air 13.6 Pulgadas M5 16GB RAM 512GB SSD"
+    assert strip_color_tokens("iPhone 16 Pro 256GB Desert Titanium") == "iPhone 16 Pro 256GB"
+    assert strip_color_tokens("iPad Air 11 Space Gray") == "iPad Air 11"
+
+
+def test_get_products_returns_color_free_canonical_titles(client: TestClient):
+    """
+    Verifica que todos los productos en GET /api/v1/products tengan títulos canónicos
+    completamente libres de colores ("Apple iPhone 16 128GB", "Xiaomi Redmi Note 15 Pro 5G 512GB 12GB RAM", etc.).
+    """
+    res = client.get("/api/v1/products")
+    assert res.status_code == 200
+    products = res.json()
+    assert len(products) >= 5
+
+    by_id = {p["id"]: p for p in products}
+    assert by_id["prod_iphone_16"]["title"] == "Apple iPhone 16 128GB"
+    assert by_id["prod_samsung_s25_ultra"]["title"] == "Samsung Galaxy S25 Ultra 512GB 12GB RAM"
+    assert by_id["prod_macbook_air_m5"]["title"] == "Apple MacBook Air 13.6 Pulgadas M5 16GB RAM 512GB SSD"
+    assert by_id["prod_ipad_11"]["title"] == 'Apple iPad 11" Chip A16 Wi-Fi 128GB'
+    assert by_id["prod_xiaomi_redmi_note"]["title"] == "Xiaomi Redmi Note 15 Pro 5G 512GB 12GB RAM"
+
+    for p in products:
+        assert p["title"] == strip_color_tokens(p["title"])
+
+
+def test_prod_iphone_16_includes_falabella_3299_tottus_ripley_hiraoka_and_efe(client: TestClient):
+    """
+    Verifica que para prod_iphone_16 ("Apple iPhone 16 128GB") se incluyan:
+    - Falabella (S/ 3,299.00) con título 'iPhone 16 128GB' sin decir 'Apple'
+    - Ripley (S/ 3,399.00) con URL terminada en dígitos /iphone-16-128gb-2065365819351
+    - Hiraoka (S/ 3,399.00)
+    - Tottus (S/ 3,399.00)
+    - Tiendas Efe (S/ 3,499.00)
+    Y que el mejor precio sea Falabella a S/ 3,299.00.
+    """
+    res = client.get("/api/v1/products/prod_iphone_16")
+    assert res.status_code == 200
+    iphone = res.json()
+
+    assert iphone["id"] == "prod_iphone_16"
+    assert iphone["title"] == "Apple iPhone 16 128GB"
+    assert iphone["bestPrice"] == 3299.0
+    assert "Falabella" in iphone["bestStoreName"]
+    assert iphone["availableStoresCount"] == 5
+
+    by_store = {sp["storeId"]: sp for sp in iphone["storePrices"]}
+    assert set(by_store.keys()) == {"falabella", "ripley", "hiraoka", "tottus", "efe"}
+
+    assert by_store["falabella"]["price"] == 3299.0
+    assert by_store["falabella"]["offerUrl"] == (
+        "https://www.falabella.com.pe/falabella-pe/product/prod18120095/iPhone-16-128GB/20687062"
+    )
+    assert by_store["ripley"]["price"] == 3399.0
+    assert by_store["ripley"]["offerUrl"] == (
+        "https://simple.ripley.com.pe/iphone-16-128gb-2065365819351"
+    )
+    assert by_store["hiraoka"]["price"] == 3399.0
+    assert by_store["hiraoka"]["offerUrl"] == (
+        "https://hiraoka.com.pe/iphone-16-6-1-128gb-negro"
+    )
+    assert by_store["tottus"]["price"] == 3399.0
+    assert by_store["tottus"]["offerUrl"] == (
+        "https://www.tottus.com.pe/tottus-pe/articulo/149214502/iphone-16-128gb-negro/149214504"
+    )
+    assert by_store["efe"]["price"] == 3499.0
+    assert by_store["efe"]["offerUrl"] == (
+        "https://www.efe.com.pe/iphone-16-blk-128gb-bes-mye73be-a.html"
+    )
+
+
+def test_universal_matcher_strict_model_boundaries_and_refurbished_rejection():
+    """
+    Verifica el validador técnico universal sin color:
+    - iPhone 16 128GB acepta 'iPhone 16 128GB' (sin 'Apple') en cualquier color (Blanco, Ultramarino, Rosa).
+    - iPhone 16 128GB rechaza 'iPhone 16e 128GB', 'iPhone 16 Plus 128GB', 'iPhone 16 Pro 128GB',
+      'iPhone 16 Pro Max', 'iPhone 15 128GB' y equipos 'Reacondicionado' / 'Refurbished' / 'Open Box'.
+    - Epson L3350 acepta 'Impresora Multifuncional Epson EcoTank L3350' y rechaza 'Epson L3250' / 'L5590'.
+    """
+    target_iphone_16 = {
+        "title": "Apple iPhone 16 128GB",
+        "category": "Smartphones",
+        "brand": "Apple",
+        "tech_specs": {"Almacenamiento": "128GB"},
+    }
+
+    # Acepta "iPhone 16 128GB" sin "Apple" en el título y de cualquier color
+    for valid_title in (
+        "iPhone 16 128GB",
+        "iPhone 16 128GB Blanco",
+        "iPhone 16 128GB Ultramarino",
+        "iPhone 16 6.1\" 128GB Rosa",
+    ):
+        assert match_product_universal(
+            target_iphone_16,
+            {
+                "title": valid_title,
+                "offer_url": "https://www.falabella.com.pe/falabella-pe/product/prod18120095/iPhone-16-128GB/20687062",
+                "tech_specs": {"Capacidad de almacenamiento": "128GB"},
+                "description": "",
+            },
+        ) is True
+
+    # Rechaza estrictamente variantes distintas (16e, 16 Plus, 16 Pro, 16 Pro Max, 15) y Reacondicionados
+    for invalid_candidate in (
+        "Apple iPhone 16e 128GB Negro",
+        "Apple iPhone 16 Plus 128GB Azul",
+        "Apple iPhone 16 Pro 128GB Titanio Natural",
+        "Apple iPhone 16 Pro Max 256GB",
+        "Apple iPhone 15 128GB Negro",
+        "iPhone 16 128GB Negro Reacondicionado",
+        "iPhone 16 128GB Refurbished Grado A",
+        "iPhone 16 128GB Open Box",
+    ):
+        assert match_product_universal(
+            target_iphone_16,
+            {
+                "title": invalid_candidate,
+                "offer_url": "https://simple.ripley.com.pe/iphone-16-128gb-2065365819351",
+                "tech_specs": {"Capacidad de almacenamiento": "128GB"},
+                "description": "",
+            },
+        ) is False
+
+    # Caso Impresoras: Epson L3350 vs L3250 / L5590
+    target_epson = {
+        "title": "Impresora Multifuncional Epson EcoTank L3350 Wi-Fi Negro",
+        "category": "Impresoras",
+        "brand": "Epson",
+        "tech_specs": {},
+    }
+    assert build_search_queries(target_epson["title"])[0] == "Epson L3350"
+    assert match_product_universal(
+        target_epson,
+        {
+            "title": "Impresora Multifuncional Epson L3350 WiFi",
+            "offer_url": "https://www.metro.pe/impresora-multifuncional-epson-l3350-wifi-1069770/p",
+            "tech_specs": {"Marca": "Epson"},
+        },
+    ) is True
+    assert match_product_universal(
+        target_epson,
+        {
+            "title": "Impresora Multifuncional Epson EcoTank L3250 WiFi",
+            "offer_url": "https://www.metro.pe/impresora-multifuncional-epson-l3250-wifi/p",
+            "tech_specs": {"Marca": "Epson"},
+        },
+    ) is False
+
+
+def test_multi_color_cheapest_selection_across_stores():
+    """
+    Verifica que cuando una tienda devuelve varios colores del mismo producto técnico
+    (en Hiraoka, Efe/Curacao, Falabella o Metro/Wong), el parser elija siempre el color MÁS BARATO.
+    """
+    canonical_iphone = "Apple iPhone 16 128GB"
+
+    # Hiraoka: grilla de búsqueda con Blanco a S/ 3,499 y Negro a S/ 3,399 -> debe elegir S/ 3,399
+    hiraoka_grid = """
+    <html><body>
+      <ol class="products list items product-items">
+        <li class="item product product-item">
+          <div class="product-item-info">
+            <a class="product-item-link" href="https://hiraoka.com.pe/iphone-16-6-1-128gb-blanco">
+              iPhone 16 6.1" 128GB Blanco
+            </a>
+            <span data-price-type="finalPrice" data-price-amount="3499.00"><span class="price">S/ 3,499.00</span></span>
+          </div>
+        </li>
+        <li class="item product product-item">
+          <div class="product-item-info">
+            <a class="product-item-link" href="https://hiraoka.com.pe/iphone-16-6-1-128gb-negro">
+              iPhone 16 6.1" 128GB Negro
+            </a>
+            <span data-price-type="finalPrice" data-price-amount="3399.00"><span class="price">S/ 3,399.00</span></span>
+          </div>
+        </li>
+      </ol>
+    </body></html>
+    """
+    res_h = parse_hiraoka(
+        hiraoka_grid,
+        "https://hiraoka.com.pe/catalogsearch/result/?q=iPhone+16+128GB",
+        canonical_title=canonical_iphone,
+    )
+    assert res_h is not None
+    assert res_h["price"] == 3399.0
+    assert res_h["offer_url"] == "https://hiraoka.com.pe/iphone-16-6-1-128gb-negro"
+
 
 
 

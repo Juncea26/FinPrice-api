@@ -11,8 +11,10 @@ import re
 import unicodedata
 from typing import Any, Dict, List, Optional, Set, Tuple
 
+from app.collectors.color_stripper import SINGLE_COLOR_TOKENS, strip_color_tokens
+
 # Colores prohibidos en queries de búsqueda para nunca perder variantes de otro color del mismo SKU
-FORBIDDEN_QUERY_COLORS: Set[str] = {
+FORBIDDEN_QUERY_COLORS: Set[str] = set(SINGLE_COLOR_TOKENS) | {
     "azul",
     "plata",
     "plateado",
@@ -98,6 +100,11 @@ FORBIDDEN_QUERY_MARKETING_WORDS: Set[str] = {
     "laptop",
     "notebook",
     "portatil",
+    "impresora",
+    "multifuncional",
+    "ecotank",
+    "tinta",
+    "continua",
     "disco",
     "solido",
     "ssd",
@@ -183,6 +190,9 @@ CANONICAL_TOKEN_CASE: Dict[str, str] = {
     "sony": "Sony",
     "honor": "Honor",
     "motorola": "Motorola",
+    "epson": "Epson",
+    "canon": "Canon",
+    "brother": "Brother",
     "jvc": "JVC",
     "hisense": "Hisense",
     "tcl": "TCL",
@@ -295,8 +305,8 @@ def build_search_queries(
         product_title, specs
     )
 
-    # Normalizar título eliminando decimales de pulgadas (ej. '13.6 Pulgadas') y unidades pegadas ('512GB', '12GB')
-    cleaned = _strip_accents(product_title)
+    # Normalizar título eliminando colores, decimales de pulgadas (ej. '13.6 Pulgadas') y unidades pegadas ('512GB', '12GB')
+    cleaned = _strip_accents(strip_color_tokens(product_title))
     cleaned = re.sub(r"\b\d{1,2}\.\d+\s*(?:pulgadas|pulg|\"|'')?\b", " ", cleaned, flags=re.IGNORECASE)
     cleaned = re.sub(r"\b\d{1,4}\s*(?:gb|tb|mah|mp|hz|w)\b", " ", cleaned, flags=re.IGNORECASE)
     cleaned = re.sub(r"\b(?:10ma|11ma|10a|11a)\s*(?:gen|generacion)?\b", " ", cleaned, flags=re.IGNORECASE)

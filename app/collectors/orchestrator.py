@@ -18,6 +18,7 @@ from sqlalchemy.orm import selectinload
 
 from app.core.config import settings
 from app.core.logging import get_logger
+from app.collectors.color_stripper import strip_color_tokens
 from app.collectors.catalog_urls import (
     CATALOG_PRODUCTS,
     STORES_INFO,
@@ -323,8 +324,10 @@ class CollectorOrchestrator:
 
         for prod in products:
             cat_item = catalog_map.get(prod.id)
-            if cat_item and prod.title != cat_item["title"]:
-                prod.title = cat_item["title"]
+            raw_canonical_title = cat_item["title"] if cat_item else prod.title
+            clean_canonical_title = strip_color_tokens(raw_canonical_title)
+            if prod.title != clean_canonical_title:
+                prod.title = clean_canonical_title
 
             fingerprint = build_fingerprint_from_catalog_item(cat_item) if cat_item else None
             tech_specs = json.loads(prod.tech_specs_json) if prod.tech_specs_json else {}
@@ -491,7 +494,7 @@ class CollectorOrchestrator:
 
         for item in CATALOG_PRODUCTS:
             prod_id = item["id"]
-            canonical_title = item["title"]
+            canonical_title = strip_color_tokens(item["title"])
             tech_specs = item.get("tech_specs", {})
             store_urls: Dict[str, str] = item.get("store_urls", {})
 

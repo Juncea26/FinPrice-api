@@ -66,7 +66,7 @@ CATALOG_PRODUCTS: List[Dict[str, Any]] = [
     # --------------------------------------------------------------------------
     {
         "id": "prod_samsung_s25_ultra",
-        "title": "Samsung Galaxy S25 Ultra 512GB 12GB RAM Titanio",
+        "title": "Samsung Galaxy S25 Ultra 512GB 12GB RAM",
         "category": "Smartphones",
         "brand": "Samsung",
         "fingerprint": {
@@ -104,7 +104,7 @@ CATALOG_PRODUCTS: List[Dict[str, Any]] = [
     # --------------------------------------------------------------------------
     {
         "id": "prod_iphone_16",
-        "title": "Apple iPhone 16 128GB Negro",
+        "title": "Apple iPhone 16 128GB",
         "category": "Smartphones",
         "brand": "Apple",
         "fingerprint": {
@@ -133,9 +133,11 @@ CATALOG_PRODUCTS: List[Dict[str, Any]] = [
             "Cámara": "48MP Fusion + 12MP Ultra Gran Angular",
         },
         "store_urls": {
-            "hiraoka": "https://hiraoka.com.pe/iphone-16-6-1-128gb-blanco",
-            "efe": "https://www.efe.com.pe/iphone-16-blk-128gb-bes-mye73be-a.html",
+            "falabella": "https://www.falabella.com.pe/falabella-pe/product/prod18120095/iPhone-16-128GB/20687062",
+            "tottus": "https://www.tottus.com.pe/tottus-pe/articulo/149214502/iphone-16-128gb-negro/149214504",
             "ripley": "https://simple.ripley.com.pe/iphone-16-128gb-2065365819351",
+            "hiraoka": "https://hiraoka.com.pe/iphone-16-6-1-128gb-negro",
+            "efe": "https://www.efe.com.pe/iphone-16-blk-128gb-bes-mye73be-a.html",
         },
     },
     # --------------------------------------------------------------------------
@@ -143,7 +145,7 @@ CATALOG_PRODUCTS: List[Dict[str, Any]] = [
     # --------------------------------------------------------------------------
     {
         "id": "prod_macbook_air_m5",
-        "title": "Apple MacBook Air 13.6 Pulgadas M5 16GB RAM 512GB SSD Silver",
+        "title": "Apple MacBook Air 13.6 Pulgadas M5 16GB RAM 512GB SSD",
         "category": "Laptops",
         "brand": "Apple",
         "fingerprint": {
@@ -223,7 +225,7 @@ CATALOG_PRODUCTS: List[Dict[str, Any]] = [
     # --------------------------------------------------------------------------
     {
         "id": "prod_ipad_11",
-        "title": "Apple iPad 11 Pulgadas A16 Wi-Fi 128GB Azul",
+        "title": "Apple iPad 11\" Chip A16 Wi-Fi 128GB",
         "category": "Tablets",
         "brand": "Apple",
         "fingerprint": {
@@ -263,7 +265,7 @@ CATALOG_PRODUCTS: List[Dict[str, Any]] = [
     # --------------------------------------------------------------------------
     {
         "id": "prod_xiaomi_redmi_note",
-        "title": "Xiaomi Redmi Note 15 Pro 5G 512GB 12GB RAM Café Moca",
+        "title": "Xiaomi Redmi Note 15 Pro 5G 512GB 12GB RAM",
         "category": "Smartphones",
         "brand": "Xiaomi",
         "fingerprint": {

@@ -22,6 +22,7 @@ import unicodedata
 from typing import Any, Callable, Dict, List, Optional, Sequence, Set, Tuple
 
 from app.core.logging import get_logger
+from app.collectors.color_stripper import strip_color_tokens
 from app.collectors.query_builder import (
     FORBIDDEN_QUERY_COLORS,
     FORBIDDEN_QUERY_MARKETING_WORDS,
@@ -49,7 +50,7 @@ ALL_8_PERU_STORES: Tuple[str, ...] = (
     "wong",
 )
 
-# Palabras de accesorios que deben bloquearse cuando el producto objetivo no es un accesorio
+# Palabras de accesorios y reacondicionados que deben bloquearse cuando el producto objetivo es nuevo
 UNIVERSAL_ACCESSORY_KEYWORDS: Tuple[str, ...] = (
     "funda",
     "fundas",
@@ -83,6 +84,14 @@ UNIVERSAL_ACCESSORY_KEYWORDS: Tuple[str, ...] = (
     "pencil",
     "stylus",
     "lapiz",
+    "reacondicionado",
+    "reacondicionados",
+    "reacondicionada",
+    "refurbished",
+    "renovado",
+    "renovada",
+    "seminuevo",
+    "openbox",
 )
 
 # Sufijos de gama/sub-modelo mutuamente excluyentes
@@ -92,11 +101,14 @@ STRICT_SUBMODEL_TIERS: Tuple[str, ...] = (
     "mini",
     "max",
     "ultra",
+    "plus",
     "fe",
     "lite",
     "fold",
     "flip",
     "neo",
+    "16e",
+    "15e",
 )
 
 # Grupos de equivalencia comercial de pulgadas en Tablets y Laptops
@@ -184,6 +196,7 @@ def _extract_target_profile(target_product: Any) -> Dict[str, Any]:
             tech_specs = {}
         fp_dict = {}
 
+    title = strip_color_tokens(title)
     norm_title = _normalize_corpus_text(title)
     norm_specs = _normalize_corpus_text(json.dumps(tech_specs, ensure_ascii=False))
 
@@ -285,9 +298,16 @@ def _extract_target_profile(target_product: Any) -> Dict[str, Any]:
             if w in SUBBRAND_LINE_TO_PARENT_BRAND:
                 brand_low = SUBBRAND_LINE_TO_PARENT_BRAND[w]
                 break
-            if w in {"apple", "samsung", "xiaomi", "lg", "asus", "lenovo", "hp", "sony", "honor", "motorola"}:
+            if w in {
+                "apple", "samsung", "xiaomi", "lg", "asus", "lenovo", "hp",
+                "sony", "honor", "motorola", "epson", "canon", "brother", "jvc", "hisense", "tcl"
+            }:
                 brand_low = w
                 break
+
+    # Si brand_low ya fue detectado, no exigir la marca padre explícitamente como model_token cuando hay línea/código
+    if brand_low and brand_low in model_tokens and len(model_tokens) > 1:
+        model_tokens = [t for t in model_tokens if t != brand_low]
 
     forbidden_tokens = [str(t).lower() for t in (fp_dict.get("forbidden_tokens") or [])]
 
@@ -436,8 +456,11 @@ def match_product_universal(target_product: Any, candidate_page_data: Any) -> bo
     target_norm = _normalize_corpus_text(profile["title"])
 
     # --------------------------------------------------------------------------
-    # REGLA 0: Bloqueo de Accesorios y Tokens Prohibidos (en title y url)
+    # REGLA 0: Bloqueo de Accesorios, Reacondicionados y Tokens Prohibidos (en title y url)
     # --------------------------------------------------------------------------
+    if "open box" in title_norm or "open box" in url_norm:
+        return False
+
     for acc_kw in UNIVERSAL_ACCESSORY_KEYWORDS:
         if (_has_word(acc_kw, title_norm) or _has_word(acc_kw, url_norm)) and not _has_word(acc_kw, target_norm):
             return False
