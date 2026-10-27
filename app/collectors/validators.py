@@ -277,7 +277,12 @@ def validate_product_identity(
         # para medidas de pantalla/resolución como '11', '13', '4k', 'evo'). Solo si scraped_title está vacío se usa scraped_url.
         is_screen_or_res_token = token in {"11", "13", "4k", "evo"}
         if is_screen_or_res_token:
-            found_token = _has_whole_word(token, title_and_specs)
+            full_screen_corpus = f"{title_and_specs} {scraped_url_norm}".strip()
+            found_token = _has_whole_word(token, full_screen_corpus)
+            if not found_token and token == "11":
+                found_token = _has_whole_word("10.9", full_screen_corpus) or _has_whole_word("10.8", full_screen_corpus)
+            elif not found_token and token == "13":
+                found_token = _has_whole_word("13.3", full_screen_corpus) or _has_whole_word("13.6", full_screen_corpus)
         else:
             found_token = _has_whole_word(token, primary_target)
         if not found_token:

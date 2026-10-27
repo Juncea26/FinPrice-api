@@ -18,7 +18,15 @@ from sqlalchemy.orm import selectinload
 
 from app.core.config import settings
 from app.core.logging import get_logger
-from app.collectors.catalog_urls import CATALOG_PRODUCTS, STORES_INFO
+from app.collectors.catalog_urls import (
+    CATALOG_PRODUCTS,
+    STORES_INFO,
+    load_persisted_urls_from_db,
+)
+from app.collectors.graph.smart_multi_graph import (
+    FinPriceMultiStoreGraph,
+    finprice_multi_store_graph,
+)
 from app.collectors.fingerprint_matcher import (
     ProductFingerprint,
     build_fingerprint_from_catalog_item,
@@ -125,6 +133,26 @@ class CollectorOrchestrator:
     def __init__(self):
         self.last_sync_timestamp: Optional[str] = None
         self._is_syncing: bool = False
+        self.graph: FinPriceMultiStoreGraph = finprice_multi_store_graph
+
+    async def run_multi_store_graph(
+        self,
+        target_product: Any,
+        stores_to_check: Optional[List[str]] = None,
+        enable_cascade_search: bool = True,
+        enable_external_dork: bool = False,
+    ) -> List[Dict[str, Any]]:
+        """
+        Ejecuta el pipeline de grafo dirigido FinPriceMultiStoreGraph (5 nodos al estilo ScrapeGraphAI)
+        para sincronizar un producto contra las 8 tiendas oficiales del Perú.
+        """
+        return await self.graph.run(
+            target_product=target_product,
+            stores_to_check=stores_to_check,
+            enable_cascade_search=enable_cascade_search,
+            enable_external_dork=enable_external_dork,
+            fetch_fn=fetch_page,
+        )
 
     def get_stores_status(self) -> List[Dict[str, Any]]:
         """Retorna el estado de todas las tiendas oficiales y su Circuit Breaker."""
@@ -455,8 +483,9 @@ class CollectorOrchestrator:
         start_time = time.time()
         logger.info("Iniciando recolección REAL en vivo con Triple Candado de Integridad...")
 
-        # Primero sanear cualquier oferta inválida existente en BD
+        # Primero sanear cualquier oferta inválida existente en BD y poblar caché de URLs verificadas
         await self.sanitize_database_offers(session=session)
+        await load_persisted_urls_from_db(session=session)
 
         total_offers_updated = 0
 
@@ -466,17 +495,13 @@ class CollectorOrchestrator:
             tech_specs = item.get("tech_specs", {})
             store_urls: Dict[str, str] = item.get("store_urls", {})
 
-            # Resolver y verificar ofertas concurrentemente con UniversalProductResolver
-            identity_verified_offers = await universal_resolver.resolve_product_across_8_stores(
+            # Ejecutar el Pipeline de Grafo Dirigido FinPriceMultiStoreGraph (5 nodos al estilo ScrapeGraphAI):
+            # SearchInternetNode -> FetchNode -> ParseNode -> SchemaExtractorNode -> MergeAnswersNode
+            verified_offers = await self.graph.run(
                 target_product=item,
                 stores_to_check=list(store_urls.keys()),
                 enable_cascade_search=False,
-                scrape_fn=self.scrape_store_url,
-            )
-
-            # CANDADO 3: Filtro estadístico anti-outliers y cordura de precio (0.55 <= price / median <= 1.65)
-            verified_offers = validate_cross_store_prices(
-                filter_offers_by_price_sanity(identity_verified_offers)
+                fetch_fn=fetch_page,
             )
 
             # Si no hubo respuesta en vivo (ej. falla de red temporal), buscar si ya existían ofertas previas válidas en BD

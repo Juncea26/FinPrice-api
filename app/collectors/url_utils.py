@@ -10,8 +10,8 @@ Canonicalizador de URLs y soporte de las 8 estructuras oficiales de tiendas reta
 8. Hiraoka (hiraoka): https://hiraoka.com.pe/{slug}
 """
 import re
-from typing import Dict, Optional, Tuple
-from urllib.parse import parse_qsl, quote, quote_plus, urlencode, urlparse, urlunparse
+from typing import Dict, List, Optional, Tuple
+from urllib.parse import parse_qsl, quote, quote_plus, unquote, urlencode, urlparse, urlunparse
 
 # Parámetros basura de publicidad, atribución y tracking que deben eliminarse siempre
 AD_AND_TRACKING_PARAMS = {
@@ -192,3 +192,51 @@ def build_store_search_url(store_id: str, compact_query: str) -> Optional[str]:
     if store_id == "ripley":
         return f"https://{host}/search/{quote(q_clean)}"
     return None
+
+
+def build_external_dork_search_url(store_id: str, compact_query: str) -> Optional[str]:
+    """
+    Construye una URL de búsqueda externa (Canal 3 de SearchInternetNode) usando
+    el dork site:{canonical_host} {compact_query}.
+    """
+    q_clean = re.sub(r"\s+", " ", (compact_query or "")).strip()
+    if not q_clean or store_id not in CANONICAL_HOSTS:
+        return None
+    host = CANONICAL_HOSTS[store_id]
+    dork = f"site:{host} {q_clean}"
+    return f"https://html.duckduckgo.com/html/?q={quote_plus(dork)}"
+
+
+def extract_store_urls_from_dork_html(
+    html: str, store_id: str, limit: int = 5
+) -> List[str]:
+    """
+    Extrae y canonicaliza URLs reales de fichas de producto de la tienda `store_id`
+    desde el HTML de un buscador externo (Canal 3 de SearchInternetNode).
+    """
+    if not html or store_id not in CANONICAL_HOSTS:
+        return []
+
+    host = CANONICAL_HOSTS[store_id]
+    found: List[str] = []
+
+    # Extraer tanto enlaces directos como parámetros uddg=... codificados
+    for uddg_match in re.findall(r"uddg=([^&\"'>\s]+)", html):
+        decoded = unquote(uddg_match)
+        if host in decoded:
+            _, clean_u = canonicalize_store_url(decoded)
+            if clean_u and is_valid_store_product_url(store_id, clean_u) and clean_u not in found:
+                found.append(clean_u)
+                if len(found) >= limit:
+                    return found
+
+    for direct_match in re.findall(r"https?://[^\s\"'<>]+", html):
+        if host in direct_match:
+            _, clean_u = canonicalize_store_url(direct_match)
+            if clean_u and is_valid_store_product_url(store_id, clean_u) and clean_u not in found:
+                found.append(clean_u)
+                if len(found) >= limit:
+                    return found
+
+    return found
+

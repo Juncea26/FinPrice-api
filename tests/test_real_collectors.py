@@ -1628,3 +1628,148 @@ def test_ipad_11_a16_synchronizes_falabella_tottus_hiraoka_and_efe(client: TestC
     )
 
 
+# ==============================================================================
+# 8. PRUEBAS DEL PIPELINE DE GRAFO DIRIGIDO (ScrapeGraphAI-style FinPriceMultiStoreGraph)
+# ==============================================================================
+
+@pytest.mark.asyncio
+async def test_scrapegraph_style_5_nodes_full_pipeline_across_8_stores():
+    """
+    Verifica la ejecución completa del grafo dirigido de 5 nodos en app/collectors/graph/:
+    1. SearchInternetNode (3 canales para las 8 tiendas)
+    2. FetchNode (descarga concurrente HTTP/2 + expansión de grillas)
+    3. ParseNode (destilación de HTML/JSON-LD/__NEXT_DATA__/Tablas a ParsedPageNodeData)
+    4. SchemaExtractorNode (resolución Multi-SKU y extracción tipada a ExtractedOfferSchema)
+    5. MergeAnswersNode (validación sobre Corpus Completo y filtro anti-outliers)
+    """
+    from app.collectors.graph import (
+        ALL_8_PERU_STORES,
+        ExtractedOfferSchema,
+        FetchNode,
+        FinPriceMultiStoreGraph,
+        GraphState,
+        MergeAnswersNode,
+        ParsedPageNodeData,
+        ParseNode,
+        ProductTargetSpec,
+         SchemaExtractorNode,
+        SearchInternetNode,
+        SmartScraperMultiGraph,
+    )
+
+    assert SmartScraperMultiGraph is FinPriceMultiStoreGraph
+    assert set(ALL_8_PERU_STORES) == {
+        "falabella", "ripley", "tottus", "efe", "curacao", "hiraoka", "metro", "wong"
+    }
+
+    target_ipad = {
+        "id": "prod_ipad_11_graph_test",
+        "title": "Apple iPad 11 Pulgadas A16 Wi-Fi 128GB Azul",
+        "category": "Tablets",
+        "brand": "Apple",
+        "tech_specs": {"Almacenamiento": "128GB", "Pantalla": "11 Pulgadas"},
+        "store_urls": {
+            "falabella": "https://www.falabella.com.pe/falabella-pe/product/prod18440041/iPad-Apple-11-Chip-A16-Wi-Fi/21014911?kid=bnnext",
+            "tottus": "https://www.tottus.com.pe/tottus-pe/articulo/150930380/ipad-a16-wifi-128gb-azul/150930381?gad_source=1",
+            "hiraoka": "https://hiraoka.com.pe/ipad-11-11ma-gen-a16-wifi-128gb-plata?gsImpressionId=abc",
+            "efe": "https://www.efe.com.pe/ipad-a16-wi-fi-md4e4ll-a-11-128gb-6gb-p26513743.html?pos=1",
+        },
+    }
+
+    def mock_graph_fetch(url: str):
+        if "falabella.com.pe/falabella-pe/product/prod18440041" in url:
+            # Falabella omite '128GB' en el título principal y tiene múltiples variantes SKU (256GB y 128GB)
+            return """
+            <html><script id="__NEXT_DATA__" type="application/json">
+            {"props":{"pageProps":{"productData":{"id":"prod18440041","name":"iPad Apple 11 Chip A16 Wi-Fi","description":"Tablet Apple con 128GB","attributes":{"specifications":[{"name":"Capacidad de almacenamiento","value":"128GB"},{"name":"Tamaño de la pantalla","value":"11"}]},"variants":[{"id":"21014999","name":"IPAD A16 WIFI 256GB SLV","prices":[{"type":"cmrPrice","price":["2,499"],"crossed":false}]},{"id":"21014911","name":"IPAD A16 WIFI 128GB SLV","prices":[{"type":"cmrPrice","price":["1,899"],"crossed":false},{"type":"normalPrice","price":["2,599"],"crossed":true}],"medias":[{"url":"https://media.falabella.com/falabellaPE/21014911_1/public"}]}]}}}}
+            </script></html>
+            """
+        if "tottus.com.pe/tottus-pe/articulo/150930380" in url:
+            # Tottus omite '11' en el título principal y lo guarda en attributes.specifications
+            return """
+            <html><script id="__NEXT_DATA__" type="application/json">
+            {"props":{"pageProps":{"productData":{"id":"150930380","name":"Ipad A16 Wifi 128GB Azul","attributes":{"specifications":[{"name":"Tamaño de la pantalla","value":"11"},{"name":"Capacidad de almacenamiento","value":"128GB"},{"name":"marca","value":"APPLE"}]},"variants":[{"id":"150930381","name":"Ipad A16 Wifi 128GB Azul","prices":[{"type":"internetPrice","price":["1,899"],"crossed":false},{"type":"normalPrice","price":["2,599"],"crossed":true}],"medias":[{"url":"https://media.falabella.com/tottusPE/43620624_1/public"}]}]}}}}
+            </script></html>
+            """
+        if "hiraoka.com.pe/ipad-11" in url:
+            return """
+            <html><body>
+              <div class="product-info-main">
+                <h1 class="page-title"><span data-ui-id="page-title-wrapper">iPad 10.9" (11ma Gen) A16 WiFi 128GB Plata</span></h1>
+              </div>
+              <script type="application/ld+json">
+              {"@type":"Product","name":"iPad 10.9\\" (11ma Gen) A16 WiFi 128GB Plata","image":"https://hiraoka.com.pe/img.jpg","offers":[{"@type":"Offer","price":"1949.00"}]}
+              </script>
+            </body></html>
+            """
+        if "efe.com.pe/ipad-a16" in url:
+            return """
+            <html><body>
+              <div class="product-info-main">
+                <h1 class="page-title"><span data-ui-id="page-title-wrapper">iPad A16 Wi-Fi 11" 128GB 6GB</span></h1>
+                <span data-price-type="finalPrice" data-price-amount="1979.00"><span class="price">S/ 1,979.00</span></span>
+              </div>
+            </body></html>
+            """
+        # Curacao devuelve una funda/accesorio de S/ 89.00 que debe ser rechazada por MergeAnswersNode
+        if "lacuracao.pe" in url:
+            return """
+            <html><body>
+              <div class="product-info-main">
+                <h1 class="page-title"><span data-ui-id="page-title-wrapper">Funda Case para iPad 11 A16 128GB</span></h1>
+                <span data-price-type="finalPrice" data-price-amount="89.00"><span class="price">S/ 89.00</span></span>
+              </div>
+            </body></html>
+            """
+        # Metro devuelve un iPad Air (sub-modelo intruso) que debe ser rechazado por MergeAnswersNode
+        if "metro.pe" in url:
+            return json.dumps([
+                {
+                    "productName": "iPad Air 11 A16 128GB Wi-Fi",
+                    "brand": "Apple",
+                    "link": "https://www.metro.pe/ipad-air-11-128gb/p",
+                    "items": [{"sellers": [{"commertialOffer": {"Price": 2899.0, "ListPrice": 3299.0, "AvailableQuantity": 5, "IsAvailable": True}}]}],
+                }
+            ])
+        return None
+
+    graph = FinPriceMultiStoreGraph(fetch_fn=mock_graph_fetch)
+    state: GraphState = await graph.execute_state(
+        target_product=target_ipad,
+        stores_to_check=ALL_8_PERU_STORES,
+        enable_cascade_search=True,
+        enable_external_dork=True,
+    )
+
+    # Verificar que los 5 nodos dejaron traza en state.execution_trace
+    assert len(state.execution_trace) == 5
+    assert state.execution_trace[0].startswith("SearchInternetNode:")
+    assert state.execution_trace[1].startswith("FetchNode:")
+    assert state.execution_trace[2].startswith("ParseNode:")
+    assert state.execution_trace[3].startswith("SchemaExtractorNode:")
+    assert state.execution_trace[4].startswith("MergeAnswersNode:")
+
+    # Verificar esquemas tipados intermedios
+    assert isinstance(state.target, ProductTargetSpec)
+    assert state.target.storage_gb == 128
+    assert state.target.screen_inches == 11.0
+    assert state.target.requires_wifi_only_tablet is True
+    assert all(isinstance(pn, ParsedPageNodeData) for pn in state.parsed_nodes)
+    assert all(isinstance(eo, ExtractedOfferSchema) for eo in state.verified_offers)
+
+    # Verificar que solo las 4 tiendas legítimas aprobaron y que los parámetros de tracking fueron limpiados
+    verified_by_store = {off.store_id: off for off in state.verified_offers}
+    assert set(verified_by_store.keys()) == {"falabella", "tottus", "hiraoka", "efe"}
+    assert "curacao" not in verified_by_store
+    assert "metro" not in verified_by_store
+
+    assert verified_by_store["falabella"].price == 1899.0
+    assert verified_by_store["falabella"].variant_sku_id == "21014911"
+    assert "?" not in verified_by_store["falabella"].offer_url
+    assert verified_by_store["tottus"].price == 1899.0
+    assert "?" not in verified_by_store["tottus"].offer_url
+    assert verified_by_store["hiraoka"].price == 1949.0
+    assert verified_by_store["efe"].price == 1979.0
+
+
+

@@ -1,9 +1,11 @@
 """
-Registro oficial de productos y URLs reales verificadas en retailers del Perú.
+Registro oficial de productos, semilla de URLs reales verificadas en retailers del Perú
+y caché persistente de URLs verificadas sincronizada con la base de datos.
 REGLA INQUEBRANTABLE: Cero URLs inventadas o de prueba, y coincidencia 100% exacta
 de familia, modelo, generación y almacenamiento (Zero False-Positive Policy).
 """
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
+from app.collectors.url_utils import canonicalize_store_url
 
 # Tiendas retail peruanas oficiales
 STORES_INFO: Dict[str, Dict[str, str]] = {
@@ -296,3 +298,81 @@ CATALOG_PRODUCTS: List[Dict[str, Any]] = [
         },
     },
 ]
+
+# ==============================================================================
+# CACHÉ PERSISTENTE DE URLS VERIFICADAS (SEMILLA + BASE DE DATOS)
+# ==============================================================================
+
+VERIFIED_URL_CACHE: Dict[str, Dict[str, str]] = {
+    item["id"]: dict(item.get("store_urls", {})) for item in CATALOG_PRODUCTS
+}
+
+
+def get_verified_store_urls_for_product(
+    product_id: str,
+    extra_seed_urls: Optional[Dict[str, str]] = None,
+) -> Dict[str, str]:
+    """
+    Retorna el mapa consolidado de URLs directas verificadas (semilla + caché persistente)
+    para un producto, limpias de parámetros de tracking.
+    """
+    merged: Dict[str, str] = {}
+    if product_id and product_id in VERIFIED_URL_CACHE:
+        for s_id, raw_u in VERIFIED_URL_CACHE[product_id].items():
+            _, clean_u = canonicalize_store_url(raw_u)
+            if clean_u:
+                merged[s_id] = clean_u
+
+    for item in CATALOG_PRODUCTS:
+        if item.get("id") == product_id:
+            for s_id, raw_u in (item.get("store_urls") or {}).items():
+                _, clean_u = canonicalize_store_url(raw_u)
+                if clean_u:
+                    merged[s_id] = clean_u
+            break
+
+    if extra_seed_urls:
+        for s_id, raw_u in extra_seed_urls.items():
+            _, clean_u = canonicalize_store_url(raw_u)
+            if clean_u:
+                merged[s_id] = clean_u
+
+    return merged
+
+
+def register_verified_store_url(product_id: str, store_id: str, offer_url: str) -> None:
+    """
+    Registra una URL real verificada en la caché en memoria para acelerar
+    futuras ejecuciones del grafo (SearchInternetNode Canal 1).
+    """
+    if not product_id or not store_id or not offer_url:
+        return
+    detected_store, clean_u = canonicalize_store_url(offer_url)
+    if not clean_u or (detected_store != "unknown" and detected_store != store_id):
+        return
+    VERIFIED_URL_CACHE.setdefault(product_id, {})[store_id] = clean_u
+
+
+async def load_persisted_urls_from_db(
+    session: Any,
+    product_id: Optional[str] = None,
+) -> Dict[str, Dict[str, str]]:
+    """
+    Sincroniza la caché de URLs verificadas leyendo las StoreOfferEntity reales
+    persistidas en la base de datos SQLite/PostgreSQL.
+    """
+    from sqlalchemy import select
+    from app.models.entities import StoreOfferEntity
+
+    stmt = select(StoreOfferEntity)
+    if product_id:
+        stmt = stmt.where(StoreOfferEntity.product_id == product_id)
+
+    res = await session.execute(stmt)
+    offers = res.scalars().all()
+    for off in offers:
+        if off.product_id and off.store_id and off.offer_url:
+            register_verified_store_url(off.product_id, off.store_id, off.offer_url)
+
+    return VERIFIED_URL_CACHE
+
