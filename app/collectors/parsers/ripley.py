@@ -100,12 +100,20 @@ def parse_ripley(
                 official_img = prod.get("primaryImage")
 
             if extracted_prices:
+                prod_desc = str(
+                    prod.get("description") or prod.get("longDescription") or prod.get("shortDescription") or ""
+                ).strip()
+                extracted_meta = extract_product_specs(html, title=prod_title, store_id="ripley")
                 if canonical_title and not validate_product_identity(
-                    canonical_title, prod_title, offer_url, store_id="ripley"
+                    canonical_title,
+                    prod_title,
+                    offer_url,
+                    store_id="ripley",
+                    tech_specs=extracted_meta["tech_specs"],
+                    description=prod_desc,
                 ):
                     return None
 
-                extracted_meta = extract_product_specs(html, title=prod_title, store_id="ripley")
                 best_p = min(extracted_prices)
                 list_p = orig_price or max(extracted_prices)
                 return {
@@ -117,9 +125,65 @@ def parse_ripley(
                     "brand": extracted_meta["brand"],
                     "tech_specs": extracted_meta["tech_specs"],
                     "features": extracted_meta["features"],
+                    "description": prod_desc,
                 }
         except Exception as e:
             logger.debug(f"Error parseando __NEXT_DATA__ en Ripley: {e}")
+
+    # 1b. Estrategia window.__PRELOADED_STATE__.product.product
+    preloaded_match = re.search(
+        r"window\.__PRELOADED_STATE__\s*=\s*(\{.*?\})\s*(?:;|</script>)",
+        html,
+        flags=re.DOTALL,
+    )
+    if preloaded_match:
+        try:
+            state = json.loads(preloaded_match.group(1))
+            prod = state.get("product", {}).get("product", {}) or state.get("product", {})
+            prod_title = str(prod.get("name") or h1_title).strip()
+            prod_desc = str(prod.get("description") or prod.get("shortDescription") or "").strip()
+            prices_node = prod.get("prices", {}) or prod.get("parentpricestock", {}).get("price", {})
+            extracted_p = []
+            orig_p = None
+            if isinstance(prices_node, dict):
+                for k_p in ("cardPrice", "offerPrice", "ripley", "sale"):
+                    v_p = prices_node.get(k_p)
+                    num_p = clean_number(v_p.get("valueNumber") if isinstance(v_p, dict) else v_p)
+                    if num_p:
+                        extracted_p.append(num_p)
+                for k_orig in ("listPrice", "master", "normalPrice"):
+                    v_o = prices_node.get(k_orig)
+                    num_o = clean_number(v_o.get("valueNumber") if isinstance(v_o, dict) else v_o)
+                    if num_o:
+                        orig_p = num_o
+            if extracted_p:
+                extracted_meta = extract_product_specs(html, title=prod_title, store_id="ripley")
+                if canonical_title and not validate_product_identity(
+                    canonical_title,
+                    prod_title,
+                    offer_url,
+                    store_id="ripley",
+                    tech_specs=extracted_meta["tech_specs"],
+                    description=prod_desc,
+                ):
+                    return None
+                best_p = min(extracted_p)
+                list_p = orig_p or max(extracted_p)
+                imgs = prod.get("images") or []
+                img_u = imgs[0] if isinstance(imgs, list) and imgs else prod.get("fullImage")
+                return {
+                    "title": prod_title,
+                    "price": best_p,
+                    "original_price": list_p if list_p > best_p else best_p,
+                    "image_url": img_u,
+                    "offer_url": offer_url,
+                    "brand": extracted_meta["brand"],
+                    "tech_specs": extracted_meta["tech_specs"],
+                    "features": extracted_meta["features"],
+                    "description": prod_desc,
+                }
+        except Exception as e:
+            logger.debug(f"Error parseando __PRELOADED_STATE__ en Ripley: {e}")
 
     # 2. Estrategia JSON-LD
     for s in soup.find_all("script", type="application/ld+json"):

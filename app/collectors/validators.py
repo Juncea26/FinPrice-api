@@ -225,9 +225,11 @@ def validate_product_identity(
     scraped_url: str,
     store_id: str = "unknown",
     tech_specs: Optional[Dict[str, Any]] = None,
+    description: str = "",
 ) -> bool:
     """
-    Valida estrictamente que la oferta extraída corresponda al mismo producto canónico.
+    Valida estrictamente que la oferta extraída corresponda al mismo producto canónico
+    inspeccionando tanto el título y la URL como el corpus de tech_specs y description.
     Rechaza accesorios, modelos distintos (ej. Redmi A7 vs Redmi Note 15 Pro),
     variantes sin sufijo crítico (ej. Note 15 vs Note 15 Pro) y capacidades distintas (128GB vs 512GB).
     """
@@ -237,6 +239,10 @@ def validate_product_identity(
     canonical_norm = normalize_text(canonical_title)
     scraped_title_norm = normalize_text(scraped_title)
     scraped_url_norm = normalize_url_slug(scraped_url)
+    specs_text = ""
+    if tech_specs and isinstance(tech_specs, dict):
+        specs_text = normalize_text(" ".join(f"{k} {v}" for k, v in tech_specs.items()))
+    desc_norm = normalize_text(description)
 
     if not scraped_title_norm and not scraped_url_norm:
         logger.warning(
@@ -263,11 +269,18 @@ def validate_product_identity(
     # --------------------------------------------------------------------------
     critical_tokens, required_storage, required_ram = extract_critical_model_tokens(canonical_title)
 
-    # Si existe scraped_title, TODOS los tokens críticos deben estar en scraped_title (o en el slug si scraped_title está vacío)
     primary_target = scraped_title_norm if scraped_title_norm else scraped_url_norm
+    title_and_specs = f"{primary_target} {specs_text} {desc_norm}".strip()
 
     for token in critical_tokens:
-        if not _has_whole_word(token, primary_target):
+        # Si existe scraped_title, los tokens de modelo/línea deben estar en scraped_title (o en tech_specs/description
+        # para medidas de pantalla/resolución como '11', '13', '4k', 'evo'). Solo si scraped_title está vacío se usa scraped_url.
+        is_screen_or_res_token = token in {"11", "13", "4k", "evo"}
+        if is_screen_or_res_token:
+            found_token = _has_whole_word(token, title_and_specs)
+        else:
+            found_token = _has_whole_word(token, primary_target)
+        if not found_token:
             logger.warning(
                 f"[IDENTITY_MISMATCH] Oferta descartada en {store_id}: "
                 f"esperado='{canonical_title}', recibido='{scraped_title}' ({scraped_url})"
@@ -286,7 +299,6 @@ def validate_product_identity(
                 return False
 
     # Si tanto scraped_title como scraped_url están presentes, verificar que scraped_url no sea de otro modelo
-    # (ej. URL dice 'redmi-a7' o 'galaxy-s26' cuando el canónico es 'note 15' o 's25')
     if scraped_title_norm and scraped_url_norm:
         url_model_tokens = [
             t
@@ -310,19 +322,18 @@ def validate_product_identity(
             return False
 
     # --------------------------------------------------------------------------
-    # 3. VALIDACIÓN DE ALMACENAMIENTO (STORAGE MATCH)
+    # 3. VALIDACIÓN DE ALMACENAMIENTO (STORAGE MATCH) EN EL CORPUS COMPLETO
     # --------------------------------------------------------------------------
     if required_storage:
-        specs_text = ""
-        if tech_specs and isinstance(tech_specs, dict):
-            specs_text = normalize_text(" ".join(f"{k} {v}" for k, v in tech_specs.items()))
-
-        # Extraer capacidades de almacenamiento mencionadas en scraped_title, specs y URL
+        # Extraer capacidades de almacenamiento mencionadas en scraped_title, specs, description y URL
         title_storages = {
             m for m in re.findall(r"\b(\d+(?:gb|tb))\b", scraped_title_norm) if m in STORAGE_TOKENS_SET
         }
         specs_storages = {
             m for m in re.findall(r"\b(\d+(?:gb|tb))\b", specs_text) if m in STORAGE_TOKENS_SET
+        }
+        desc_storages = {
+            m for m in re.findall(r"\b(\d+(?:gb|tb))\b", desc_norm) if m in STORAGE_TOKENS_SET
         }
         url_storages = {
             m for m in re.findall(r"\b(\d+(?:gb|tb))\b", scraped_url_norm) if m in STORAGE_TOKENS_SET
@@ -344,10 +355,11 @@ def validate_product_identity(
             )
             return False
 
-        # Debe coincidir con required_storage en al menos uno de: scraped_title, tech_specs o scraped_url
+        # Debe coincidir con required_storage en al menos uno de: scraped_title, tech_specs, description o scraped_url
         has_storage_match = (
             (required_storage in title_storages)
             or (required_storage in specs_storages)
+            or (required_storage in desc_storages)
             or (not title_storages and required_storage in url_storages)
         )
         if not has_storage_match:

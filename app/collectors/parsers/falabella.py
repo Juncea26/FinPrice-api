@@ -103,15 +103,66 @@ def parse_falabella(
 
             prod = props.get("productData", {}) or props.get("product", {})
             prod_title = str(prod.get("name") or prod.get("displayName") or h1_title).strip()
+            prod_desc = " ".join(
+                filter(
+                    None,
+                    [
+                        str(prod.get("description") or "").strip(),
+                        str(prod.get("longDescription") or "").strip(),
+                    ],
+                )
+            )
             variants = prod.get("variants", [])
             extracted_prices = []
             orig_price = None
             official_img = None
+            variant_name = ""
+            variant_id = ""
 
-            if variants:
-                v = variants[0]
-                if not prod_title and v.get("name"):
-                    prod_title = str(v["name"]).strip()
+            if variants and isinstance(variants, list):
+                # Determinar qué variante SKU seleccionar (Multi-SKU Variant Resolution)
+                url_parts = [p for p in offer_url.split("/") if p]
+                url_tail_sku = url_parts[-1] if len(url_parts) >= 6 else ""
+
+                req_storage_tok = None
+                if canonical_title:
+                    m_st = re.search(r"\b(\d{2,4}\s*(?:GB|TB))\b", canonical_title, flags=re.IGNORECASE)
+                    if m_st:
+                        req_storage_tok = re.sub(r"\s+", "", m_st.group(1)).lower()
+
+                selected_v = None
+                # 1. Coincidencia por SKU ID explícito en la URL
+                if url_tail_sku:
+                    for v_cand in variants:
+                        if isinstance(v_cand, dict) and str(v_cand.get("id") or "") == url_tail_sku:
+                            selected_v = v_cand
+                            break
+
+                # 2. Coincidencia por capacidad de almacenamiento (ej. 128GB, 256GB, 512GB) dentro de variants[]
+                if selected_v is None and req_storage_tok:
+                    for v_cand in variants:
+                        if not isinstance(v_cand, dict):
+                            continue
+                        v_blob = json.dumps(v_cand, ensure_ascii=False).lower().replace(" ", "")
+                        if req_storage_tok in v_blob and v_cand.get("prices"):
+                            selected_v = v_cand
+                            break
+
+                # 3. Fallback a la primera variante con precios activos
+                if selected_v is None:
+                    for v_cand in variants:
+                        if isinstance(v_cand, dict) and v_cand.get("prices"):
+                            selected_v = v_cand
+                            break
+                    if selected_v is None:
+                        selected_v = variants[0]
+
+                v = selected_v
+                variant_id = str(v.get("id") or "").strip()
+                variant_name = str(v.get("name") or "").strip()
+                if not prod_title and variant_name:
+                    prod_title = variant_name
+
                 prices = v.get("prices", [])
                 for p_item in prices:
                     p_type = p_item.get("type", "")
@@ -123,17 +174,36 @@ def parse_falabella(
                         if p_type == "normalPrice" or p_item.get("crossed"):
                             orig_price = num
 
-                medias = v.get("medias", [])
+                medias = v.get("medias", []) or prod.get("medias", [])
                 if medias and isinstance(medias[0], dict) and medias[0].get("url"):
                     official_img = medias[0]["url"]
 
+                # Si la variante tiene SKU ID explícito y la URL tiene formato /product/{id}/{slug}/{sku}, actualizar al SKU de la variante
+                if variant_id:
+                    m_url = re.match(
+                        r"^(https://www\.(?:falabella|tottus)\.com\.pe/(?:falabella-pe|tottus-pe)/(?:product|articulo)/[^/]+/[^/]+)(?:/[^/?#]+)?$",
+                        offer_url,
+                    )
+                    if m_url:
+                        offer_url = f"{m_url.group(1)}/{variant_id}"
+
             if extracted_prices:
+                full_desc = " ".join(filter(None, [prod_desc, variant_name])).strip()
+                extracted_meta = extract_product_specs(
+                    html,
+                    title=f"{prod_title} {variant_name}".strip(),
+                    store_id="tottus" if "tottus.com.pe" in offer_url else "falabella",
+                )
                 if canonical_title and not validate_product_identity(
-                    canonical_title, prod_title, offer_url, store_id="falabella"
+                    canonical_title,
+                    prod_title,
+                    offer_url,
+                    store_id="tottus" if "tottus.com.pe" in offer_url else "falabella",
+                    tech_specs=extracted_meta["tech_specs"],
+                    description=full_desc,
                 ):
                     return None
 
-                extracted_meta = extract_product_specs(html, title=prod_title, store_id="falabella")
                 best_p = min(extracted_prices)
                 list_p = orig_price or max(extracted_prices)
                 return {
@@ -145,6 +215,8 @@ def parse_falabella(
                     "brand": extracted_meta["brand"],
                     "tech_specs": extracted_meta["tech_specs"],
                     "features": extracted_meta["features"],
+                    "description": full_desc,
+                    "variant_sku_id": variant_id,
                 }
         except Exception as e:
             logger.debug(f"Error parseando __NEXT_DATA__ en Falabella: {e}")

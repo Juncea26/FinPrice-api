@@ -152,6 +152,18 @@ def parse_conectaretail(
 
     h1_title = _extract_main_h1_title(soup)
     extracted_meta = extract_product_specs(html, title=h1_title, store_id="conectaretail")
+    desc_el = soup.select_one(
+        ".product.attribute.description .value, "
+        ".product.attribute.overview .value, "
+        ".product.attribute.description, "
+        ".product.attribute.overview"
+    )
+    meta_desc = soup.find("meta", attrs={"name": "description"})
+    page_desc = (
+        desc_el.get_text(" ", strip=True)
+        if desc_el
+        else (str(meta_desc.get("content") or "").strip() if meta_desc else "")
+    )
 
     # Buscar imagen oficial en el bloque de galería principal o meta og:image de la ficha
     gallery_img = soup.select_one(
@@ -191,7 +203,12 @@ def parse_conectaretail(
                 old_p = clean_number(old_span.get("data-price-amount")) if old_span else None
 
                 if canonical_title and not validate_product_identity(
-                    canonical_title, h1_title, offer_url, store_id="conectaretail"
+                    canonical_title,
+                    h1_title,
+                    offer_url,
+                    store_id="conectaretail",
+                    tech_specs=extracted_meta["tech_specs"],
+                    description=page_desc,
                 ):
                     return None
 
@@ -204,6 +221,7 @@ def parse_conectaretail(
                     "brand": extracted_meta["brand"],
                     "tech_specs": extracted_meta["tech_specs"],
                     "features": extracted_meta["features"],
+                    "description": page_desc,
                 }
 
     # 2. Estrategia JSON-LD del Producto Principal

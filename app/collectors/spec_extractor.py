@@ -30,6 +30,8 @@ CANONICAL_SPEC_MAP: Dict[str, Tuple[str, ...]] = {
         "procesador",
         "modelo del procesador",
         "modelo de procesador",
+        "procesador especifico txt",
+        "marca procesador",
         "chip",
         "tipo de procesador",
         "cpu",
@@ -209,16 +211,18 @@ def map_to_canonical_key(raw_label: str) -> Optional[str]:
 
 def normalize_brand(raw_brand: Optional[str], title: str = "") -> str:
     """Normaliza la marca a su capitalización estándar o la infiere desde el título."""
+    invalid_brands = {"no aplica", "n/a", "na", "ninguno", "ninguna", "otro", "otra", "sin marca", "generico"}
     if raw_brand:
         cleaned = str(raw_brand).strip()
         lower = _clean_key(cleaned)
-        if lower in KNOWN_BRANDS_MAP:
-            return KNOWN_BRANDS_MAP[lower]
-        for token in lower.split():
-            if token in KNOWN_BRANDS_MAP:
-                return KNOWN_BRANDS_MAP[token]
-        if len(cleaned) >= 2 and not cleaned.isdigit():
-            return cleaned.upper() if len(cleaned) <= 3 else cleaned.title()
+        if lower not in invalid_brands:
+            if lower in KNOWN_BRANDS_MAP:
+                return KNOWN_BRANDS_MAP[lower]
+            for token in lower.split():
+                if token in KNOWN_BRANDS_MAP:
+                    return KNOWN_BRANDS_MAP[token]
+            if len(cleaned) >= 2 and not cleaned.isdigit():
+                return cleaned.upper() if len(cleaned) <= 3 else cleaned.title()
 
     if title:
         title_norm = _clean_key(title)
@@ -276,7 +280,9 @@ def normalize_processor(raw_val: str) -> Optional[str]:
     if not raw_val:
         return None
     s = re.sub(r"\s+", " ", str(raw_val)).strip(" .,-")
-    if not s or len(s) < 2 or s.lower() in {"si", "sí", "no", "n/a", "otro"}:
+    if not s or len(s) < 2 or s.lower() in {
+        "si", "sí", "no", "n/a", "otro", "no aplica", "hexa core", "octa core", "quad core", "dual core"
+    }:
         return None
     # Estandarizaciones frecuentes
     s = re.sub(r"\bqualcomm\s+snapdragon\b", "Snapdragon", s, flags=re.IGNORECASE)
@@ -499,35 +505,62 @@ def _extract_html_spec_tables(soup: BeautifulSoup) -> List[Tuple[str, str]]:
 
 
 def _extract_falabella_json_specs(soup: BeautifulSoup) -> List[Tuple[str, str]]:
-    """Extrae specifications / attributes desde #__NEXT_DATA__ de Falabella."""
+    """Extrae specifications / attributes desde #__NEXT_DATA__ de Falabella y Tottus (incluyendo variants)."""
     pairs: List[Tuple[str, str]] = []
     next_script = soup.find("script", id="__NEXT_DATA__")
     if not next_script or not next_script.string:
         return pairs
+
+    def _collect_spec_list(spec_items: Any) -> None:
+        if not isinstance(spec_items, list):
+            return
+        for item in spec_items:
+            if isinstance(item, dict):
+                k = str(item.get("name") or item.get("label") or item.get("id") or "")
+                v = item.get("value") or item.get("values")
+                if isinstance(v, list):
+                    v = ", ".join(str(x) for x in v if x)
+                if k and v:
+                    pairs.append((k, str(v)))
+
     try:
         data = json.loads(next_script.string)
         props = data.get("props", {}).get("pageProps", {})
         prod = props.get("productData", {}) or props.get("product", {})
-        if prod.get("brand"):
-            pairs.append(("Marca", str(prod["brand"])))
+        brand_val = prod.get("brand") or prod.get("brandName")
+        if brand_val:
+            pairs.append(("Marca", str(brand_val)))
 
         for attr_list_key in ("attributes", "specifications", "specs"):
-            attr_list = prod.get(attr_list_key)
-            if isinstance(attr_list, list):
-                for item in attr_list:
-                    if isinstance(item, dict):
-                        k = str(item.get("name") or item.get("label") or item.get("id") or "")
-                        v = item.get("value") or item.get("values")
-                        if isinstance(v, list):
-                            v = ", ".join(str(x) for x in v if x)
-                        if k and v:
-                            pairs.append((k, str(v)))
-            elif isinstance(attr_list, dict):
-                for k, v in attr_list.items():
-                    if k and v:
+            attr_obj = prod.get(attr_list_key)
+            if isinstance(attr_obj, list):
+                _collect_spec_list(attr_obj)
+            elif isinstance(attr_obj, dict):
+                if isinstance(attr_obj.get("specifications"), list):
+                    _collect_spec_list(attr_obj["specifications"])
+                if isinstance(attr_obj.get("topSpecifications"), list):
+                    _collect_spec_list(attr_obj["topSpecifications"])
+                for k, v in attr_obj.items():
+                    if k in {"specifications", "topSpecifications", "sizeChart", "measurement"}:
+                        continue
+                    if k and v and isinstance(v, (str, int, float)):
                         pairs.append((str(k), str(v)))
+
+        # Inspeccionar también las especificaciones dentro de variants[]
+        variants = prod.get("variants") or []
+        if isinstance(variants, list):
+            for v_item in variants:
+                if not isinstance(v_item, dict):
+                    continue
+                v_attrs = v_item.get("attributes")
+                if isinstance(v_attrs, dict):
+                    _collect_spec_list(v_attrs.get("specifications"))
+                    _collect_spec_list(v_attrs.get("topSpecifications"))
+                elif isinstance(v_attrs, list):
+                    _collect_spec_list(v_attrs)
+                _collect_spec_list(v_item.get("specifications"))
     except Exception as e:
-        logger.debug(f"Error extrayendo specs JSON de Falabella: {e}")
+        logger.debug(f"Error extrayendo specs JSON de Falabella/Tottus: {e}")
     return pairs
 
 
@@ -626,7 +659,7 @@ def normalize_raw_pairs_to_specs(
 
         elif canonical == "Pantalla":
             if "tamaño" in norm_k_clean or "tamano" in norm_k_clean or "diagonal" in norm_k_clean:
-                screen_size = val
+                screen_size = f'{val}"' if re.match(r"^\d{1,2}(?:\.\d)?$", val) else val
             elif "tipo" in norm_k_clean:
                 screen_type = re.sub(r"\bdisplay\b", "", val, flags=re.IGNORECASE).strip()
             else:

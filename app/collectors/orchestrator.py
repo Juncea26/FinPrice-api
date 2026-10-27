@@ -38,6 +38,13 @@ from app.collectors.spec_extractor import (
     normalize_brand,
 )
 from app.collectors.url_utils import canonicalize_store_url
+from app.collectors.query_builder import build_search_queries
+from app.collectors.universal_matcher import (
+    extract_search_candidate_links,
+    filter_offers_by_price_sanity,
+    match_product_universal,
+    universal_resolver,
+)
 from app.collectors.validators import (
     select_best_canonical_image,
     validate_cross_store_prices,
@@ -142,11 +149,12 @@ class CollectorOrchestrator:
         canonical_title: Optional[str] = None,
         tech_specs: Optional[Dict[str, Any]] = None,
         fingerprint: Optional[ProductFingerprint] = None,
+        target_product: Optional[Dict[str, Any]] = None,
     ) -> Optional[Dict[str, Any]]:
         """
         Descarga, parsea y valida una URL real de tienda respetando el Circuit Breaker,
-        la canonicalización de URLs de las 8 tiendas, el Candado 1 de Identidad de Producto
-        y la Huella Técnica (ProductFingerprint).
+        la canonicalización de URLs de las 8 tiendas, la resolución de variantes Multi-SKU
+        y el Validador Universal sobre el Corpus Completo (match_product_universal).
         """
         cb = CIRCUIT_BREAKERS.get(store_id)
         if cb and not cb.can_execute():
@@ -175,6 +183,37 @@ class CollectorOrchestrator:
 
             if is_search:
                 data = parser(html, target_url, canonical_title=canonical_title)
+                # Si la grilla de búsqueda no tiene todos los atributos en el título de la tarjeta
+                # (ej. Efe, Curacao, Hiraoka, Falabella o Tottus), inspeccionar las fichas de los primeros 5 candidatos
+                if not data and canonical_title:
+                    queries = build_search_queries(canonical_title, tech_specs)
+                    broad_q = queries[-1] if queries else canonical_title
+                    candidate_links = extract_search_candidate_links(
+                        html=html,
+                        search_url=target_url,
+                        broad_model_query=broad_q,
+                        limit=5,
+                    )
+                    for cand_link in candidate_links:
+                        _, clean_cand_link = canonicalize_store_url(cand_link)
+                        cand_html = await fetch_page(clean_cand_link or cand_link)
+                        if not cand_html:
+                            continue
+                        cand_data = parser(
+                            cand_html,
+                            clean_cand_link or cand_link,
+                            canonical_title=canonical_title,
+                        )
+                        if cand_data and cand_data.get("price") and float(cand_data["price"]) > 0:
+                            effective_target = target_product or {
+                                "title": canonical_title,
+                                "tech_specs": tech_specs or {},
+                            }
+                            if match_product_universal(effective_target, cand_data):
+                                data = cand_data
+                                break
+            elif store_id in {"falabella", "tottus"} and canonical_title:
+                data = parser(html, target_url, canonical_title=canonical_title)
             else:
                 data = parser(html, target_url)
 
@@ -192,18 +231,24 @@ class CollectorOrchestrator:
             data["offer_url"] = clean_offer_url or raw_offer_url
             scraped_title = str(data.get("title") or "").strip()
 
-            # CANDADO 1: Validar identidad estricta del producto antes de aceptar la oferta
+            # Validar con Validador Universal sobre Corpus Completo y Candado 1 de Identidad
             if canonical_title:
+                effective_target = target_product or {
+                    "title": canonical_title,
+                    "tech_specs": tech_specs or {},
+                }
+                if not match_product_universal(effective_target, data):
+                    return None
                 if not validate_product_identity(
                     canonical_title=canonical_title,
                     scraped_title=scraped_title,
                     scraped_url=data["offer_url"],
                     store_id=store_id,
                     tech_specs=data.get("tech_specs") or tech_specs,
+                    description=str(data.get("description") or ""),
                 ):
                     return None
 
-            # Verificación adicional por Huella Técnica (ProductFingerprint) si está disponible
             if fingerprint is not None:
                 if not matches_fingerprint(
                     fingerprint=fingerprint,
@@ -420,21 +465,19 @@ class CollectorOrchestrator:
             canonical_title = item["title"]
             tech_specs = item.get("tech_specs", {})
             store_urls: Dict[str, str] = item.get("store_urls", {})
-            fingerprint = build_fingerprint_from_catalog_item(item)
 
-            # Descubrir y verificar ofertas concurrentemente con ProductFingerprint y canonicalize_store_url
-            identity_verified_offers = await discover_product_across_8_stores(
-                fingerprint=fingerprint,
-                direct_store_urls=store_urls,
-                canonical_title=canonical_title,
-                tech_specs=tech_specs,
-                scrape_fn=self.scrape_store_url,
+            # Resolver y verificar ofertas concurrentemente con UniversalProductResolver
+            identity_verified_offers = await universal_resolver.resolve_product_across_8_stores(
+                target_product=item,
                 stores_to_check=list(store_urls.keys()),
-                enable_live_search_discovery=False,
+                enable_cascade_search=False,
+                scrape_fn=self.scrape_store_url,
             )
 
-            # CANDADO 3: Filtro estadístico anti-outliers de precio inter-tienda
-            verified_offers = validate_cross_store_prices(identity_verified_offers)
+            # CANDADO 3: Filtro estadístico anti-outliers y cordura de precio (0.55 <= price / median <= 1.65)
+            verified_offers = validate_cross_store_prices(
+                filter_offers_by_price_sanity(identity_verified_offers)
+            )
 
             # Si no hubo respuesta en vivo (ej. falla de red temporal), buscar si ya existían ofertas previas válidas en BD
             if not verified_offers:

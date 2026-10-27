@@ -115,6 +115,8 @@ def parse_vtex_api_item(item_dict: Dict[str, Any], default_url: str = "") -> Opt
         tech_specs["Marca"] = brand
     features = generate_product_features(soup=None, tech_specs=tech_specs, title=title)
 
+    desc = str(item_dict.get("description") or item_dict.get("metaTagDescription") or "").strip()
+
     return {
         "title": title,
         "price": best_price,
@@ -124,6 +126,7 @@ def parse_vtex_api_item(item_dict: Dict[str, Any], default_url: str = "") -> Opt
         "brand": brand,
         "tech_specs": tech_specs,
         "features": features,
+        "description": desc,
         "in_stock": True,
     }
 

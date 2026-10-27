@@ -250,7 +250,9 @@ CATALOG_PRODUCTS: List[Dict[str, Any]] = [
             "Conectividad": "Wi-Fi 6 (802.11ax), Bluetooth 5.3",
         },
         "store_urls": {
-            "hiraoka": "https://hiraoka.com.pe/ipad-11-11ma-gen-a16-wi-fi-128gb-azul",
+            "falabella": "https://www.falabella.com.pe/falabella-pe/product/prod18440041/iPad-Apple-11-Chip-A16-Wi-Fi/21014911",
+            "tottus": "https://www.tottus.com.pe/tottus-pe/articulo/150930380/ipad-a16-wifi-128gb-azul/150930381",
+            "hiraoka": "https://hiraoka.com.pe/ipad-11-11ma-gen-a16-wifi-128gb-plata",
             "efe": "https://www.efe.com.pe/ipad-a16-wi-fi-md4e4ll-a-11-128gb-6gb-p26513743.html",
         },
     },

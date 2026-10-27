@@ -154,6 +154,18 @@ def parse_hiraoka(
 
     h1_title = _extract_main_h1_title(soup)
     extracted_meta = extract_product_specs(html, title=h1_title, store_id="hiraoka")
+    desc_el = soup.select_one(
+        ".product.attribute.description .value, "
+        ".product.attribute.overview .value, "
+        ".product.attribute.description, "
+        ".product.attribute.overview"
+    )
+    meta_desc = soup.find("meta", attrs={"name": "description"})
+    page_desc = (
+        desc_el.get_text(" ", strip=True)
+        if desc_el
+        else (str(meta_desc.get("content") or "").strip() if meta_desc else "")
+    )
 
     # 1. Estrategia JSON-LD del Producto Principal
     for s in soup.find_all("script", type="application/ld+json"):
@@ -199,15 +211,21 @@ def parse_hiraoka(
                     best = sale_price or min(prices_found)
                     orig = list_price or max(prices_found)
 
-                    if canonical_title and not validate_product_identity(
-                        canonical_title, effective_title, offer_url, store_id="hiraoka"
-                    ):
-                        return None
-
                     if not h1_title and effective_title:
                         extracted_meta = extract_product_specs(
                             html, title=effective_title, store_id="hiraoka"
                         )
+                    ld_desc = str(item.get("description") or page_desc).strip()
+                    if canonical_title and not validate_product_identity(
+                        canonical_title,
+                        effective_title,
+                        offer_url,
+                        store_id="hiraoka",
+                        tech_specs=extracted_meta["tech_specs"],
+                        description=ld_desc,
+                    ):
+                        return None
+
                     return {
                         "title": effective_title,
                         "price": best,
@@ -217,6 +235,7 @@ def parse_hiraoka(
                         "brand": extracted_meta["brand"],
                         "tech_specs": extracted_meta["tech_specs"],
                         "features": extracted_meta["features"],
+                        "description": ld_desc,
                     }
         except Exception as e:
             logger.debug(f"Error parseando JSON-LD en Hiraoka: {e}")
