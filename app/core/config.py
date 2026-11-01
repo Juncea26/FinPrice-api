@@ -1,9 +1,13 @@
 """
 Configuración centralizada de FinPrice API utilizando Pydantic Settings.
 """
+import os
 from typing import List, Union
+from dotenv import load_dotenv
 from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+load_dotenv()
 
 
 class Settings(BaseSettings):
@@ -24,8 +28,8 @@ class Settings(BaseSettings):
     FINPRICE_ADMIN_API_KEY: str = "finprice_secret_admin_key_2026"
     ALLOWED_ORIGINS: Union[str, List[str]] = "*"
 
-    # Base de datos asíncrona real (Neon PostgreSQL por defecto)
-    DATABASE_URL: str = "postgresql://neondb_owner:npg_VKNxQ6JF1IMR@ep-cool-math-b4z3cnnd-pooler.c-6.us-east-2.aws.neon.tech/neondb?sslmode=require"
+    # Base de datos asíncrona real (lee de variable de entorno o .env, fallback a SQLite local)
+    DATABASE_URL: str = os.getenv("DATABASE_URL", "sqlite:///./finprice.db")
     CACHE_TTL_SECONDS: int = 60
 
     # Rate Limiting

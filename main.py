@@ -22,7 +22,7 @@ from app.core.config import settings
 from app.core.database import AsyncSessionLocal, get_db, init_db
 from app.core.logging import get_logger
 from app.core.security import check_read_rate_limit, sanitize_input_text
-from app.core.seed_data import seed_database_fast
+from app.core.seed_data import seed_database_fast, sync_and_upsert_catalog
 from app.collectors.orchestrator import orchestrator
 from app.models.entities import ProductEntity
 from app.models.schemas import ProductResponse
@@ -93,20 +93,13 @@ async def lifespan(app: FastAPI):
     # 1. Crear y verificar tablas en Neon PostgreSQL
     await init_db()
 
-    # 2. Consultar conteo rápido en Neon
+    # 2. Sincronización UPSERT instantánea (< 200 ms) en Neon PostgreSQL
     async with AsyncSessionLocal() as session:
-        count_q = await session.execute(select(func.count(ProductEntity.id)))
-        count = count_q.scalar() or 0
+        synced_count = await sync_and_upsert_catalog(session=session)
+        catalog_service.invalidate_cache()
 
-    if count == 0:
-        logger.info("Base de datos limpia detectada en Neon. Insertando semilla oficial de respaldo...")
-        async with AsyncSessionLocal() as session:
-            await seed_database_fast(session=session)
-        # Disparar tarea en segundo plano no bloqueante (después de abrir puerto HTTP)
-        _background_task = asyncio.create_task(initial_background_scraping_job())
-    else:
-        logger.info(f"Base de datos Neon en línea con {count} productos persistidos. Arranque instantáneo listo.")
-        _background_task = asyncio.create_task(periodic_scraping_loop())
+    logger.info(f"Catálogo oficial de FinPrice sincronizado ({synced_count} productos en Neon). Arranque instantáneo listo.")
+    _background_task = asyncio.create_task(periodic_scraping_loop())
 
     logger.info(f"FinPrice API en línea y disponible en puerto {settings.PORT}.")
     yield

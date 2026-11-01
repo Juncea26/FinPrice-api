@@ -13,7 +13,7 @@ services:
       - key: PORT
         value: 8000
       - key: DATABASE_URL
-        value: postgresql://neondb_owner:npg_VKNxQ6JF1IMR@ep-cool-math-b4z3cnnd-pooler.c-6.us-east-2.aws.neon.tech/neondb?sslmode=require
+        sync: false
       - key: ALLOWED_ORIGINS
         value: "*"
       - key: FINPRICE_ADMIN_API_KEY

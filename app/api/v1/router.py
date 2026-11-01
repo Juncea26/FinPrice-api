@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.v1.community import router as community_router
 from app.api.v1.complaints import router as complaints_router
 from app.api.v1.filters import router as filters_router
+from app.api.v1.image_proxy import router as image_proxy_router
 from app.api.v1.products import router as products_router
 from app.api.v1.stores import router as stores_router
 from app.api.v1.sync import router as sync_router
@@ -29,6 +30,7 @@ api_v1_router.include_router(stores_router)
 api_v1_router.include_router(community_router)
 api_v1_router.include_router(complaints_router)
 api_v1_router.include_router(sync_router)
+api_v1_router.include_router(image_proxy_router)
 
 APP_START_TIME = time.time()
 

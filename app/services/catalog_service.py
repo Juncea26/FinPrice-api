@@ -82,7 +82,16 @@ FACET_SPEC_KEYS_ORDER = (
     "Sistema Operativo",
 )
 
-STANDARD_CATEGORY_ORDER = ("Smartphones", "Laptops", "Tablets", "TVs")
+STANDARD_CATEGORY_ORDER = (
+    "Smartphones",
+    "Laptops",
+    "Tablets",
+    "TVs",
+    "Audio",
+    "Gaming",
+    "Impresoras",
+    "Cámaras",
+)
 
 
 def _capacity_sort_key(val: str) -> float:
@@ -155,13 +164,7 @@ class CatalogService:
                     is_best_price=sp.is_best_price,
                 )
                 for sp in p.store_offers
-                if validate_product_identity(
-                    canonical_title=clean_title,
-                    scraped_title="",
-                    scraped_url=sp.offer_url,
-                    store_id=sp.store_id,
-                    tech_specs=tech_specs,
-                )
+                if sp.price and sp.price > 0
             ]
             store_prices = validate_cross_store_prices(raw_store_prices)
             store_prices.sort(key=lambda x: x.price)
@@ -1040,6 +1043,13 @@ class CatalogService:
             feedback=entity.feedback,
             created_at=entity.created_at.isoformat() if entity.created_at else None,
         )
+
+    async def sync_and_upsert_catalog(self, session: AsyncSession) -> int:
+        """Sincroniza y hace UPSERT de todo el catálogo oficial en Neon PostgreSQL / SQLite."""
+        from app.core.seed_data import sync_and_upsert_catalog
+        count = await sync_and_upsert_catalog(session)
+        self.invalidate_cache()
+        return count
 
     async def get_legacy_products(
         self, session: AsyncSession, search: Optional[str] = None

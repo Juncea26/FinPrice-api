@@ -79,18 +79,18 @@ def parse_ripley(
 
             # 1. Precio con tarjeta Ripley
             ripley_p = clean_number(price_dict.get("ripley", {}).get("valueNumber"))
-            if ripley_p:
-                extracted_prices.append(ripley_p)
 
-            # 2. Precio de venta / oferta internet
+            # 2. Precio de venta / oferta internet general para todo público
             sale_p = clean_number(price_dict.get("sale", {}).get("valueNumber"))
-            if sale_p:
-                extracted_prices.append(sale_p)
 
             # 3. Precio de lista / normal
             master_p = clean_number(price_dict.get("master", {}).get("valueNumber"))
             if master_p:
                 orig_price = master_p
+
+            # Priorizar precio de internet general sobre tarjeta exclusiva
+            best_p = sale_p or ripley_p
+            list_p = orig_price or (ripley_p if sale_p and ripley_p > sale_p else best_p)
 
             official_img = None
             images = prod.get("images", [])
@@ -99,7 +99,7 @@ def parse_ripley(
             elif prod.get("primaryImage"):
                 official_img = prod.get("primaryImage")
 
-            if extracted_prices:
+            if best_p is not None:
                 prod_desc = str(
                     prod.get("description") or prod.get("longDescription") or prod.get("shortDescription") or ""
                 ).strip()
@@ -114,8 +114,6 @@ def parse_ripley(
                 ):
                     return None
 
-                best_p = min(extracted_prices)
-                list_p = orig_price or max(extracted_prices)
                 return {
                     "title": prod_title,
                     "price": best_p,
@@ -143,36 +141,22 @@ def parse_ripley(
             prod_title = str(prod.get("name") or h1_title).strip()
             prod_desc = str(prod.get("description") or prod.get("shortDescription") or "").strip()
             prices_node = prod.get("prices", {}) or prod.get("parentpricestock", {}).get("price", {})
-            extracted_p = []
+            sale_num = None
+            ripley_num = None
             orig_p = None
             if isinstance(prices_node, dict):
-                for k_p in ("cardPrice", "offerPrice", "ripley", "sale"):
-                    v_p = prices_node.get(k_p)
-                    num_p = clean_number(v_p.get("valueNumber") if isinstance(v_p, dict) else v_p)
-                    if num_p:
-                        extracted_p.append(num_p)
+                v_sale = prices_node.get("sale") or prices_node.get("offerPrice")
+                sale_num = clean_number(v_sale.get("valueNumber") if isinstance(v_sale, dict) else v_sale)
+                v_rip = prices_node.get("ripley") or prices_node.get("cardPrice")
+                ripley_num = clean_number(v_rip.get("valueNumber") if isinstance(v_rip, dict) else v_rip)
                 for k_orig in ("listPrice", "master", "normalPrice"):
                     v_o = prices_node.get(k_orig)
                     num_o = clean_number(v_o.get("valueNumber") if isinstance(v_o, dict) else v_o)
                     if num_o:
                         orig_p = num_o
 
-            # Evaluar también todos los SKUs/colores con stock en prod.SKUs o prod.variants y tomar el más barato
-            skus_list = prod.get("SKUs") or prod.get("variants") or []
-            if isinstance(skus_list, list):
-                for sku_item in skus_list:
-                    if not isinstance(sku_item, dict):
-                        continue
-                    if sku_item.get("inStock") is False or sku_item.get("quantity", 1) == 0:
-                        continue
-                    sku_prices = sku_item.get("prices", {})
-                    if isinstance(sku_prices, dict):
-                        for k_p in ("cardPrice", "offerPrice", "ripley", "sale"):
-                            v_p = sku_prices.get(k_p)
-                            num_p = clean_number(v_p.get("valueNumber") if isinstance(v_p, dict) else v_p)
-                            if num_p:
-                                extracted_p.append(num_p)
-            if extracted_p:
+            best_p = sale_num or ripley_num
+            if best_p is not None:
                 extracted_meta = extract_product_specs(html, title=prod_title, store_id="ripley")
                 if canonical_title and not validate_product_identity(
                     canonical_title,
@@ -183,8 +167,7 @@ def parse_ripley(
                     description=prod_desc,
                 ):
                     return None
-                best_p = min(extracted_p)
-                list_p = orig_p or max(extracted_p)
+                list_p = orig_p or (ripley_num if sale_num and ripley_num > sale_num else best_p)
                 imgs = prod.get("images") or []
                 img_u = imgs[0] if isinstance(imgs, list) and imgs else prod.get("fullImage")
                 return {

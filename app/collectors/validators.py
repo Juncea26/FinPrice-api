@@ -191,7 +191,21 @@ def _has_whole_word(token: str, text: str) -> bool:
     if not token or not text:
         return False
     pattern = rf"\b{re.escape(token)}\b"
-    return bool(re.search(pattern, text))
+    if bool(re.search(pattern, text)):
+        return True
+    # Soporte para códigos alfanuméricos de modelo concatenados con tamaño de TV (ej. 55c755, 65qn85d)
+    if any(ch.isalpha() for ch in token) and any(ch.isdigit() for ch in token):
+        concat_pattern = rf"\b\d{{2}}{re.escape(token)}\b"
+        if bool(re.search(concat_pattern, text)):
+            return True
+    # Aliases comunes en retailers de gaming y audio (ej. ps5 <-> playstation 5, 2da <-> 2 generacion)
+    if token == "playstation" and ("ps5" in text or "ps4" in text):
+        return True
+    if token in {"5", "4"} and f"ps{token}" in text:
+        return True
+    if token in {"2da", "2da."} and any(x in text for x in ["2 generacion", "2da", "2nd", "gen 2", "2 gen"]):
+        return True
+    return False
 
 
 def extract_critical_model_tokens(canonical_title: str) -> Tuple[List[str], Optional[str], Optional[str]]:
@@ -276,6 +290,9 @@ def validate_product_identity(
         return False
 
     for acc_kw in ACCESSORY_KEYWORDS:
+        # Excepción legítima: Si el producto canónico es un dispositivo de audio (ej. AirPods), 'audifono/s' no es un accesorio
+        if acc_kw in {"audifono", "audifonos"} and any(x in canonical_norm for x in ["airpods", "headphone", "earphone", "audifono", "auricular"]):
+            continue
         in_scraped = _has_whole_word(acc_kw, scraped_title_norm) or _has_whole_word(acc_kw, scraped_url_norm)
         in_canonical = _has_whole_word(acc_kw, canonical_norm)
         if in_scraped and not in_canonical:

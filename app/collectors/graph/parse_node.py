@@ -231,8 +231,60 @@ class ParseNode(BaseGraphNode):
         brand = extracted_meta.get("brand") or ""
         features = extracted_meta.get("features") or []
 
-        og_img = soup.find("meta", property="og:image")
-        image_url = str(og_img.get("content")).strip() if (og_img and og_img.get("content")) else None
+        # Jerarquía estricta de extracción de imagen (1. og:image, 2. JSON-LD image, 3. Next.js medias, 4. twitter:image)
+        image_url = None
+        # 1. Open Graph image
+        og_img = soup.find("meta", property="og:image") or soup.find("meta", attrs={"name": "og:image"})
+        if og_img and og_img.get("content"):
+            u = str(og_img["content"]).strip()
+            if u.startswith("http"):
+                image_url = u
+
+        # 2. JSON-LD Product image
+        if not image_url and json_ld_products:
+            for item in json_ld_products:
+                ld_img = item.get("image")
+                if isinstance(ld_img, str) and ld_img.startswith("http"):
+                    image_url = ld_img.strip()
+                    break
+                elif isinstance(ld_img, list) and ld_img:
+                    first = ld_img[0]
+                    if isinstance(first, str) and first.startswith("http"):
+                        image_url = first.strip()
+                        break
+                    elif isinstance(first, dict) and first.get("url"):
+                        image_url = str(first["url"]).strip()
+                        break
+                elif isinstance(ld_img, dict) and ld_img.get("url"):
+                    image_url = str(ld_img["url"]).strip()
+                    break
+
+        # 3. Next.js medias / mediaUrls
+        if not image_url:
+            for v in next_data_variants:
+                v_medias = v.get("medias", []) or v.get("mediaUrls", [])
+                if v_medias:
+                    if isinstance(v_medias[0], dict) and v_medias[0].get("url"):
+                        image_url = str(v_medias[0]["url"]).strip()
+                        break
+                    elif isinstance(v_medias[0], str) and v_medias[0].startswith("http"):
+                        image_url = v_medias[0].strip()
+                        break
+        if not image_url and next_data_product:
+            p_medias = next_data_product.get("medias", []) or next_data_product.get("mediaUrls", [])
+            if p_medias:
+                if isinstance(p_medias[0], dict) and p_medias[0].get("url"):
+                    image_url = str(p_medias[0]["url"]).strip()
+                elif isinstance(p_medias[0], str) and p_medias[0].startswith("http"):
+                    image_url = p_medias[0].strip()
+
+        # 4. Twitter image
+        if not image_url:
+            tw_img = soup.find("meta", attrs={"name": "twitter:image"}) or soup.find("meta", property="twitter:image")
+            if tw_img and tw_img.get("content"):
+                u = str(tw_img["content"]).strip()
+                if u.startswith("http"):
+                    image_url = u
 
         # Liberar memoria pesada de BeautifulSoup inmediatamente
         del soup

@@ -309,6 +309,12 @@ def _extract_target_profile(target_product: Any) -> Dict[str, Any]:
     if brand_low and brand_low in model_tokens and len(model_tokens) > 1:
         model_tokens = [t for t in model_tokens if t != brand_low]
 
+    # Asegurar que cualquier tier estricto presente en el título objetivo (ej. pro, ultra, plus, air) esté en model_tokens
+    target_norm_words = set(re.findall(r"\b[a-z0-9]+\b", norm_title))
+    for tier in STRICT_SUBMODEL_TIERS:
+        if tier in target_norm_words and tier not in model_tokens:
+            model_tokens.append(tier)
+
     forbidden_tokens = [str(t).lower() for t in (fp_dict.get("forbidden_tokens") or [])]
 
     return {

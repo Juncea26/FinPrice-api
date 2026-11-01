@@ -5,7 +5,7 @@ aislando el nodo del producto principal y validando resultados si proviene de bÃ
 """
 import json
 import re
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional, Tuple
 from bs4 import BeautifulSoup
 
 from app.core.logging import get_logger
@@ -37,6 +37,59 @@ def clean_number(val: Any) -> Optional[float]:
         return round(f, 2) if f > 0 else None
     except ValueError:
         return None
+
+
+def extract_falabella_prices(prices_list: List[Dict[str, Any]]) -> Tuple[Optional[float], Optional[float]]:
+    """
+    Extrae (online_price, list_price) de Falabella, IGNORANDO precios exclusivos con tarjeta (cmrPrice / eventPriceCMR).
+    - online_price: Prioriza 'internetPrice' o 'onlinePrice' para todo pÃºblico.
+    - list_price: Prioriza 'normalPrice' o precios con crossed=True.
+    """
+    internet_price: Optional[float] = None
+    normal_price: Optional[float] = None
+    card_exclusive_price: Optional[float] = None
+    other_prices: List[float] = []
+
+    for p_item in prices_list:
+        if not isinstance(p_item, dict):
+            continue
+        p_type = str(p_item.get("type", "")).lower()
+        p_label = str(p_item.get("label", "")).lower()
+        is_crossed = bool(p_item.get("crossed", False))
+
+        p_val = p_item.get("price", [])
+        raw = p_val[0] if isinstance(p_val, list) and p_val else p_val
+        num = clean_number(raw)
+        if not num:
+            continue
+
+        if "normal" in p_type or is_crossed or "lista" in p_label:
+            if normal_price is None or num > normal_price:
+                normal_price = num
+        elif "cmr" in p_type or "cmr" in p_label or "tarjeta" in p_label:
+            card_exclusive_price = num
+        elif "internet" in p_type or "online" in p_type or "internet" in p_label or "online" in p_label:
+            if internet_price is None or num < internet_price:
+                internet_price = num
+        else:
+            other_prices.append(num)
+
+    best_p = internet_price
+    if best_p is None and other_prices:
+        best_p = min(other_prices)
+    if best_p is None:
+        best_p = card_exclusive_price
+
+    list_p = normal_price
+    if list_p is None and other_prices:
+        list_p = max(other_prices)
+    if list_p is None:
+        list_p = best_p
+
+    if list_p and best_p and list_p < best_p:
+        list_p = best_p
+
+    return best_p, list_p
 
 
 def parse_falabella(
@@ -78,19 +131,8 @@ def parse_falabella(
                     ):
                         continue
                     prices = item.get("prices", [])
-                    extracted_p = []
-                    orig_p = None
-                    for p_item in prices:
-                        p_val = p_item.get("price", [])
-                        raw = p_val[0] if isinstance(p_val, list) and p_val else p_val
-                        num = clean_number(raw)
-                        if num:
-                            extracted_p.append(num)
-                            if p_item.get("type") == "normalPrice" or p_item.get("crossed"):
-                                orig_p = num
-                    if extracted_p:
-                        best_p = min(extracted_p)
-                        list_p = orig_p or max(extracted_p)
+                    best_p, list_p = extract_falabella_prices(prices)
+                    if best_p:
                         media_urls = item.get("mediaUrls", [])
                         img_u = media_urls[0] if isinstance(media_urls, list) and media_urls else None
                         cand_dict = {
@@ -116,11 +158,14 @@ def parse_falabella(
                 )
             )
             variants = prod.get("variants", [])
-            extracted_prices = []
-            orig_price = None
+            variant_best_p: Optional[float] = None
+            variant_list_p: Optional[float] = None
             official_img = None
             variant_name = ""
             variant_id = ""
+
+            if not variants and prod.get("prices"):
+                variant_best_p, variant_list_p = extract_falabella_prices(prod.get("prices", []))
 
             if variants and isinstance(variants, list):
                 # Multi-SKU & Multi-Color Variant Resolution:
@@ -138,16 +183,8 @@ def parse_falabella(
                 all_storage_tokens = {"64gb", "128gb", "256gb", "512gb", "1024gb", "1tb", "2tb"}
 
                 def _variant_min_price(v_obj: Dict[str, Any]) -> Optional[float]:
-                    v_prices = []
-                    for p_it in v_obj.get("prices", []) or []:
-                        if not isinstance(p_it, dict):
-                            continue
-                        p_v = p_it.get("price", [])
-                        r_v = p_v[0] if isinstance(p_v, list) and p_v else p_v
-                        n_v = clean_number(r_v)
-                        if n_v:
-                            v_prices.append(n_v)
-                    return min(v_prices) if v_prices else None
+                    b_p, _ = extract_falabella_prices(v_obj.get("prices", []) or [])
+                    return b_p
 
                 priced_variants = [
                     v_c for v_c in variants if isinstance(v_c, dict) and _variant_min_price(v_c) is not None
@@ -199,15 +236,7 @@ def parse_falabella(
                     prod_title = variant_name
 
                 prices = v.get("prices", [])
-                for p_item in prices:
-                    p_type = p_item.get("type", "")
-                    p_val = p_item.get("price", [])
-                    raw = p_val[0] if isinstance(p_val, list) and p_val else p_val
-                    num = clean_number(raw)
-                    if num:
-                        extracted_prices.append(num)
-                        if p_type == "normalPrice" or p_item.get("crossed"):
-                            orig_price = num
+                variant_best_p, variant_list_p = extract_falabella_prices(prices)
 
                 medias = v.get("medias", []) or prod.get("medias", [])
                 if medias and isinstance(medias[0], dict) and medias[0].get("url"):
@@ -222,7 +251,7 @@ def parse_falabella(
                     if m_url:
                         offer_url = f"{m_url.group(1)}/{variant_id}"
 
-            if extracted_prices:
+            if variant_best_p is not None:
                 full_desc = " ".join(filter(None, [prod_desc, variant_name])).strip()
                 extracted_meta = extract_product_specs(
                     html,
@@ -239,12 +268,10 @@ def parse_falabella(
                 ):
                     return None
 
-                best_p = min(extracted_prices)
-                list_p = orig_price or max(extracted_prices)
                 return {
                     "title": prod_title,
-                    "price": best_p,
-                    "original_price": list_p if list_p > best_p else best_p,
+                    "price": variant_best_p,
+                    "original_price": variant_list_p if variant_list_p > variant_best_p else variant_best_p,
                     "image_url": official_img,
                     "offer_url": offer_url,
                     "brand": extracted_meta["brand"],
