@@ -1,0 +1,28 @@
+services:
+  - type: web
+    name: finprice-api
+    env: docker
+    region: ohio
+    plan: free
+    dockerfilePath: Dockerfile
+    healthCheckPath: /ping
+    autoDeploy: true
+    envVars:
+      - key: ENVIRONMENT
+        value: production
+      - key: PORT
+        value: 8000
+      - key: DATABASE_URL
+        value: postgresql://neondb_owner:npg_VKNxQ6JF1IMR@ep-cool-math-b4z3cnnd-pooler.c-6.us-east-2.aws.neon.tech/neondb?sslmode=require
+      - key: ALLOWED_ORIGINS
+        value: "*"
+      - key: FINPRICE_ADMIN_API_KEY
+        value: finprice_secret_admin_key_2026
+      - key: COLLECTION_INTERVAL_MINUTES
+        value: "360"
+      - key: COLLECTOR_MAX_CONCURRENCY
+        value: "2"
+      - key: CACHE_TTL_SECONDS
+        value: "60"
+      - key: MALLOC_TRIM_THRESHOLD_
+        value: "65536"

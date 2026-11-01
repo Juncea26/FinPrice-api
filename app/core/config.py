@@ -24,19 +24,19 @@ class Settings(BaseSettings):
     FINPRICE_ADMIN_API_KEY: str = "finprice_secret_admin_key_2026"
     ALLOWED_ORIGINS: Union[str, List[str]] = "*"
 
-    # Base de datos asíncrona real
-    DATABASE_URL: str = "sqlite+aiosqlite:///./finprice_real.db"
+    # Base de datos asíncrona real (Neon PostgreSQL por defecto)
+    DATABASE_URL: str = "postgresql://neondb_owner:npg_VKNxQ6JF1IMR@ep-cool-math-b4z3cnnd-pooler.c-6.us-east-2.aws.neon.tech/neondb?sslmode=require"
     CACHE_TTL_SECONDS: int = 60
 
     # Rate Limiting
     RATE_LIMIT_READ_PER_MINUTE: int = 60
     RATE_LIMIT_WRITE_PER_MINUTE: int = 5
 
-    # Parámetros del motor de recolección en vivo
+    # Parámetros del motor de recolección en vivo (Optimizado para 512 MB RAM)
     COLLECTION_INTERVAL_MINUTES: int = 360  # Cada 6 horas por defecto
     COLLECTOR_TIMEOUT_CONNECT: float = 6.0
     COLLECTOR_TIMEOUT_READ: float = 12.0
-    COLLECTOR_MAX_CONCURRENCY: int = 4
+    COLLECTOR_MAX_CONCURRENCY: int = 2
     CIRCUIT_BREAKER_FAILURE_THRESHOLD: int = 3
     CIRCUIT_BREAKER_RECOVERY_SECONDS: int = 120
 

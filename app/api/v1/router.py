@@ -1,5 +1,5 @@
 """
-Router principal /api/v1 agregando módulos de productos, tiendas, comunidad y sync.
+Router principal /api/v1 agregando módulos de productos, tiendas, comunidad, reclamos y sync.
 Incluye diagnóstico de salud en tiempo real en GET /api/v1/health.
 """
 import time
@@ -9,6 +9,7 @@ from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.v1.community import router as community_router
+from app.api.v1.complaints import router as complaints_router
 from app.api.v1.filters import router as filters_router
 from app.api.v1.products import router as products_router
 from app.api.v1.stores import router as stores_router
@@ -26,6 +27,7 @@ api_v1_router.include_router(products_router)
 api_v1_router.include_router(filters_router)
 api_v1_router.include_router(stores_router)
 api_v1_router.include_router(community_router)
+api_v1_router.include_router(complaints_router)
 api_v1_router.include_router(sync_router)
 
 APP_START_TIME = time.time()
@@ -40,13 +42,18 @@ APP_START_TIME = time.time()
 async def get_health_status(session: AsyncSession = Depends(get_db)):
     """
     Retorna el estado operativo integral:
-    - Estado de la conexión asíncrona a la base de datos
+    - Estado de la conexión a Neon PostgreSQL (SELECT 1)
     - Total de productos reales registrados
     - Total de tiendas y tiendas con Circuit Breaker operativo
     - Timestamp de la última recolección en vivo
     - Uptime del servidor
     """
-    db_status = "connected"
+    db_target = (
+        "connected (Neon PostgreSQL)"
+        if ("neon.tech" in settings.DATABASE_URL or "postgres" in settings.DATABASE_URL)
+        else "connected"
+    )
+    db_status = db_target
     total_products = 0
 
     try:
@@ -75,7 +82,7 @@ async def get_health_status(session: AsyncSession = Depends(get_db)):
     uptime = time.time() - APP_START_TIME
 
     return HealthResponse(
-        status="healthy" if db_status == "connected" else "degraded",
+        status="healthy" if db_status.startswith("connected") else "degraded",
         version=settings.VERSION,
         database=db_status,
         total_products=total_products,

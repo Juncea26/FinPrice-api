@@ -11,6 +11,7 @@ de relacionados/upsell) y extrayendo en un documento estructurado (ParsedPageNod
 - Tablas HTML de especificaciones (#product-attribute-specs-table, .additional-attributes)
 - Resumen Markdown destilado (distilled_markdown) para extracción determinista o LLM/ScrapeGraphAI.
 """
+import gc
 import json
 import re
 from typing import Any, Dict, List
@@ -232,6 +233,10 @@ class ParseNode(BaseGraphNode):
 
         og_img = soup.find("meta", property="og:image")
         image_url = str(og_img.get("content")).strip() if (og_img and og_img.get("content")) else None
+
+        # Liberar memoria pesada de BeautifulSoup inmediatamente
+        del soup
+        gc.collect()
 
         # Construir documento Markdown destilado (estilo ScrapeGraphAI ParseNode)
         variants_summary = [

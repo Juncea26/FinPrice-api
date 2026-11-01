@@ -398,6 +398,13 @@ async def test_database_sanitization_removes_existing_contaminated_offers():
         )
         prod = q.scalar_one()
 
+        from sqlalchemy import delete
+        await session.execute(
+            delete(StoreOfferEntity).where(
+                StoreOfferEntity.product_id == prod.id,
+                StoreOfferEntity.store_id == "efe",
+            )
+        )
         # Inyectar manualmente en la BD la oferta contaminada de S/ 399.00 como si ya estuviera guardada
         bad_offer = StoreOfferEntity(
             product_id=prod.id,

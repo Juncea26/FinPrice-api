@@ -34,12 +34,22 @@ from app.collectors.validators import (
     validate_product_identity,
 )
 from app.models.entities import (
+    CancellationSuggestionEntity,
     CommunityOfferEntity,
+    CommunityPostEntity,
+    ComplaintEntity,
     ProductEntity,
 )
 from app.models.schemas import (
+    CancellationSuggestionCreateSchema,
+    CancellationSuggestionSchema,
     CommunityOfferCreateSchema,
     CommunityPhysicalOfferSchema,
+    CommunityPostCreateSchema,
+    CommunityPostSchema,
+    CommunityPostUpdateSchema,
+    ComplaintCreateSchema,
+    ComplaintSchema,
     DynamicFiltersSchema,
     PricePointSchema,
     ProductResponse,
@@ -558,6 +568,7 @@ class CatalogService:
             )
 
         now_utc = datetime.now(timezone.utc)
+        now_naive = now_utc.replace(tzinfo=None)
         new_entity = CommunityOfferEntity(
             id=f"comm_off_{uuid.uuid4().hex[:8]}",
             product_id=prod.id,
@@ -572,6 +583,7 @@ class CatalogService:
             timestamp_millis=int(now_utc.timestamp() * 1000),
             formatted_date=now_utc.strftime("%d %b %Y, %H:%M"),
             author_name=sanitize_input_text(offer_in.author_name or "Usuario FinPrice", max_length=80),
+            created_at=now_naive,
         )
 
         session.add(new_entity)
@@ -592,6 +604,441 @@ class CatalogService:
             timestamp_millis=new_entity.timestamp_millis,
             formatted_date=new_entity.formatted_date,
             author_name=new_entity.author_name,
+        )
+
+    async def update_community_offer(
+        self, session: AsyncSession, offer_id: str, offer_update: dict
+    ) -> CommunityPhysicalOfferSchema:
+        """Actualiza una oferta física comunitaria por ID."""
+        res = await session.execute(
+            select(CommunityOfferEntity).where(CommunityOfferEntity.id == offer_id)
+        )
+        offer = res.scalar_one_or_none()
+        if not offer:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Oferta comunitaria '{offer_id}' no encontrada.",
+            )
+
+        if "price_found" in offer_update and offer_update["price_found"] is not None:
+            offer.price_found = round(float(offer_update["price_found"]), 2)
+        if "physical_store_name" in offer_update and offer_update["physical_store_name"]:
+            offer.physical_store_name = sanitize_input_text(offer_update["physical_store_name"], max_length=120)
+        if "department" in offer_update and offer_update["department"]:
+            norm_dept = offer_update["department"].strip()
+            matched = next((d for d in PERU_DEPARTMENTS if d.lower() == norm_dept.lower()), None)
+            if matched:
+                offer.department = matched
+        if "province" in offer_update and offer_update["province"]:
+            offer.province = sanitize_input_text(offer_update["province"], max_length=100)
+        if "district" in offer_update and offer_update["district"]:
+            offer.district = sanitize_input_text(offer_update["district"], max_length=100)
+        if "comment" in offer_update and offer_update["comment"] is not None:
+            offer.comment = sanitize_input_text(offer_update["comment"], max_length=500)
+        if "photo_uri" in offer_update and offer_update["photo_uri"] is not None:
+            offer.photo_uri = offer_update["photo_uri"]
+        if "author_name" in offer_update and offer_update["author_name"]:
+            offer.author_name = sanitize_input_text(offer_update["author_name"], max_length=80)
+
+        await session.commit()
+        await session.refresh(offer)
+
+        return CommunityPhysicalOfferSchema(
+            id=offer.id,
+            product_id=offer.product_id,
+            product_name=offer.product_name,
+            physical_store_name=offer.physical_store_name,
+            department=offer.department,
+            province=offer.province,
+            district=offer.district,
+            price_found=offer.price_found,
+            photo_uri=offer.photo_uri or "",
+            comment=offer.comment or "",
+            timestamp_millis=offer.timestamp_millis,
+            formatted_date=offer.formatted_date,
+            author_name=offer.author_name,
+        )
+
+    async def get_community_posts(
+        self,
+        session: AsyncSession,
+        department: Optional[str] = None,
+        province: Optional[str] = None,
+        district: Optional[str] = None,
+        product_id: Optional[str] = None,
+        search: Optional[str] = None,
+    ) -> List[CommunityPostSchema]:
+        """Lee publicaciones comunitarias reales guardadas en la base de datos."""
+        stmt = select(CommunityPostEntity)
+        if department:
+            stmt = stmt.where(CommunityPostEntity.department.ilike(f"%{department.strip()}%"))
+        if province:
+            stmt = stmt.where(CommunityPostEntity.province.ilike(f"%{province.strip()}%"))
+        if district:
+            stmt = stmt.where(CommunityPostEntity.district.ilike(f"%{district.strip()}%"))
+        if product_id:
+            stmt = stmt.where(CommunityPostEntity.product_id == product_id.strip())
+        if search:
+            s_clean = search.strip()
+            stmt = stmt.where(
+                CommunityPostEntity.title.ilike(f"%{s_clean}%")
+                | CommunityPostEntity.content.ilike(f"%{s_clean}%")
+                | CommunityPostEntity.product_name.ilike(f"%{s_clean}%")
+            )
+
+        stmt = stmt.order_by(CommunityPostEntity.created_at.desc())
+        res = await session.execute(stmt)
+        items = res.scalars().all()
+
+        return [
+            CommunityPostSchema(
+                id=p.id,
+                product_id=p.product_id,
+                title=p.title,
+                content=p.content or "",
+                product_name=p.product_name or "",
+                physical_store_name=p.physical_store_name or "",
+                price=p.price,
+                department=p.department or "",
+                province=p.province or "",
+                district=p.district or "",
+                photo_uri=p.photo_uri or "",
+                author_name=p.author_name or "Usuario FinPrice",
+                likes_count=p.likes_count or 0,
+                status=p.status or "active",
+                formatted_date=p.formatted_date or "",
+                timestamp_millis=p.timestamp_millis,
+                created_at=p.created_at.isoformat() if p.created_at else None,
+                updated_at=p.updated_at.isoformat() if p.updated_at else None,
+            )
+            for p in items
+        ]
+
+    async def get_community_post_by_id(
+        self, session: AsyncSession, post_id: str
+    ) -> Optional[CommunityPostSchema]:
+        """Obtiene una publicación comunitaria por su ID."""
+        res = await session.execute(
+            select(CommunityPostEntity).where(CommunityPostEntity.id == post_id)
+        )
+        p = res.scalar_one_or_none()
+        if not p:
+            return None
+        return CommunityPostSchema(
+            id=p.id,
+            product_id=p.product_id,
+            title=p.title,
+            content=p.content or "",
+            product_name=p.product_name or "",
+            physical_store_name=p.physical_store_name or "",
+            price=p.price,
+            department=p.department or "",
+            province=p.province or "",
+            district=p.district or "",
+            photo_uri=p.photo_uri or "",
+            author_name=p.author_name or "Usuario FinPrice",
+            likes_count=p.likes_count or 0,
+            status=p.status or "active",
+            formatted_date=p.formatted_date or "",
+            timestamp_millis=p.timestamp_millis,
+            created_at=p.created_at.isoformat() if p.created_at else None,
+            updated_at=p.updated_at.isoformat() if p.updated_at else None,
+        )
+
+    async def create_community_post(
+        self, session: AsyncSession, post_in: CommunityPostCreateSchema
+    ) -> CommunityPostSchema:
+        """Registra una nueva publicación comunitaria en Neon PostgreSQL."""
+        now_utc = datetime.now(timezone.utc)
+        now_naive = now_utc.replace(tzinfo=None)
+        post_id = f"post_{uuid.uuid4().hex[:10]}"
+
+        matched_dept = None
+        if post_in.department:
+            norm_dept = post_in.department.strip()
+            matched_dept = next((d for d in PERU_DEPARTMENTS if d.lower() == norm_dept.lower()), post_in.department)
+
+        new_post = CommunityPostEntity(
+            id=post_id,
+            product_id=post_in.product_id,
+            title=sanitize_input_text(post_in.title, max_length=255),
+            content=sanitize_input_text(post_in.content or "", max_length=2000),
+            product_name=sanitize_input_text(post_in.product_name or "", max_length=255) if post_in.product_name else None,
+            physical_store_name=sanitize_input_text(post_in.physical_store_name or "", max_length=120) if post_in.physical_store_name else None,
+            price=round(post_in.price, 2) if post_in.price is not None else None,
+            department=matched_dept,
+            province=sanitize_input_text(post_in.province or "", max_length=100) if post_in.province else None,
+            district=sanitize_input_text(post_in.district or "", max_length=100) if post_in.district else None,
+            photo_uri=post_in.photo_uri or "",
+            author_name=sanitize_input_text(post_in.author_name or "Usuario FinPrice", max_length=100),
+            likes_count=0,
+            status="active",
+            timestamp_millis=int(now_utc.timestamp() * 1000),
+            formatted_date=now_utc.strftime("%d %b %Y, %H:%M"),
+            created_at=now_naive,
+            updated_at=now_naive,
+        )
+        session.add(new_post)
+        await session.commit()
+        await session.refresh(new_post)
+
+        return CommunityPostSchema(
+            id=new_post.id,
+            product_id=new_post.product_id,
+            title=new_post.title,
+            content=new_post.content,
+            product_name=new_post.product_name,
+            physical_store_name=new_post.physical_store_name,
+            price=new_post.price,
+            department=new_post.department,
+            province=new_post.province,
+            district=new_post.district,
+            photo_uri=new_post.photo_uri,
+            author_name=new_post.author_name,
+            likes_count=new_post.likes_count,
+            status=new_post.status,
+            formatted_date=new_post.formatted_date,
+            timestamp_millis=new_post.timestamp_millis,
+            created_at=new_post.created_at.isoformat() if new_post.created_at else None,
+            updated_at=new_post.updated_at.isoformat() if new_post.updated_at else None,
+        )
+
+    async def update_community_post(
+        self, session: AsyncSession, post_id: str, post_in: CommunityPostUpdateSchema
+    ) -> CommunityPostSchema:
+        """Edita una publicación comunitaria existente (PUT /api/v1/community/posts/{post_id})."""
+        res = await session.execute(
+            select(CommunityPostEntity).where(CommunityPostEntity.id == post_id)
+        )
+        post = res.scalar_one_or_none()
+        if not post:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Publicación comunitaria '{post_id}' no encontrada.",
+            )
+
+        if post_in.title is not None:
+            post.title = sanitize_input_text(post_in.title, max_length=255)
+        if post_in.content is not None:
+            post.content = sanitize_input_text(post_in.content, max_length=2000)
+        if post_in.product_name is not None:
+            post.product_name = sanitize_input_text(post_in.product_name, max_length=255)
+        if post_in.physical_store_name is not None:
+            post.physical_store_name = sanitize_input_text(post_in.physical_store_name, max_length=120)
+        if post_in.price is not None:
+            post.price = round(float(post_in.price), 2)
+        if post_in.department is not None:
+            norm_dept = post_in.department.strip()
+            matched = next((d for d in PERU_DEPARTMENTS if d.lower() == norm_dept.lower()), post_in.department)
+            post.department = matched
+        if post_in.province is not None:
+            post.province = sanitize_input_text(post_in.province, max_length=100)
+        if post_in.district is not None:
+            post.district = sanitize_input_text(post_in.district, max_length=100)
+        if post_in.photo_uri is not None:
+            post.photo_uri = post_in.photo_uri
+        if post_in.author_name is not None:
+            post.author_name = sanitize_input_text(post_in.author_name, max_length=100)
+        if post_in.status is not None:
+            post.status = sanitize_input_text(post_in.status, max_length=50)
+
+        post.updated_at = datetime.now(timezone.utc).replace(tzinfo=None)
+        await session.commit()
+        await session.refresh(post)
+
+        return CommunityPostSchema(
+            id=post.id,
+            product_id=post.product_id,
+            title=post.title,
+            content=post.content,
+            product_name=post.product_name,
+            physical_store_name=post.physical_store_name,
+            price=post.price,
+            department=post.department,
+            province=post.province,
+            district=post.district,
+            photo_uri=post.photo_uri,
+            author_name=post.author_name,
+            likes_count=post.likes_count,
+            status=post.status,
+            formatted_date=post.formatted_date,
+            timestamp_millis=post.timestamp_millis,
+            created_at=post.created_at.isoformat() if post.created_at else None,
+            updated_at=post.updated_at.isoformat() if post.updated_at else None,
+        )
+
+    # --------------------------------------------------------------------------
+    # LIBRO DE RECLAMACIONES Y CANCELACIONES
+    # --------------------------------------------------------------------------
+
+    async def create_complaint(
+        self, session: AsyncSession, complaint_in: ComplaintCreateSchema
+    ) -> ComplaintSchema:
+        """Registra un reclamo/queja/sugerencia en el Libro de Reclamaciones virtual."""
+        now_utc = datetime.now(timezone.utc)
+        now_naive = now_utc.replace(tzinfo=None)
+        claim_number = f"REC-{now_utc.year}-{uuid.uuid4().hex[:6].upper()}"
+
+        new_complaint = ComplaintEntity(
+            claim_number=claim_number,
+            full_name=sanitize_input_text(complaint_in.full_name, max_length=150),
+            document_type=sanitize_input_text(complaint_in.document_type, max_length=20),
+            document_number=sanitize_input_text(complaint_in.document_number, max_length=30),
+            email=sanitize_input_text(complaint_in.email, max_length=120),
+            phone=sanitize_input_text(complaint_in.phone, max_length=30),
+            address=sanitize_input_text(complaint_in.address or "", max_length=255),
+            department=sanitize_input_text(complaint_in.department or "", max_length=100),
+            province=sanitize_input_text(complaint_in.province or "", max_length=100),
+            district=sanitize_input_text(complaint_in.district or "", max_length=100),
+            is_minor=complaint_in.is_minor,
+            guardian_name=sanitize_input_text(complaint_in.guardian_name or "", max_length=150),
+            complaint_type=sanitize_input_text(complaint_in.complaint_type, max_length=50),
+            contracted_good=sanitize_input_text(complaint_in.contracted_good, max_length=50),
+            claimed_amount=round(complaint_in.claimed_amount, 2) if complaint_in.claimed_amount is not None else None,
+            description=sanitize_input_text(complaint_in.description, max_length=3000),
+            consumer_request=sanitize_input_text(complaint_in.consumer_request or "", max_length=1500),
+            status="Pendiente",
+            created_at=now_naive,
+            updated_at=now_naive,
+        )
+        session.add(new_complaint)
+        await session.commit()
+        await session.refresh(new_complaint)
+
+        return ComplaintSchema(
+            id=new_complaint.id,
+            claim_number=new_complaint.claim_number,
+            full_name=new_complaint.full_name,
+            document_type=new_complaint.document_type,
+            document_number=new_complaint.document_number,
+            email=new_complaint.email,
+            phone=new_complaint.phone,
+            address=new_complaint.address,
+            department=new_complaint.department,
+            province=new_complaint.province,
+            district=new_complaint.district,
+            is_minor=new_complaint.is_minor,
+            guardian_name=new_complaint.guardian_name,
+            complaint_type=new_complaint.complaint_type,
+            contracted_good=new_complaint.contracted_good,
+            claimed_amount=new_complaint.claimed_amount,
+            description=new_complaint.description,
+            consumer_request=new_complaint.consumer_request,
+            status=new_complaint.status,
+            response_detail=new_complaint.response_detail,
+            created_at=new_complaint.created_at.isoformat() if new_complaint.created_at else None,
+        )
+
+    async def get_complaints(
+        self,
+        session: AsyncSession,
+        email: Optional[str] = None,
+        document_number: Optional[str] = None,
+        claim_number: Optional[str] = None,
+    ) -> List[ComplaintSchema]:
+        """Consulta reclamaciones registradas."""
+        stmt = select(ComplaintEntity)
+        if email:
+            stmt = stmt.where(ComplaintEntity.email.ilike(f"%{email.strip()}%"))
+        if document_number:
+            stmt = stmt.where(ComplaintEntity.document_number == document_number.strip())
+        if claim_number:
+            stmt = stmt.where(ComplaintEntity.claim_number == claim_number.strip())
+
+        stmt = stmt.order_by(ComplaintEntity.created_at.desc())
+        res = await session.execute(stmt)
+        items = res.scalars().all()
+
+        return [
+            ComplaintSchema(
+                id=c.id,
+                claim_number=c.claim_number,
+                full_name=c.full_name,
+                document_type=c.document_type,
+                document_number=c.document_number,
+                email=c.email,
+                phone=c.phone,
+                address=c.address,
+                department=c.department,
+                province=c.province,
+                district=c.district,
+                is_minor=c.is_minor,
+                guardian_name=c.guardian_name,
+                complaint_type=c.complaint_type,
+                contracted_good=c.contracted_good,
+                claimed_amount=c.claimed_amount,
+                description=c.description,
+                consumer_request=c.consumer_request,
+                status=c.status,
+                response_detail=c.response_detail,
+                created_at=c.created_at.isoformat() if c.created_at else None,
+            )
+            for c in items
+        ]
+
+    async def get_complaint_by_id(
+        self, session: AsyncSession, claim_identifier: str
+    ) -> Optional[ComplaintSchema]:
+        """Consulta un reclamo por ID numérico o claim_number."""
+        stmt = select(ComplaintEntity)
+        if claim_identifier.isdigit():
+            stmt = stmt.where(
+                (ComplaintEntity.id == int(claim_identifier))
+                | (ComplaintEntity.claim_number == claim_identifier)
+            )
+        else:
+            stmt = stmt.where(ComplaintEntity.claim_number == claim_identifier.strip())
+
+        res = await session.execute(stmt)
+        c = res.scalar_one_or_none()
+        if not c:
+            return None
+
+        return ComplaintSchema(
+            id=c.id,
+            claim_number=c.claim_number,
+            full_name=c.full_name,
+            document_type=c.document_type,
+            document_number=c.document_number,
+            email=c.email,
+            phone=c.phone,
+            address=c.address,
+            department=c.department,
+            province=c.province,
+            district=c.district,
+            is_minor=c.is_minor,
+            guardian_name=c.guardian_name,
+            complaint_type=c.complaint_type,
+            contracted_good=c.contracted_good,
+            claimed_amount=c.claimed_amount,
+            description=c.description,
+            consumer_request=c.consumer_request,
+            status=c.status,
+            response_detail=c.response_detail,
+            created_at=c.created_at.isoformat() if c.created_at else None,
+        )
+
+    async def create_cancellation_suggestion(
+        self, session: AsyncSession, suggestion_in: CancellationSuggestionCreateSchema
+    ) -> CancellationSuggestionSchema:
+        """Registra una sugerencia de cancelación de suscripción."""
+        now_naive = datetime.now(timezone.utc).replace(tzinfo=None)
+        entity = CancellationSuggestionEntity(
+            email=sanitize_input_text(suggestion_in.email, max_length=120),
+            reason=sanitize_input_text(suggestion_in.reason, max_length=255),
+            feedback=sanitize_input_text(suggestion_in.feedback or "", max_length=2000),
+            created_at=now_naive,
+        )
+        session.add(entity)
+        await session.commit()
+        await session.refresh(entity)
+
+        return CancellationSuggestionSchema(
+            id=entity.id,
+            email=entity.email,
+            reason=entity.reason,
+            feedback=entity.feedback,
+            created_at=entity.created_at.isoformat() if entity.created_at else None,
         )
 
     async def get_legacy_products(

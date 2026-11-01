@@ -1,73 +1,48 @@
 # ==============================================================================
-# Multi-stage Dockerfile para FinPrice API en la Nube
-# Optimizado para ligereza, seguridad (non-root) y compatibilidad con Cloud Run/Render
+# Dockerfile de Producción para FinPrice API en Render (Límite estricto 512 MB RAM)
+# Optimizado para arranque en < 2 segundos, mínimo consumo de memoria y 1 solo worker
 # ==============================================================================
 
-# STAGE 1: Builder
-FROM python:3.11-slim AS builder
-
-WORKDIR /build
-
-ENV PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1
-
-# Instalar dependencias del sistema necesarias para compilar paquetes si aplica
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    gcc \
-    libxml2-dev \
-    libxslt-dev \
-    && rm -rf /var/lib/apt/lists/*
-
-COPY requirements.txt .
-
-# Compilar wheels
-RUN pip install --no-cache-dir --upgrade pip && \
-    pip wheel --no-cache-dir --no-deps --wheel-dir /build/wheels -r requirements.txt
-
-
-# STAGE 2: Runner (Imagen final ligera y endurecida)
-FROM python:3.11-slim AS runner
+FROM python:3.11-slim
 
 WORKDIR /app
 
+# Variables de entorno críticas para optimización de RAM y logging inmediato
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
+    MALLOC_TRIM_THRESHOLD_=65536 \
     ENVIRONMENT=production \
-    PORT=8000 \
-    HOST=0.0.0.0
+    PORT=8000
 
-# Instalar dependencias de ejecución esenciales (curl para healthcheck)
+# Instalar dependencias esenciales de sistema (curl para healthcheck nativo)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
-    libxml2 \
-    libxslt1.1 \
+    libpq-dev \
+    gcc \
     && rm -rf /var/lib/apt/lists/*
 
-# Instalar paquetes desde los wheels compilados
-COPY --from=builder /build/wheels /wheels
-COPY --from=builder /build/requirements.txt .
-RUN pip install --no-cache-dir --no-index --find-links=/wheels -r requirements.txt && \
-    rm -rf /wheels
+# Copiar e instalar dependencias de Python
+COPY requirements.txt .
+RUN pip install --no-cache-dir --upgrade pip && \
+    pip install --no-cache-dir -r requirements.txt
 
-# Crear usuario y grupo de sistema sin privilegios de root (UID/GID 10001)
+# Crear usuario sin privilegios para mayor seguridad
 RUN addgroup --system --gid 10001 finprice && \
     adduser --system --uid 10001 --ingroup finprice --no-create-home appuser
 
-# Copiar el código fuente de la aplicación con la propiedad asignada a appuser
-COPY --chown=appuser:finprice main.py .
-COPY --chown=appuser:finprice app ./app
+# Copiar el código de la aplicación
+COPY main.py .
+COPY app ./app
 
-# Directorio de trabajo con permisos para SQLite y logs
+# Asignar permisos al usuario de ejecución
 RUN chown -R appuser:finprice /app
-
-# Cambiar al usuario sin privilegios
 USER appuser
 
 EXPOSE 8000
 
-# Healthcheck nativo consultando el endpoint de diagnóstico de FinPrice
-HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-    CMD curl -f http://localhost:8000/api/v1/health || exit 1
+# Healthcheck interno apuntando al endpoint ultraligero /ping
+HEALTHCHECK --interval=20s --timeout=3s --start-period=5s --retries=3 \
+    CMD curl -f http://localhost:${PORT:-8000}/ping || exit 1
 
-# Comando de inicio del servidor ASGI
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
+# Comando de inicio: 1 solo worker para no duplicar RAM, limitando concurrencia
+CMD ["sh", "-c", "uvicorn main:app --host 0.0.0.0 --port ${PORT:-8000} --workers 1 --limit-concurrency 40 --timeout-keep-alive 30"]

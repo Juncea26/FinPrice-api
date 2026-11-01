@@ -6,6 +6,7 @@ Orquestador concurrente de recolección real de precios multitienda con Triple C
    y protección de imagen oficial de alta resolución (select_best_canonical_image).
 """
 import asyncio
+import gc
 import json
 import time
 from datetime import datetime, timezone
@@ -128,6 +129,11 @@ def get_parser_for_store(store_id: str) -> Optional[Callable[..., Optional[Dict[
     elif store_id in {"metro", "wong"}:
         return parse_vtex_cencosud
     return None
+
+
+def utc_now() -> datetime:
+    """Retorna fecha y hora actual en UTC sin tzinfo para compatibilidad con Neon PostgreSQL."""
+    return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
 class CollectorOrchestrator:
@@ -594,7 +600,7 @@ class CollectorOrchestrator:
                     prod_entity.tech_specs_json = json.dumps(merged_specs, ensure_ascii=False)
                     if real_image:
                         prod_entity.image_url = real_image
-                    prod_entity.updated_at = datetime.now(timezone.utc)
+                    prod_entity.updated_at = utc_now()
 
                 # Eliminar ofertas previas para este producto e insertar las ofertas verificadas actuales
                 await session.execute(
@@ -609,7 +615,7 @@ class CollectorOrchestrator:
                         original_price=off.get("original_price"),
                         offer_url=off["offer_url"],
                         is_best_price=(idx == 0),
-                        last_scraped_at=datetime.now(timezone.utc),
+                        last_scraped_at=utc_now(),
                     )
                     session.add(store_entity)
                     total_offers_updated += 1
@@ -624,14 +630,14 @@ class CollectorOrchestrator:
                 today_point = today_q.scalar_one_or_none()
                 if today_point:
                     today_point.price = best_price
-                    today_point.recorded_at = datetime.now(timezone.utc)
+                    today_point.recorded_at = utc_now()
                 else:
                     new_hist = PriceHistoryEntity(
                         product_id=prod_id,
                         day_offset=0,
                         date_label="Hoy",
                         price=best_price,
-                        recorded_at=datetime.now(timezone.utc),
+                        recorded_at=utc_now(),
                     )
                     session.add(new_hist)
 
@@ -646,6 +652,10 @@ class CollectorOrchestrator:
                 hist_min = min(all_prices) if all_prices else best_price
                 prod_entity.historical_min_price = hist_min
                 prod_entity.is_historical_min = best_price <= hist_min
+
+            # Forzar recolección de basura entre productos para nunca acercarse al límite de RAM
+            del verified_offers
+            gc.collect()
 
         await session.commit()
 

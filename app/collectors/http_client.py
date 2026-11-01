@@ -1,8 +1,10 @@
 """
 Cliente HTTP asíncrono optimizado con headers de navegador real,
 reintentos con backoff exponencial, jitter, HTTP/2 y control de concurrencia mediante semáforo.
+Reutiliza una única instancia compartida de httpx.AsyncClient para no agotar la RAM (< 300 MB).
 """
 import asyncio
+import gc
 import random
 import time
 from typing import Dict, Optional
@@ -59,8 +61,9 @@ USER_AGENTS = [
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.6 Safari/605.1.15",
 ]
 
-# Mapa de semáforos por event loop para evitar conflictos entre loops en Python 3.9 / pytest
+# Semáforo global limitado a 2 tiendas concurrentes para estricto control de memoria
 _loop_semaphores: Dict[int, asyncio.Semaphore] = {}
+_shared_clients: Dict[int, httpx.AsyncClient] = {}
 
 
 def _get_collector_semaphore() -> asyncio.Semaphore:
@@ -68,9 +71,41 @@ def _get_collector_semaphore() -> asyncio.Semaphore:
     loop_id = id(loop)
     sem = _loop_semaphores.get(loop_id)
     if sem is None:
-        sem = asyncio.Semaphore(settings.COLLECTOR_MAX_CONCURRENCY)
+        # Límite estricto a 2 concurrentes
+        sem = asyncio.Semaphore(min(2, settings.COLLECTOR_MAX_CONCURRENCY))
         _loop_semaphores[loop_id] = sem
     return sem
+
+
+def get_shared_client() -> httpx.AsyncClient:
+    """Retorna la instancia única compartida de httpx.AsyncClient para el event loop actual."""
+    loop = asyncio.get_running_loop()
+    loop_id = id(loop)
+    client = _shared_clients.get(loop_id)
+    if client is None or client.is_closed:
+        limits = httpx.Limits(max_keepalive_connections=5, max_connections=10)
+        timeout = httpx.Timeout(
+            timeout=15.0,
+            connect=settings.COLLECTOR_TIMEOUT_CONNECT,
+            read=settings.COLLECTOR_TIMEOUT_READ,
+        )
+        client = httpx.AsyncClient(
+            timeout=timeout,
+            limits=limits,
+            http2=HAS_HTTP2,
+            follow_redirects=True,
+        )
+        _shared_clients[loop_id] = client
+    return client
+
+
+async def close_shared_client() -> None:
+    """Cierra limpiamente el cliente compartido del event loop actual."""
+    loop = asyncio.get_running_loop()
+    loop_id = id(loop)
+    client = _shared_clients.pop(loop_id, None)
+    if client and not client.is_closed:
+        await client.aclose()
 
 
 def get_browser_headers() -> Dict[str, str]:
@@ -94,60 +129,60 @@ async def fetch_page(
     max_retries: int = 2,
 ) -> Optional[str]:
     """
-    Ejecuta una petición GET asíncrona segura con semáforo, timeouts estrictos
-    y reintentos exponenciales con jitter ante errores 429, 502, 503, 504.
+    Ejecuta una petición GET asíncrona segura con semáforo limitado a 2 tiendas,
+    reutilizando una única instancia de AsyncClient y liberando memoria de inmediato.
     """
-    timeout = httpx.Timeout(
-        connect=settings.COLLECTOR_TIMEOUT_CONNECT,
-        read=settings.COLLECTOR_TIMEOUT_READ,
-        write=10.0,
-        pool=10.0,
-    )
-
     async with _get_collector_semaphore():
         headers = get_browser_headers()
-        should_close = False
-        if client is None:
-            client = httpx.AsyncClient(timeout=timeout, http2=HAS_HTTP2, follow_redirects=True)
-            should_close = True
+        effective_client = client if client is not None else get_shared_client()
 
-        try:
-            for attempt in range(max_retries + 1):
-                try:
-                    response = await client.get(url, headers=headers)
-                    if response.status_code in {429, 502, 503, 504}:
-                        if attempt < max_retries:
-                            backoff = (2 ** attempt) + random.uniform(0.2, 0.7)
-                            logger.warning(
-                                f"HTTP {response.status_code} al solicitar {url}. Reintentando en {backoff:.2f}s..."
-                            )
-                            await asyncio.sleep(backoff)
-                            continue
-                    if response.status_code in {200, 206}:
-                        return response.text
-                    if response.status_code == 403:
-                        _, clean_url = canonicalize_store_url(url)
-                        if clean_url in RIPLEY_VERIFIED_WAF_SNAPSHOTS:
-                            logger.info(
-                                f"Usando instantánea verificada de Ripley ante bloqueo WAF 403 en {clean_url}"
-                            )
-                            return RIPLEY_VERIFIED_WAF_SNAPSHOTS[clean_url]
-                    logger.warning(
-                        f"Respuesta no exitosa ({response.status_code}) para {url}"
-                    )
-                    return None
-                except (httpx.TimeoutException, httpx.NetworkError) as err:
+        for attempt in range(max_retries + 1):
+            try:
+                response = await effective_client.get(url, headers=headers)
+                status_code = response.status_code
+
+                if status_code in {429, 502, 503, 504}:
+                    del response
                     if attempt < max_retries:
                         backoff = (2 ** attempt) + random.uniform(0.2, 0.7)
                         logger.warning(
-                            f"Fallo de conexión para {url}: {err}. Reintentando en {backoff:.2f}s..."
+                            f"HTTP {status_code} al solicitar {url}. Reintentando en {backoff:.2f}s..."
                         )
                         await asyncio.sleep(backoff)
-                    else:
-                        logger.warning(f"Error definitivo tras {max_retries} reintentos en {url}: {err}")
-                        return None
-        finally:
-            if should_close:
-                await client.aclose()
+                        continue
+
+                if status_code in {200, 206}:
+                    text = response.text
+                    del response
+                    return text
+
+                if status_code == 403:
+                    del response
+                    _, clean_url = canonicalize_store_url(url)
+                    if clean_url in RIPLEY_VERIFIED_WAF_SNAPSHOTS:
+                        logger.info(
+                            f"Usando instantánea verificada de Ripley ante bloqueo WAF 403 en {clean_url}"
+                        )
+                        return RIPLEY_VERIFIED_WAF_SNAPSHOTS[clean_url]
+
+                del response
+                logger.warning(
+                    f"Respuesta no exitosa ({status_code}) para {url}"
+                )
+                return None
+
+            except (httpx.TimeoutException, httpx.NetworkError) as err:
+                if attempt < max_retries:
+                    backoff = (2 ** attempt) + random.uniform(0.2, 0.7)
+                    logger.warning(
+                        f"Fallo de conexión para {url}: {err}. Reintentando en {backoff:.2f}s..."
+                    )
+                    await asyncio.sleep(backoff)
+                else:
+                    logger.warning(f"Error definitivo tras {max_retries} reintentos en {url}: {err}")
+                    return None
+            finally:
+                # Recolección rápida si es necesario
+                pass
 
     return None

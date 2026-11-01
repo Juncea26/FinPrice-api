@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.database import get_db
 from app.core.security import check_read_rate_limit, sanitize_input_text
 from app.collectors.spec_extractor import CANONICAL_SPEC_MAP, map_to_canonical_key
-from app.models.schemas import ProductSchema
+from app.models.schemas import PricePointSchema, ProductSchema
 from app.services.catalog_service import catalog_service
 
 router = APIRouter(prefix="/products", tags=["Productos"])
@@ -99,6 +99,33 @@ async def get_products(
 
 
 @router.get(
+    "/search",
+    response_model=List[ProductSchema],
+    summary="Búsqueda rápida de productos por palabra clave",
+    dependencies=[Depends(check_read_rate_limit)],
+)
+async def search_products(
+    request: Request,
+    q: Optional[str] = Query(None, max_length=80),
+    search: Optional[str] = Query(None, max_length=80),
+    category: Optional[str] = Query(None, max_length=80),
+    brand: Optional[str] = Query(None, max_length=80),
+    session: AsyncSession = Depends(get_db),
+):
+    """Búsqueda directa de productos por término (compatible con app Android)."""
+    search_term = q or search
+    clean_search = sanitize_input_text(search_term, max_length=80)
+    clean_category = sanitize_input_text(category, max_length=80)
+    clean_brand = sanitize_input_text(brand, max_length=80)
+    return await catalog_service.get_products(
+        session=session,
+        search=clean_search,
+        category=clean_category,
+        brand=clean_brand,
+    )
+
+
+@router.get(
     "/{product_id}",
     response_model=ProductSchema,
     summary="Detalle completo de producto con historial y ofertas por tienda",
@@ -117,3 +144,24 @@ async def get_product_by_id(
             detail=f"Producto con ID '{clean_id}' no encontrado en FinPrice API.",
         )
     return product
+
+
+@router.get(
+    "/{product_id}/history",
+    response_model=List[PricePointSchema],
+    summary="Historial de precios de los últimos 30 días para gráfica móvil",
+    dependencies=[Depends(check_read_rate_limit)],
+)
+async def get_product_price_history(
+    product_id: str,
+    session: AsyncSession = Depends(get_db),
+):
+    """Retorna la serie temporal de precios reales observados en los últimos 30 días."""
+    clean_id = sanitize_input_text(product_id, max_length=80)
+    product = await catalog_service.get_product_by_id(product_id=clean_id, session=session)
+    if not product:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Producto con ID '{clean_id}' no encontrado en FinPrice API.",
+        )
+    return product.price_history_30_days

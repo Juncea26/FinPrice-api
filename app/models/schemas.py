@@ -169,3 +169,118 @@ class DynamicFiltersSchema(BaseModel):
     specs_by_category: Dict[str, Dict[str, List[str]]] = Field(default_factory=dict)
     brandsByCategory: Optional[Dict[str, List[str]]] = None
     specsByCategory: Optional[Dict[str, Dict[str, List[str]]]] = None
+
+
+# ==============================================================================
+# PUBLICACIONES DE LA COMUNIDAD (GET, POST, PUT)
+# ==============================================================================
+
+class CommunityPostSchema(CamelModel):
+    id: str = Field(..., description="ID único de la publicación comunitaria")
+    product_id: Optional[str] = Field(default=None, description="ID del producto asociado")
+    title: str = Field(..., description="Título de la publicación")
+    content: Optional[str] = Field(default="", description="Detalle del post")
+    product_name: Optional[str] = Field(default="", description="Nombre del producto")
+    physical_store_name: Optional[str] = Field(default="", description="Nombre de la tienda física")
+    price: Optional[float] = Field(default=None, description="Precio observado en vitrina en PEN")
+    department: Optional[str] = Field(default="", description="Departamento peruano")
+    province: Optional[str] = Field(default="", description="Provincia")
+    district: Optional[str] = Field(default="", description="Distrito")
+    photo_uri: Optional[str] = Field(default="", description="Foto o comprobante")
+    author_name: str = Field(default="Usuario FinPrice", description="Nombre del autor")
+    likes_count: int = Field(default=0, description="Cantidad de likes")
+    status: str = Field(default="active", description="Estado de la publicación")
+    formatted_date: Optional[str] = Field(default="", description="Fecha legible")
+    timestamp_millis: Optional[int] = Field(default=None, description="Marca de tiempo en milisegundos")
+    created_at: Optional[str] = None
+    updated_at: Optional[str] = None
+
+
+class CommunityPostCreateSchema(CamelModel):
+    title: str = Field(..., min_length=2, max_length=255)
+    content: Optional[str] = Field(default="", max_length=2000)
+    product_id: Optional[str] = None
+    product_name: Optional[str] = None
+    physical_store_name: Optional[str] = None
+    price: Optional[float] = Field(default=None, gt=0)
+    department: Optional[str] = None
+    province: Optional[str] = None
+    district: Optional[str] = None
+    photo_uri: Optional[str] = ""
+    author_name: Optional[str] = "Usuario FinPrice"
+
+
+class CommunityPostUpdateSchema(CamelModel):
+    title: Optional[str] = Field(default=None, min_length=2, max_length=255)
+    content: Optional[str] = Field(default=None, max_length=2000)
+    product_name: Optional[str] = None
+    physical_store_name: Optional[str] = None
+    price: Optional[float] = Field(default=None, gt=0)
+    department: Optional[str] = None
+    province: Optional[str] = None
+    district: Optional[str] = None
+    photo_uri: Optional[str] = None
+    author_name: Optional[str] = None
+    status: Optional[str] = None
+
+
+# ==============================================================================
+# LIBRO DE RECLAMACIONES Y CANCELACIONES
+# ==============================================================================
+
+class ComplaintCreateSchema(CamelModel):
+    full_name: str = Field(..., min_length=3, max_length=150)
+    document_type: str = Field(default="DNI", max_length=20)
+    document_number: str = Field(..., min_length=5, max_length=30)
+    email: str = Field(..., max_length=120)
+    phone: str = Field(..., min_length=6, max_length=30)
+    address: Optional[str] = Field(default="", max_length=255)
+    department: Optional[str] = Field(default="", max_length=100)
+    province: Optional[str] = Field(default="", max_length=100)
+    district: Optional[str] = Field(default="", max_length=100)
+    is_minor: bool = False
+    guardian_name: Optional[str] = Field(default="", max_length=150)
+    complaint_type: str = Field(default="Reclamo", description="'Reclamo', 'Queja', 'Sugerencia' o 'Cancelación de suscripción'")
+    contracted_good: str = Field(default="Servicio", description="'Producto' o 'Servicio'")
+    claimed_amount: Optional[float] = None
+    description: str = Field(..., min_length=10, description="Detalle del reclamo o sugerencia")
+    consumer_request: Optional[str] = Field(default="", description="Pedido concreto del consumidor")
+
+
+class ComplaintSchema(CamelModel):
+    id: int
+    claim_number: str
+    full_name: str
+    document_type: str
+    document_number: str
+    email: str
+    phone: str
+    address: Optional[str] = ""
+    department: Optional[str] = ""
+    province: Optional[str] = ""
+    district: Optional[str] = ""
+    is_minor: bool = False
+    guardian_name: Optional[str] = ""
+    complaint_type: str
+    contracted_good: str
+    claimed_amount: Optional[float] = None
+    description: str
+    consumer_request: Optional[str] = ""
+    status: str
+    response_detail: Optional[str] = ""
+    created_at: Optional[str] = None
+
+
+class CancellationSuggestionCreateSchema(CamelModel):
+    email: str = Field(..., max_length=120)
+    reason: str = Field(..., min_length=3, max_length=255)
+    feedback: Optional[str] = Field(default="", max_length=2000)
+
+
+class CancellationSuggestionSchema(CamelModel):
+    id: int
+    email: str
+    reason: str
+    feedback: Optional[str] = ""
+    created_at: Optional[str] = None
+
