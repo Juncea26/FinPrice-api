@@ -10,6 +10,7 @@ Servicio asíncrono de catálogo:
 import json
 import re
 import time
+import unicodedata
 import uuid
 from datetime import datetime, timezone
 from typing import Dict, List, Literal, Optional
@@ -201,6 +202,11 @@ class CatalogService:
             ]
             price_history.sort(key=lambda x: x.day_offset)
 
+            # Si hay menos de 2 fechas distintas observadas (Día 1 del sistema), retornar lista vacía
+            # para que la app Android oculte la gráfica de 30 días (if (history.isEmpty()) return)
+            unique_dates = {hp.date_label for hp in price_history}
+            effective_price_history = price_history if len(unique_dates) >= 2 else []
+
             schemas.append(
                 ProductSchema(
                     id=p.id,
@@ -224,7 +230,7 @@ class CatalogService:
                     ),
                     tech_specs=tech_specs,
                     is_historical_min=p.is_historical_min,
-                    price_history_30_days=price_history,
+                    price_history_30_days=effective_price_history,
                 )
             )
 
@@ -318,6 +324,7 @@ class CatalogService:
         dynamic_specs: Optional[Dict[str, str]] = None,
         enabled_stores: Optional[str] = None,
         sort_order: Literal["LOW_TO_HIGH", "HIGH_TO_LOW"] = "LOW_TO_HIGH",
+        limit: int = 250,
     ) -> List[ProductSchema]:
         """Filtra y ordena el catálogo en memoria respondiendo en < 50ms."""
         products = await self._get_base_products(session)
@@ -329,12 +336,18 @@ class CatalogService:
                 s.strip().lower() for s in enabled_stores.split(",") if s.strip()
             }
 
+        def _normalize_text(text: str) -> str:
+            if not text:
+                return ""
+            nfkd = unicodedata.normalize("NFKD", text)
+            return "".join(c for c in nfkd if not unicodedata.combining(c)).lower().replace('"', ' ').replace("'", ' ').replace('/', ' ')
+
         def _is_active_filter(val: Optional[str]) -> bool:
             if not val:
                 return False
             return val.strip().lower() not in {"", "todos", "todas", "all"}
 
-        search_term = search.lower().strip() if search and search.strip() else None
+        search_tokens = _normalize_text(search).split() if search and search.strip() else []
         category_term = category.strip() if _is_active_filter(category) else None
         brand_term = brand.strip().lower() if _is_active_filter(brand) else None
 
@@ -342,14 +355,11 @@ class CatalogService:
             if category_term and prod.category.lower() != category_term.lower():
                 continue
 
-            if search_term:
-                match_search = (
-                    search_term in prod.title.lower()
-                    or search_term in prod.category.lower()
-                    or search_term in prod.best_store_name.lower()
-                    or search_term in prod.brand.lower()
+            if search_tokens:
+                prod_searchable = _normalize_text(
+                    f"{prod.title} {prod.brand} {prod.category} {prod.best_store_name} {prod.description} {' '.join(prod.features)} {' '.join(str(v) for v in prod.tech_specs.values())}"
                 )
-                if not match_search:
+                if not all(token in prod_searchable for token in search_tokens):
                     continue
 
             if brand_term:
@@ -366,14 +376,27 @@ class CatalogService:
             if _is_active_filter(ram):
                 r_query = ram.lower().replace(" ", "")  # type: ignore[union-attr]
                 r_spec = prod.tech_specs.get("Memoria RAM", "").lower().replace(" ", "")
-                if r_query not in prod.title.lower().replace(" ", "") and r_query != r_spec and r_query not in r_spec:
-                    continue
+                if r_spec:
+                    if r_query != r_spec and r_query not in r_spec:
+                        continue
+                else:
+                    num_match = re.search(r"(\d+)", r_query)
+                    num = num_match.group(1) if num_match else r_query
+                    if not re.search(rf"(?<!\d){num}\s*gb\b", prod.title.lower()):
+                        continue
 
             if _is_active_filter(storage):
                 s_query = storage.lower().replace(" ", "")  # type: ignore[union-attr]
                 s_spec = prod.tech_specs.get("Almacenamiento", "").lower().replace(" ", "")
-                if s_query not in prod.title.lower().replace(" ", "") and s_query != s_spec and s_query not in s_spec:
-                    continue
+                if s_spec:
+                    if s_query != s_spec and s_query not in s_spec:
+                        continue
+                else:
+                    num_match = re.search(r"(\d+)", s_query)
+                    num = num_match.group(1) if num_match else s_query
+                    unit = "tb" if "tb" in s_query else "gb"
+                    if not re.search(rf"(?<!\d){num}\s*{unit}\b", prod.title.lower()):
+                        continue
 
             if _is_active_filter(tv_resolution):
                 t_query = tv_resolution.lower().strip()  # type: ignore[union-attr]
@@ -440,14 +463,20 @@ class CatalogService:
                 for idx, sp in enumerate(sorted_stores)
             ]
 
-            effective_best_price = adjusted_stores[0].price
-            effective_best_store = adjusted_stores[0].store_name
-            effective_orig_price = adjusted_stores[0].original_price or effective_best_price
-            effective_discount = (
-                round(((effective_orig_price - effective_best_price) / effective_orig_price) * 100)
-                if effective_orig_price > effective_best_price
-                else 0
-            )
+            if adjusted_stores:
+                effective_best_price = adjusted_stores[0].price
+                effective_best_store = adjusted_stores[0].store_name
+                effective_orig_price = adjusted_stores[0].original_price or effective_best_price
+                effective_discount = (
+                    round(((effective_orig_price - effective_best_price) / effective_orig_price) * 100)
+                    if effective_orig_price > effective_best_price
+                    else 0
+                )
+            else:
+                effective_best_price = prod.best_price
+                effective_best_store = prod.best_store_name
+                effective_orig_price = prod.original_price or prod.best_price
+                effective_discount = prod.discount_percentage
 
             result_item = ProductSchema(
                 id=prod.id,
@@ -480,7 +509,7 @@ class CatalogService:
         else:
             results.sort(key=lambda x: x.best_price, reverse=False)
 
-        return results
+        return results[:limit]
 
     async def get_product_by_id(
         self, product_id: str, session: AsyncSession
@@ -870,6 +899,18 @@ class CatalogService:
             updated_at=post.updated_at.isoformat() if post.updated_at else None,
         )
 
+    async def delete_community_post(self, session: AsyncSession, post_id: str) -> bool:
+        """Elimina una publicación comunitaria por ID."""
+        res = await session.execute(
+            select(CommunityPostEntity).where(CommunityPostEntity.id == post_id)
+        )
+        post = res.scalar_one_or_none()
+        if not post:
+            return False
+        await session.delete(post)
+        await session.commit()
+        return True
+
     # --------------------------------------------------------------------------
     # LIBRO DE RECLAMACIONES Y CANCELACIONES
     # --------------------------------------------------------------------------
@@ -1066,6 +1107,7 @@ class CatalogService:
             int_id = abs(hash(prod.id)) % 10000
             offers = [
                 StoreOffer(
+                    store_id=sp.store_id,
                     store_name=sp.store_name,
                     price=sp.price,
                     currency="PEN",

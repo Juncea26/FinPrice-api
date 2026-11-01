@@ -50,6 +50,7 @@ async def get_products(
     os: Optional[str] = Query(None, max_length=80),
     enabled_stores: Optional[str] = Query(None, max_length=150),
     sort_order: Literal["LOW_TO_HIGH", "HIGH_TO_LOW"] = Query("LOW_TO_HIGH"),
+    limit: int = Query(250, ge=1, le=500, description="Límite de productos a retornar"),
     session: AsyncSession = Depends(get_db),
 ):
     """
@@ -95,6 +96,7 @@ async def get_products(
         dynamic_specs=dynamic_specs if dynamic_specs else None,
         enabled_stores=clean_stores,
         sort_order=sort_order,
+        limit=limit,
     )
 
 
@@ -110,6 +112,7 @@ async def search_products(
     search: Optional[str] = Query(None, max_length=80),
     category: Optional[str] = Query(None, max_length=80),
     brand: Optional[str] = Query(None, max_length=80),
+    limit: int = Query(250, ge=1, le=500, description="Límite de productos"),
     session: AsyncSession = Depends(get_db),
 ):
     """Búsqueda directa de productos por término (compatible con app Android)."""
@@ -122,6 +125,7 @@ async def search_products(
         search=clean_search,
         category=clean_category,
         brand=clean_brand,
+        limit=limit,
     )
 
 

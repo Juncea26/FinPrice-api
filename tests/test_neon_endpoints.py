@@ -78,7 +78,8 @@ async def test_products_catalog_and_search():
 
 @pytest.mark.asyncio
 async def test_community_posts_lifecycle():
-    """Valida ciclo de vida completo de publicaciones comunitarias (GET, POST, PUT)."""
+    """Valida ciclo de vida completo de publicaciones comunitarias (GET, POST, PUT, DELETE) con limpieza total."""
+    post_id = None
     try:
         transport = ASGITransport(app=app)
         async with AsyncClient(transport=transport, base_url="http://test") as client:
@@ -116,13 +117,30 @@ async def test_community_posts_lifecycle():
             updated = put_res.json()
             assert updated["title"] == update_payload["title"]
             assert updated["price"] == 3149.0
+
+            # Eliminar inmediatamente para mantener la BD 100% limpia sin registros fantasma
+            del_res = await client.delete(f"/api/v1/community/posts/{post_id}")
+            assert del_res.status_code == 204
+            post_id = None
     finally:
+        if post_id:
+            try:
+                from app.core.database import AsyncSessionLocal
+                from sqlalchemy import delete
+                from app.models.entities import CommunityPostEntity
+                async with AsyncSessionLocal() as session:
+                    await session.execute(delete(CommunityPostEntity).where(CommunityPostEntity.id == post_id))
+                    await session.commit()
+            except Exception:
+                pass
         await engine.dispose()
 
 
 @pytest.mark.asyncio
 async def test_complaints_and_cancellations():
-    """Valida registro en Libro de Reclamaciones y sugerencias de cancelación."""
+    """Valida registro en Libro de Reclamaciones y sugerencias de cancelación con limpieza total."""
+    claim_number = None
+    cancel_email = "usuario.despedida@example.pe"
     try:
         transport = ASGITransport(app=app)
         async with AsyncClient(transport=transport, base_url="http://test") as client:
@@ -145,15 +163,16 @@ async def test_complaints_and_cancellations():
             res_comp = await client.post("/api/v1/complaints", json=complaint_payload)
             assert res_comp.status_code == 201
             comp_data = res_comp.json()
-            assert "REC-" in comp_data["claimNumber"]
+            claim_number = comp_data["claimNumber"]
+            assert "REC-" in claim_number
             assert comp_data["fullName"] == "Juan Carlos Pérez"
 
-            get_comp = await client.get(f"/api/v1/complaints/{comp_data['claimNumber']}")
+            get_comp = await client.get(f"/api/v1/complaints/{claim_number}")
             assert get_comp.status_code == 200
-            assert get_comp.json()["claimNumber"] == comp_data["claimNumber"]
+            assert get_comp.json()["claimNumber"] == claim_number
 
             cancel_payload = {
-                "email": "usuario.despedida@example.pe",
+                "email": cancel_email,
                 "reason": "Ya encontré el producto que buscaba al mejor precio",
                 "feedback": "Excelente servicio, volveré para la campaña navideña.",
             }
@@ -161,6 +180,16 @@ async def test_complaints_and_cancellations():
             assert res_cancel.status_code == 201
             assert res_cancel.json()["email"] == cancel_payload["email"]
     finally:
+        try:
+            from app.core.database import AsyncSessionLocal
+            from sqlalchemy import delete
+            from app.models.entities import ComplaintEntity, CancellationSuggestionEntity
+            async with AsyncSessionLocal() as session:
+                await session.execute(delete(ComplaintEntity).where(ComplaintEntity.email == "juan.perez@example.pe"))
+                await session.execute(delete(CancellationSuggestionEntity).where(CancellationSuggestionEntity.email == cancel_email))
+                await session.commit()
+        except Exception:
+            pass
         await engine.dispose()
 
 

@@ -114,6 +114,27 @@ async def update_community_post(
     )
 
 
+@router.delete(
+    "/community/posts/{post_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Eliminar una publicación comunitaria",
+    dependencies=[Depends(check_write_rate_limit)],
+)
+async def delete_community_post(
+    post_id: str,
+    session: AsyncSession = Depends(get_db),
+):
+    """Elimina una publicación comunitaria por ID."""
+    clean_id = sanitize_input_text(post_id, max_length=80)
+    deleted = await catalog_service.delete_community_post(session=session, post_id=clean_id)
+    if not deleted:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Publicación con ID '{clean_id}' no encontrada.",
+        )
+    return None
+
+
 # ==============================================================================
 # OFERTAS FÍSICAS COMUNITARIAS (/api/v1/community-offers y /api/v1/community/offers)
 # ==============================================================================

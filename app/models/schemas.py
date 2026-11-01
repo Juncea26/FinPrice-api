@@ -124,6 +124,7 @@ class CommunityOfferCreateSchema(CamelModel):
 # ==============================================================================
 
 class StoreOffer(BaseModel):
+    store_id: Optional[str] = None
     store_name: str
     price: float
     currency: str = "PEN"

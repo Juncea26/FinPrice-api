@@ -204,7 +204,10 @@ def client():
 @pytest.fixture(autouse=True)
 def reset_rate_limits():
     from app.core.security import rate_limiter
+    from app.collectors.orchestrator import CIRCUIT_BREAKERS
     rate_limiter.reset()
+    for cb in CIRCUIT_BREAKERS.values():
+        cb.record_success()
 
 
 # ==============================================================================
