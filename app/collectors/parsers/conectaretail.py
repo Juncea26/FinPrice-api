@@ -11,7 +11,7 @@ from bs4 import BeautifulSoup, Tag
 
 from app.core.logging import get_logger
 from app.collectors.spec_extractor import extract_product_specs
-from app.collectors.url_utils import canonicalize_store_url
+from app.collectors.url_utils import canonicalize_store_url, is_valid_product_image_url
 from app.collectors.validators import validate_product_identity
 
 logger = get_logger("parsers.conectaretail")
@@ -168,15 +168,17 @@ def parse_conectaretail(
         else (str(meta_desc.get("content") or "").strip() if meta_desc else "")
     )
 
-    # Buscar imagen oficial en el bloque de galería principal o meta og:image de la ficha
-    gallery_img = soup.select_one(
-        ".product.media img.gallery-placeholder__image, "
-        ".fotorama__stage__frame img.fotorama__img"
-    )
+    # Buscar imagen oficial dando prioridad a meta og:image y rechazando placeholders o logos
     og_img = soup.find("meta", property="og:image")
-    page_image = (
-        (gallery_img.get("src") or gallery_img.get("href")) if gallery_img else None
-    ) or (og_img.get("content") if og_img else None)
+    og_content = og_img.get("content") if og_img else None
+    gallery_img = soup.select_one(".fotorama__stage__frame img.fotorama__img, .product.media img")
+    gallery_src = (gallery_img.get("src") or gallery_img.get("href")) if gallery_img else None
+
+    page_image = None
+    if is_valid_product_image_url(og_content):
+        page_image = og_content
+    elif is_valid_product_image_url(gallery_src):
+        page_image = gallery_src
 
     # Determinar el contenedor de precios: estrictamente .product-info-main si existe en el DOM.
     # Solo se permite el fallback a soup en fragmentos sintéticos mínimos de tests unitarios sin estructura de página.

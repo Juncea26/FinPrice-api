@@ -129,10 +129,13 @@ class ProductTargetSpec(BaseModel):
             elif isinstance(raw_specs, dict):
                 tech_specs = dict(raw_specs)
 
+        from app.collectors.spec_extractor import classify_product_category
+        effective_category = classify_product_category(profile["title"], category)
+
         return cls(
             id=prod_id,
             title=profile["title"],
-            category=category,
+            category=effective_category,
             brand=profile["brand"],
             model_tokens=profile["model_tokens"],
             storage_gb=profile["storage_gb"],

@@ -11,7 +11,7 @@ from bs4 import BeautifulSoup, Tag
 
 from app.core.logging import get_logger
 from app.collectors.spec_extractor import extract_product_specs
-from app.collectors.url_utils import canonicalize_store_url
+from app.collectors.url_utils import canonicalize_store_url, is_valid_product_image_url
 from app.collectors.validators import validate_product_identity
 
 logger = get_logger("parsers.hiraoka")
@@ -230,11 +230,16 @@ def parse_hiraoka(
                     ):
                         return None
 
+                    og_img = soup.find("meta", property="og:image")
+                    candidate_img = official_img if (isinstance(official_img, str) and is_valid_product_image_url(official_img)) else None
+                    if not candidate_img and og_img and is_valid_product_image_url(og_img.get("content")):
+                        candidate_img = og_img.get("content")
+
                     return {
                         "title": effective_title,
                         "price": best,
                         "original_price": orig if orig and orig > best else best,
-                        "image_url": official_img if isinstance(official_img, str) else None,
+                        "image_url": candidate_img,
                         "offer_url": offer_url,
                         "brand": extracted_meta["brand"],
                         "tech_specs": extracted_meta["tech_specs"],
@@ -273,6 +278,8 @@ def parse_hiraoka(
                 raw_old = (old_elem.get("data-price-amount") or old_elem.get_text()) if old_elem else None
                 orig = clean_number(raw_old) or p
                 og_img = soup.find("meta", property="og:image")
+                og_url = og_img.get("content") if og_img else None
+                valid_img = og_url if is_valid_product_image_url(og_url) else None
 
                 if canonical_title and not validate_product_identity(
                     canonical_title, h1_title, offer_url, store_id="hiraoka"
@@ -283,7 +290,7 @@ def parse_hiraoka(
                     "title": h1_title,
                     "price": p,
                     "original_price": orig if orig and orig > p else p,
-                    "image_url": og_img.get("content") if og_img else None,
+                    "image_url": valid_img,
                     "offer_url": offer_url,
                     "brand": extracted_meta["brand"],
                     "tech_specs": extracted_meta["tech_specs"],
@@ -296,6 +303,8 @@ def parse_hiraoka(
         p = clean_number(meta_price["content"])
         if p:
             og_img = soup.find("meta", property="og:image")
+            og_url = og_img.get("content") if og_img else None
+            valid_img = og_url if is_valid_product_image_url(og_url) else None
             og_title_el = soup.find("meta", property="og:title")
             effective_title = h1_title or (og_title_el.get("content") if og_title_el else "")
 
@@ -308,7 +317,7 @@ def parse_hiraoka(
                 "title": str(effective_title),
                 "price": p,
                 "original_price": p,
-                "image_url": og_img.get("content") if og_img else None,
+                "image_url": valid_img,
                 "offer_url": offer_url,
             }
 

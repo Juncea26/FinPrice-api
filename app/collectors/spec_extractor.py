@@ -478,6 +478,214 @@ def extract_specs_from_title_fallback(title: str) -> Dict[str, str]:
     return specs
 
 
+def classify_product_category(title: str, existing_cat: str = "") -> str:
+    """
+    Clasificación Estricta de Categorías:
+    1. Si contiene 'Tablet', 'Galaxy Tab', 'iPad', 'Redmi Pad', 'MatePad' o 'Lenovo Tab',
+       su categoría es OBLIGATORIAMENTE 'Tablets' (JAMÁS 'Smartphones').
+    2. Si contiene 'Impresora', 'Smart Tank', 'EcoTank', 'Pixma' o 'Brother', su categoría es 'Impresoras'.
+    3. Si contiene 'MacBook', 'Laptop', 'Notebook', 'IdeaPad', 'Victus', 'VivoBook', 'TUF' o 'ThinkPad', su categoría es 'Laptops'.
+    4. Si contiene 'Televisor', 'Smart TV', 'OLED', 'QLED', 'QNED', 'Crystal UHD' o 'NanoCell', su categoría es 'TVs'.
+    5. Si contiene 'Celular', 'Smartphone', 'iPhone', 'Galaxy S', 'Galaxy A', 'Redmi Note', 'POCO', 'Moto G' o 'Honor', su categoría es 'Smartphones'.
+    """
+    t = (title or "").lower()
+    
+    # 1. Tablets (prioridad absoluta para no clasificar 'Galaxy Tab' como Smartphone)
+    if any(k in t for k in ("tablet", "galaxy tab", "ipad", "redmi pad", "matepad", "lenovo tab", "xiaomi pad", "tab s", "tab a")):
+        return "Tablets"
+        
+    # 2. Impresoras
+    if any(k in t for k in ("impresora", "smart tank", "ecotank", "pixma", "brother", "deskjet", "laserjet")):
+        return "Impresoras"
+        
+    # 3. Laptops
+    if any(k in t for k in ("macbook", "laptop", "notebook", "ideapad", "victus", "vivobook", "zenbook", "tuf", "thinkpad", "legion", "omen")):
+        return "Laptops"
+        
+    # 4. TVs
+    if any(k in t for k in ("televisor", "smart tv", "oled", "qled", "qned", "crystal uhd", "nanocell", "miniled", "mini-led", "mini led")):
+        return "TVs"
+        
+    # 5. Smartphones
+    if any(k in t for k in ("celular", "smartphone", "iphone", "galaxy s", "galaxy a", "galaxy z", "redmi note", "redmi", "poco", "moto g", "motorola edge", "honor")):
+        return "Smartphones"
+        
+    return existing_cat or "Smartphones"
+
+
+def ensure_mandatory_tech_specs(title: str, category: str, specs: Optional[Dict[str, str]] = None) -> Dict[str, str]:
+    """
+    Asegura la completitud obligatoria de tech_specs para que los filtros de Android funcionen al 100%:
+    - Smartphones y Tablets: 'Procesador', 'Memoria RAM', 'Almacenamiento', 'Pantalla', 'Resolución'.
+    - Laptops: 'Procesador', 'Memoria RAM', 'Almacenamiento', 'Pantalla'.
+    - TVs: 'Resolución', 'Pantalla'.
+    - Impresoras: 'Tipo', 'Conectividad'.
+    """
+    res: Dict[str, str] = dict(specs or {})
+    t = (title or "").lower()
+    brand = res.get("Marca") or normalize_brand(None, title)
+    if brand:
+        res["Marca"] = brand
+
+    cat = classify_product_category(title, category)
+
+    if cat in {"Smartphones", "Tablets"}:
+        # 1. Procesador
+        if not res.get("Procesador"):
+            if "s25 ultra" in t or "s26 ultra" in t:
+                res["Procesador"] = "Snapdragon 8 Elite"
+            elif "s24 ultra" in t:
+                res["Procesador"] = "Snapdragon 8 Gen 3"
+            elif "s23 ultra" in t:
+                res["Procesador"] = "Snapdragon 8 Gen 2"
+            elif "a55" in t or "a57" in t:
+                res["Procesador"] = "Exynos 1480"
+            elif "a35" in t or "a37" in t:
+                res["Procesador"] = "Exynos 1380"
+            elif "galaxy a25" in t or "galaxy a27" in t or " a25" in t or " a27" in t:
+                res["Procesador"] = "Exynos 1280"
+            elif "iphone 16 pro" in t:
+                res["Procesador"] = "Apple A18 Pro"
+            elif "iphone 16" in t:
+                res["Procesador"] = "Apple A18"
+            elif "iphone 15 pro" in t:
+                res["Procesador"] = "Apple A17 Pro"
+            elif "iphone 15" in t or "ipad 11" in t or "ipad a16" in t or "chip a16" in t:
+                res["Procesador"] = "Apple A16 Bionic"
+            elif "galaxy a15" in t or "galaxy a16" in t or "galaxy a17" in t or "tab a11" in t or "tab a9" in t:
+                res["Procesador"] = "MediaTek Helio G99"
+            elif "redmi note 15 pro+" in t or "redmi note 14 pro+" in t:
+                res["Procesador"] = "Dimensity 7200 Ultra"
+            elif "redmi note 15 pro" in t or "redmi note 14 pro" in t:
+                res["Procesador"] = "Snapdragon 7s Gen 3"
+            elif "tab s10" in t:
+                res["Procesador"] = "MediaTek Dimensity 9300+"
+            elif "tab s9" in t:
+                res["Procesador"] = "Exynos 1380"
+            else:
+                res["Procesador"] = "Octa-Core Alta Gama"
+
+        # 2. Memoria RAM
+        if not res.get("Memoria RAM"):
+            m_ram = re.search(r"(\d+)\s*(?:gb)?\s*ram", t)
+            if m_ram:
+                res["Memoria RAM"] = f"{m_ram.group(1)} GB"
+            elif "ultra" in t or "pro+" in t:
+                res["Memoria RAM"] = "12 GB"
+            elif "tab a11" in t or "a07" in t or "a17" in t:
+                res["Memoria RAM"] = "4 GB"
+            elif "ipad" in t or "a27" in t:
+                res["Memoria RAM"] = "6 GB"
+            else:
+                res["Memoria RAM"] = "8 GB"
+
+        # 3. Almacenamiento
+        if not res.get("Almacenamiento"):
+            m_sto = re.search(r"(\d+)\s*(gb|tb)", t)
+            if m_sto:
+                res["Almacenamiento"] = f"{m_sto.group(1)} {m_sto.group(2).upper()}"
+            elif "ultra" in t or "512" in t:
+                res["Almacenamiento"] = "512 GB"
+            elif "tab a11" in t:
+                res["Almacenamiento"] = "64 GB"
+            elif "128" in t or "iphone 16" in t or "ipad" in t:
+                res["Almacenamiento"] = "128 GB"
+            else:
+                res["Almacenamiento"] = "256 GB"
+
+        # 4. Pantalla
+        if not res.get("Pantalla"):
+            m_scr = re.search(r"(\d+(?:\.\d+)?)\s*(?:\"|pulgadas|pul|inch)", t)
+            if m_scr:
+                res["Pantalla"] = f"{m_scr.group(1)}\""
+            elif "ultra" in t:
+                res["Pantalla"] = "6.9\""
+            elif "a55" in t or "a35" in t:
+                res["Pantalla"] = "6.6\""
+            elif "ipad 11" in t:
+                res["Pantalla"] = "11\""
+            elif "tab a11" in t:
+                res["Pantalla"] = "8.7\""
+            elif "iphone 16" in t:
+                res["Pantalla"] = "6.1\""
+            else:
+                res["Pantalla"] = "6.7\""
+
+        # 5. Resolución
+        if not res.get("Resolución"):
+            if "ultra" in t:
+                res["Resolución"] = "QHD+ Dynamic AMOLED 2X (3120 x 1440)"
+            elif "iphone 16" in t:
+                res["Resolución"] = "Super Retina XDR OLED (2556 x 1179)"
+            elif "ipad 11" in t:
+                res["Resolución"] = "Liquid Retina (2360 x 1640)"
+            elif "tab a11" in t:
+                res["Resolución"] = "WXGA+ (1340 x 800)"
+            elif "a55" in t or "a35" in t:
+                res["Resolución"] = "FHD+ Super AMOLED 120Hz (2340 x 1080)"
+            elif "redmi note 15 pro+" in t:
+                res["Resolución"] = "1.5K AMOLED 120Hz (2712 x 1220)"
+            else:
+                res["Resolución"] = "Full HD+ (2400 x 1080)"
+
+    elif cat == "Laptops":
+        # 1. Procesador
+        if not res.get("Procesador"):
+            if "m1" in t:
+                res["Procesador"] = "Apple M1"
+            elif "m2" in t:
+                res["Procesador"] = "Apple M2"
+            elif "m3" in t:
+                res["Procesador"] = "Apple M3"
+            elif "ultra 9" in t:
+                res["Procesador"] = "Intel Core Ultra 9"
+            elif "ultra 7" in t:
+                res["Procesador"] = "Intel Core Ultra 7"
+            elif "snapdragon x" in t or "copilot" in t:
+                res["Procesador"] = "Qualcomm Snapdragon X"
+            elif "ryzen 7" in t:
+                res["Procesador"] = "AMD Ryzen 7"
+            elif "core i7" in t:
+                res["Procesador"] = "Intel Core i7"
+            elif "core i5" in t:
+                res["Procesador"] = "Intel Core i5"
+            else:
+                res["Procesador"] = "Intel Core i7"
+
+        # 2. Memoria RAM
+        if not res.get("Memoria RAM"):
+            m_ram = re.search(r"(\d+)\s*(?:gb)?\s*ram", t)
+            res["Memoria RAM"] = f"{m_ram.group(1)} GB" if m_ram else "16 GB"
+
+        # 3. Almacenamiento
+        if not res.get("Almacenamiento"):
+            m_sto = re.search(r"(\d+)\s*(gb|tb)", t)
+            res["Almacenamiento"] = f"{m_sto.group(1)} {m_sto.group(2).upper()}" if m_sto else "512 GB"
+
+        # 4. Pantalla
+        if not res.get("Pantalla"):
+            m_scr = re.search(r"(\d+(?:\.\d+)?)\s*(?:\"|pulgadas|pul|inch)", t)
+            res["Pantalla"] = f"{m_scr.group(1)}\"" if m_scr else "14\""
+
+    elif cat == "TVs":
+        if not res.get("Resolución"):
+            res["Resolución"] = "4K Ultra HD"
+        if not res.get("Pantalla"):
+            m_scr = re.search(r"(\d{2,3})\s*(?:\"|pulgadas|pul|inch)", t)
+            res["Pantalla"] = f"{m_scr.group(1)}\"" if m_scr else "55\""
+
+    elif cat == "Impresoras":
+        if not res.get("Tipo"):
+            if "ecotank" in t or "smart tank" in t or "continuo" in t:
+                res["Tipo"] = "Sistema Continuo / Tanque de Tinta"
+            else:
+                res["Tipo"] = "Multifuncional Inyección de Tinta"
+        if not res.get("Conectividad"):
+            res["Conectividad"] = "Wi-Fi / USB / App Móvil"
+
+    return res
+
+
 # ==============================================================================
 # 4. EXTRACTORES DOM / JSON POR TIENDA
 # ==============================================================================

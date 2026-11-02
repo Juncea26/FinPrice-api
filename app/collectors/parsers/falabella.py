@@ -10,7 +10,7 @@ from bs4 import BeautifulSoup
 
 from app.core.logging import get_logger
 from app.collectors.spec_extractor import extract_product_specs
-from app.collectors.url_utils import canonicalize_store_url
+from app.collectors.url_utils import canonicalize_store_url, is_valid_product_image_url
 from app.collectors.validators import validate_product_identity
 
 logger = get_logger("parsers.falabella")

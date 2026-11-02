@@ -174,6 +174,18 @@ def build_vtex_api_url_for_product(url: str) -> Optional[str]:
     return f"https://{host}/api/catalog_system/pub/products/search/{slug}/p"
 
 
+def is_valid_product_image_url(url: Optional[str]) -> bool:
+    """Verifica que una URL de imagen sea válida, rechazando placeholders y logos."""
+    if not url or not isinstance(url, str):
+        return False
+    u = url.lower().strip()
+    if not u.startswith("http"):
+        return False
+    if any(bad in u for bad in ("placeholder", "logo", "no_selection", "default", "pixel.gif")):
+        return False
+    return True
+
+
 def build_store_search_url(store_id: str, compact_query: str) -> Optional[str]:
     """Construye la URL de búsqueda oficial de la tienda a partir de una compact_search_query."""
     q_clean = re.sub(r"\s+", " ", (compact_query or "")).strip()
@@ -182,7 +194,7 @@ def build_store_search_url(store_id: str, compact_query: str) -> Optional[str]:
 
     host = CANONICAL_HOSTS[store_id]
     if store_id in {"metro", "wong"}:
-        return f"https://{host}/api/catalog_system/pub/products/search/?ft={quote(q_clean)}"
+        return f"https://{host}/api/catalog_system/pub/products/search/{quote(q_clean)}?_from=0&_to=9"
     if store_id in {"efe", "curacao", "hiraoka"}:
         return f"https://{host}/catalogsearch/result/?q={quote_plus(q_clean)}"
     if store_id == "falabella":

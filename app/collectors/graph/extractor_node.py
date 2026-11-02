@@ -20,7 +20,8 @@ from app.collectors.parsers.hiraoka import parse_hiraoka
 from app.collectors.parsers.ripley import parse_ripley
 from app.collectors.parsers.tottus import parse_tottus
 from app.collectors.parsers.vtex_cencosud import parse_vtex_cencosud
-from app.collectors.url_utils import canonicalize_store_url
+from app.collectors.spec_extractor import ensure_mandatory_tech_specs
+from app.collectors.url_utils import canonicalize_store_url, is_valid_product_image_url
 from app.collectors.graph.state import (
     BaseGraphNode,
     ExtractedOfferSchema,
@@ -187,18 +188,28 @@ class SchemaExtractorNode(BaseGraphNode):
         orig_raw = data.get("original_price")
         orig_val = round(float(orig_raw), 2) if (orig_raw and float(orig_raw) > price_val) else price_val
 
+        raw_img = data.get("image_url") or node_data.image_url
+        clean_img = raw_img if is_valid_product_image_url(raw_img) else None
+
+        offer_title = str(data.get("title") or node_data.h1_title or target.title).strip()
+        final_specs = ensure_mandatory_tech_specs(
+            title=offer_title,
+            category=target.category,
+            specs=merged_specs,
+        )
+
         return ExtractedOfferSchema(
             store_id=store_id,
             store_name=str(data.get("store_name") or default_store_name),
-            title=str(data.get("title") or node_data.h1_title or "").strip(),
+            title=offer_title,
             price=price_val,
             original_price=orig_val,
             offer_url=final_offer_url,
-            image_url=data.get("image_url") or node_data.image_url,
+            image_url=clean_img,
             brand=merged_brand,
             variant_sku_id=data.get("variant_sku_id"),
             in_stock=bool(data.get("in_stock", True)),
-            tech_specs=merged_specs,
+            tech_specs=final_specs,
             features=merged_features,
             description=merged_desc,
             extraction_source=str(data.get("extraction_source") or "deterministic_graph"),

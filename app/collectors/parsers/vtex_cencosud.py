@@ -19,7 +19,7 @@ from app.collectors.spec_extractor import (
     normalize_brand,
     normalize_raw_pairs_to_specs,
 )
-from app.collectors.url_utils import canonicalize_store_url
+from app.collectors.url_utils import canonicalize_store_url, is_valid_product_image_url
 from app.collectors.validators import validate_product_identity
 
 logger = get_logger("parsers.vtex_cencosud")
@@ -72,7 +72,9 @@ def parse_vtex_api_item(item_dict: Dict[str, Any], default_url: str = "") -> Opt
             continue
         images = sku_item.get("images") or []
         if not img_url and images and isinstance(images[0], dict):
-            img_url = images[0].get("imageUrl")
+            cand_img = images[0].get("imageUrl")
+            if is_valid_product_image_url(cand_img):
+                img_url = cand_img
 
         sellers = sku_item.get("sellers") or []
         for seller in sellers:
