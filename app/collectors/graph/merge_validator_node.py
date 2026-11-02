@@ -109,8 +109,17 @@ class MergeAnswersNode(BaseGraphNode):
                 )
 
         state.verified_offers = cross_store_clean
-        state.execution_trace.append(
-            f"MergeAnswersNode: verified_offers={len(cross_store_clean)} "
-            f"(from {len(state.extracted_offers)} extracted)"
-        )
+        if len(cross_store_clean) < 2:
+            logger.warning(
+                f"[DISCARD_SINGLE_STORE] Producto '{target.title}': "
+                f"solo cuenta con {len(cross_store_clean)} tienda(s) (mínimo requerido: 2 tiendas para comparar)."
+            )
+            state.execution_trace.append(
+                f"MergeAnswersNode: SINGLE STORE '{target.title}' (stores={len(cross_store_clean)} < 2)"
+            )
+        else:
+            state.execution_trace.append(
+                f"MergeAnswersNode: verified_offers={len(cross_store_clean)} "
+                f"(from {len(state.extracted_offers)} extracted)"
+            )
         return state

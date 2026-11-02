@@ -450,11 +450,22 @@ def match_product_universal(target_product: Any, candidate_page_data: Any) -> bo
         f"{cand_title} {cand_url} {json.dumps(cand_specs, ensure_ascii=False)} {cand_desc}"
     ).lower()
 
-    title_norm = _normalize_corpus_text(cand_title)
+    bundle_pat = r"\s*(\+|\bcon\b|\bincluye\b)\s*(funda|case|cargador|audifonos?|mochila|mouse|cover|soundbar|maletin|teclado|combo|pack)\b.*$"
+    url_promo_pat = r"\b(funda|case|cargador|audifonos?|mochila|mouse|cover|soundbar|maletin|teclado|combo|pack)\b\s*$"
+    filler_pat = r"\b(celular\s+libre|smartphone|disco\s+solido\s+de|unidad\s+de\s+estado\s+solido|liberado|dual\s+sim)\b"
+
+    cand_title_cleaned = re.sub(bundle_pat, "", cand_title, flags=re.IGNORECASE).strip()
+    cand_title_cleaned = re.sub(filler_pat, "", cand_title_cleaned, flags=re.IGNORECASE).strip()
+
+    title_norm = _normalize_corpus_text(cand_title_cleaned)
     url_norm = _normalize_corpus_text(cand_url)
+    url_norm = re.sub(url_promo_pat, "", url_norm, flags=re.IGNORECASE).strip()
     specs_norm = _normalize_corpus_text(json.dumps(cand_specs, ensure_ascii=False))
     desc_norm = _normalize_corpus_text(cand_desc)
     full_corpus = _normalize_corpus_text(full_corpus_raw)
+
+    clean_title_norm = title_norm
+    clean_url_norm = url_norm
 
     if not title_norm and not url_norm:
         return False
@@ -464,16 +475,17 @@ def match_product_universal(target_product: Any, candidate_page_data: Any) -> bo
     # --------------------------------------------------------------------------
     # REGLA 0: Bloqueo de Accesorios, Reacondicionados y Tokens Prohibidos (en title y url)
     # --------------------------------------------------------------------------
-    if "open box" in title_norm or "open box" in url_norm:
+    if "open box" in clean_title_norm or "open box" in clean_url_norm:
         return False
 
+    target_acc_check = clean_title_norm if clean_title_norm else clean_url_norm
     for acc_kw in UNIVERSAL_ACCESSORY_KEYWORDS:
-        if (_has_word(acc_kw, title_norm) or _has_word(acc_kw, url_norm)) and not _has_word(acc_kw, target_norm):
+        if _has_word(acc_kw, target_acc_check) and not _has_word(acc_kw, target_norm):
             return False
 
     for f_tok in profile["forbidden_tokens"]:
         f_norm = _normalize_corpus_text(f_tok)
-        if _has_word(f_norm, title_norm) or _has_word(f_norm, url_norm):
+        if _has_word(f_norm, clean_title_norm) or _has_word(f_norm, clean_url_norm):
             return False
 
     # --------------------------------------------------------------------------
@@ -485,7 +497,7 @@ def match_product_universal(target_product: Any, candidate_page_data: Any) -> bo
     # REGLA 2: Coincidencia Estricta de Línea y Código de Modelo / Chip
     # en title + tech_specs (o url si title está vacío), con Bloqueo de Sub-modelos Intrusos
     # --------------------------------------------------------------------------
-    primary_title_or_url = title_norm if title_norm else url_norm
+    primary_title_or_url = clean_title_norm if clean_title_norm else clean_url_norm
     identity_zone = f"{primary_title_or_url} {specs_norm}".strip()
     primary_zone = f"{title_norm} {url_norm}".strip()
 

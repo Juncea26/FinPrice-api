@@ -24,6 +24,14 @@ from app.collectors.graph.fetch_node import FetchNode
 from app.collectors.graph.parse_node import ParseNode
 from app.collectors.graph.extractor_node import SchemaExtractorNode
 from app.collectors.graph.merge_validator_node import MergeAnswersNode
+from app.collectors.graph.discovery_search_node import DiscoverySearchNode
+from app.collectors.graph.store_parser_node import StoreParserNode
+from app.collectors.graph.canonical_matcher_node import (
+    CanonicalMatcherNode,
+    build_canonical_key,
+    clean_canonical_title,
+)
+from app.collectors.graph.strict_validator_node import StrictValidatorNode
 from app.collectors.graph.smart_multi_graph import (
     FinPriceMultiStoreGraph,
     SmartScraperMultiGraph,
@@ -44,6 +52,12 @@ __all__ = [
     "ParseNode",
     "SchemaExtractorNode",
     "MergeAnswersNode",
+    "DiscoverySearchNode",
+    "StoreParserNode",
+    "CanonicalMatcherNode",
+    "StrictValidatorNode",
+    "build_canonical_key",
+    "clean_canonical_title",
     "FinPriceMultiStoreGraph",
     "SmartScraperMultiGraph",
     "finprice_multi_store_graph",

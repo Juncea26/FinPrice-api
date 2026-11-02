@@ -202,7 +202,7 @@ def _parse_vtex_apollo_state(soup: BeautifulSoup, clean_url: str) -> Optional[Di
         # Buscar precios y stock en commertialOffer o priceRange
         best_p: Optional[float] = None
         orig_p: Optional[float] = None
-        in_stock = True
+        any_in_stock = False
 
         for k, v in state.items():
             if not isinstance(v, dict):
@@ -210,22 +210,21 @@ def _parse_vtex_apollo_state(soup: BeautifulSoup, clean_url: str) -> Optional[Di
             if k.startswith(f"${prod_key_prefix}") and k.endswith(".commertialOffer"):
                 avail = v.get("AvailableQuantity")
                 if avail is not None and int(avail) <= 0:
-                    in_stock = False
                     continue
                 p = clean_number(v.get("Price") or v.get("spotPrice"))
                 lp = clean_number(v.get("ListPrice") or v.get("PriceWithoutDiscount"))
                 if p:
-                    in_stock = True
+                    any_in_stock = True
                     best_p = p if (best_p is None or p < best_p) else best_p
                     orig_p = lp if (lp and lp > best_p) else best_p
 
-        if best_p is None:
+        if not any_in_stock or not best_p:
             selling_node = state.get(f"${prod_key_prefix}.priceRange.sellingPrice") or {}
             list_node = state.get(f"${prod_key_prefix}.priceRange.listPrice") or {}
             best_p = clean_number(selling_node.get("lowPrice") or selling_node.get("highPrice"))
             orig_p = clean_number(list_node.get("highPrice") or list_node.get("lowPrice"))
 
-        if not in_stock or not best_p:
+        if not best_p:
             return None
 
         # Imagen oficial

@@ -10,6 +10,8 @@ Punto de entrada FastAPI de alto rendimiento optimizado para Render (< 512 MB RA
 import asyncio
 import time
 from contextlib import asynccontextmanager
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 from typing import List, Optional
 
 from fastapi import Depends, FastAPI, Query, Request, Response
@@ -33,48 +35,51 @@ logger = get_logger("entrypoint")
 _background_task: Optional[asyncio.Task] = None
 
 
-async def periodic_scraping_loop():
-    """Bucle continuo en segundo plano para actualizar precios periódicamente sin saturar la RAM."""
-    interval = max(60, settings.COLLECTION_INTERVAL_MINUTES * 60)
-    logger.info(f"Iniciando programador de recolección en background (intervalo: {settings.COLLECTION_INTERVAL_MINUTES} min)...")
+def calculate_seconds_until_target(
+    target_hour: int = 0,
+    target_minute: int = 59,
+    tz_name: str = "America/Lima",
+) -> float:
+    """Calcula los segundos exactos restantes hasta la próxima hora objetivo en la zona horaria dada."""
+    tz = ZoneInfo(tz_name)
+    now = datetime.now(tz)
+    target = now.replace(hour=target_hour, minute=target_minute, second=0, microsecond=0)
+    if target <= now:
+        target += timedelta(days=1)
+    return max(1.0, (target - now).total_seconds())
+
+
+async def daily_scheduler_loop():
+    """
+    Bucle en segundo plano programado para ejecutarse diariamente a las 00:59 AM (hora de Perú, America/Lima, UTC-5).
+    Calcula de forma exacta y no bloqueante los segundos restantes hasta las 00:59:00 AM.
+    """
+    logger.info("Programador diario de FinPrice activo: actualización automática diaria a las 00:59 AM (America/Lima).")
     while True:
         try:
-            await asyncio.sleep(interval)
-            logger.info("Ejecutando ciclo periódico de scraping real en background...")
+            sleep_seconds = calculate_seconds_until_target(target_hour=0, target_minute=59, tz_name="America/Lima")
+            hours = int(sleep_seconds // 3600)
+            minutes = int((sleep_seconds % 3600) // 60)
+            seconds = int(sleep_seconds % 60)
+            logger.info(
+                f"Programador diario en reposo. Siguiente actualización automática en {hours}h {minutes}m {seconds}s (a las 00:59 AM Lima)."
+            )
+            await asyncio.sleep(sleep_seconds)
+
+            logger.info("¡Hora programada alcanzada (00:59 AM America/Lima)! Ejecutando actualización de precios...")
             async with AsyncSessionLocal() as session:
-                await orchestrator.sync_all_catalog_products(
+                await orchestrator.run_daily_price_update(
                     session=session,
                     on_cache_invalidate=catalog_service.invalidate_cache,
                 )
+            # Pausa de seguridad para no disparar dos veces en el mismo minuto
+            await asyncio.sleep(65)
         except asyncio.CancelledError:
-            logger.info("Programador de recolección cancelado por apagado del servidor.")
+            logger.info("Programador diario cancelado por apagado del servidor.")
             break
         except Exception as e:
-            logger.error(f"Error imprevisto en recolección periódica en background: {e}")
-            await asyncio.sleep(15)
-
-
-async def initial_background_scraping_job():
-    """
-    Tarea en segundo plano tras arranque inicial cuando la base de datos estaba vacía.
-    Espera 5 segundos para que Uvicorn abra el puerto HTTP ($PORT) y Render valide el healthcheck,
-    luego ejecuta la sincronización sin bloquear el inicio.
-    """
-    try:
-        await asyncio.sleep(5)
-        logger.info("Iniciando recolección inicial en background tras confirmación de puerto HTTP abierto...")
-        async with AsyncSessionLocal() as session:
-            await orchestrator.sync_all_catalog_products(
-                session=session,
-                on_cache_invalidate=catalog_service.invalidate_cache,
-            )
-        # Continuar con el ciclo periódico
-        await periodic_scraping_loop()
-    except asyncio.CancelledError:
-        logger.info("Tarea de sincronización inicial en background cancelada.")
-    except Exception as e:
-        logger.error(f"Error en sincronización inicial en background: {e}")
-        await periodic_scraping_loop()
+            logger.error(f"Error imprevisto en programador diario (00:59 AM): {e}")
+            await asyncio.sleep(60)
 
 
 @asynccontextmanager
@@ -82,10 +87,8 @@ async def lifespan(app: FastAPI):
     """
     Ciclo de vida de FastAPI optimizado para Render y Neon Serverless:
     1. Crea / verifica el esquema de tablas en Neon PostgreSQL (Base.metadata.create_all).
-    2. Cuenta rápidamente los productos en Neon (SELECT COUNT(*)):
-       - count > 0: arranque instantáneo (< 1 seg) sirviendo datos persistidos de Neon.
-       - count == 0: inserta semilla de respaldo en < 50ms y programa scraping diferido en background.
-    3. JAMÁS bloquea el arranque con tareas de red pesadas.
+    2. Sincroniza y hace UPSERT instantáneo de los 25 productos oficiales y sus ofertas (>= 2 tiendas por producto).
+    3. Inicia el programador diario automático a las 00:59 AM (America/Lima).
     """
     global _background_task
     logger.info("Encendiendo FinPrice API Standalone...", extra={"env": settings.ENVIRONMENT})
@@ -98,8 +101,8 @@ async def lifespan(app: FastAPI):
         synced_count = await sync_and_upsert_catalog(session=session)
         catalog_service.invalidate_cache()
 
-    logger.info(f"Catálogo oficial de FinPrice sincronizado ({synced_count} productos en Neon). Arranque instantáneo listo.")
-    _background_task = asyncio.create_task(periodic_scraping_loop())
+    logger.info(f"Catálogo oficial de FinPrice sincronizado ({synced_count} productos en Neon con >= 2 tiendas). Arranque instantáneo listo.")
+    _background_task = asyncio.create_task(daily_scheduler_loop())
 
     logger.info(f"FinPrice API en línea y disponible en puerto {settings.PORT}.")
     yield

@@ -118,3 +118,7 @@ class SearchInternetNode(BaseGraphNode):
             f"SearchInternetNode: queries={queries}, stores={len(state.stores_to_check)}"
         )
         return state
+
+
+# Alias DiscoverySearchNode conforme al pipeline ScrapeGraphAI
+DiscoverySearchNode = SearchInternetNode

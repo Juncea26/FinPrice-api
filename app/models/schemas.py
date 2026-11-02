@@ -3,7 +3,7 @@ Esquemas Pydantic v2 en camelCase estricto alineados con el dominio móvil
 y esquemas de retrocompatibilidad para /products.
 """
 from typing import Any, Dict, List, Optional
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, computed_field, field_validator
 from pydantic.alias_generators import to_camel
 
 
@@ -152,8 +152,13 @@ class HealthResponse(CamelModel):
     total_stores: int
     active_stores: int
     last_sync_timestamp: Optional[str]
+    next_scheduled_update: Optional[str] = Field(default="00:59 America/Lima")
     stores_status: Dict[str, Any]
     uptime_seconds: float
+
+    @computed_field(alias="next_scheduled_update")
+    def next_scheduled_update_exact(self) -> str:
+        return self.next_scheduled_update or "00:59 America/Lima"
 
 
 class SyncResponse(CamelModel):

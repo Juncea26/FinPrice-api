@@ -205,6 +205,23 @@ def _has_whole_word(token: str, text: str) -> bool:
         return True
     if token in {"2da", "2da."} and any(x in text for x in ["2 generacion", "2da", "2nd", "gen 2", "2 gen"]):
         return True
+    if token.isdigit():
+        concat_digit_pattern = rf"\b[a-z]{{1,3}}{re.escape(token)}\b"
+        if bool(re.search(concat_digit_pattern, text)):
+            return True
+    # Aliases para códigos y abreviaciones estándar de retailers (ConectaRetail / Magento / VTEX)
+    if token == "ideapad" and any(x in text for x in ["ip3", "ip5", "ideapad"]):
+        return True
+    if token in {"tuf", "f16", "f15"} and any(x in text for x in ["fx607", "fa507", "fa607", "fx507", "tuf"]):
+        return True
+    if token == "redmi" and any(x in text for x in ["note", "pad", "redmi"]):
+        return True
+    if token in {"laptop", "lap"} and any(x in text for x in ["lap", "lapg", "laptop"]):
+        return True
+    if token in {"gamer", "gaming"} and any(x in text for x in ["lapg", "gamer", "gaming"]):
+        return True
+    if token == "loq" and "loq" in text:
+        return True
     return False
 
 
@@ -271,6 +288,18 @@ def validate_product_identity(
     canonical_norm = normalize_text(canonical_title)
     scraped_title_norm = normalize_text(scraped_title)
     scraped_url_norm = normalize_url_slug(scraped_url)
+
+    # Limpieza de promociones y regalos secundarios en el título (+ funda, con funda, etc.) y palabras de relleno
+    bundle_pat = r"\s*(\+|\bcon\b|\bincluye\b)\s*(funda|case|cargador|audifonos?|mochila|mouse|cover|soundbar|maletin|teclado|combo|pack)\b.*$"
+    url_promo_pat = r"\b(funda|case|cargador|audifonos?|mochila|mouse|cover|soundbar|maletin|teclado|combo|pack)\b\s*$"
+    clean_title_norm = re.sub(bundle_pat, "", scraped_title_norm, flags=re.IGNORECASE).strip()
+    clean_url_norm = re.sub(bundle_pat, "", scraped_url_norm, flags=re.IGNORECASE).strip()
+    clean_url_norm = re.sub(url_promo_pat, "", clean_url_norm, flags=re.IGNORECASE).strip()
+
+    filler_pat = r"\b(celular\s+libre|smartphone|disco\s+solido\s+de|unidad\s+de\s+estado\s+solido|liberado|dual\s+sim)\b"
+    clean_title_norm = re.sub(filler_pat, "", clean_title_norm, flags=re.IGNORECASE).strip()
+    clean_url_norm = re.sub(filler_pat, "", clean_url_norm, flags=re.IGNORECASE).strip()
+
     specs_text = ""
     if tech_specs and isinstance(tech_specs, dict):
         specs_text = normalize_text(" ".join(f"{k} {v}" for k, v in tech_specs.items()))
@@ -286,14 +315,15 @@ def validate_product_identity(
     # --------------------------------------------------------------------------
     # 1. BLOQUEO DE ACCESORIOS, REACONDICIONADOS E INTRUSOS
     # --------------------------------------------------------------------------
-    if "open box" in scraped_title_norm or "open box" in scraped_url_norm:
+    if "open box" in clean_title_norm or "open box" in clean_url_norm:
         return False
 
     for acc_kw in ACCESSORY_KEYWORDS:
         # Excepción legítima: Si el producto canónico es un dispositivo de audio (ej. AirPods), 'audifono/s' no es un accesorio
         if acc_kw in {"audifono", "audifonos"} and any(x in canonical_norm for x in ["airpods", "headphone", "earphone", "audifono", "auricular"]):
             continue
-        in_scraped = _has_whole_word(acc_kw, scraped_title_norm) or _has_whole_word(acc_kw, scraped_url_norm)
+        target_acc_check = clean_title_norm if clean_title_norm else clean_url_norm
+        in_scraped = _has_whole_word(acc_kw, target_acc_check)
         in_canonical = _has_whole_word(acc_kw, canonical_norm)
         if in_scraped and not in_canonical:
             logger.warning(
@@ -307,13 +337,13 @@ def validate_product_identity(
     # --------------------------------------------------------------------------
     critical_tokens, required_storage, required_ram = extract_critical_model_tokens(canonical_title)
 
-    primary_target = scraped_title_norm if scraped_title_norm else scraped_url_norm
+    primary_target = clean_title_norm if clean_title_norm else clean_url_norm
     title_and_specs = f"{primary_target} {specs_text} {desc_norm}".strip()
 
     for token in critical_tokens:
         # Si existe scraped_title, los tokens de modelo/línea deben estar en scraped_title (o en tech_specs/description
         # para medidas de pantalla/resolución como '11', '13', '4k', 'evo'). Solo si scraped_title está vacío se usa scraped_url.
-        is_screen_or_res_token = token in {"11", "13", "4k", "evo"}
+        is_screen_or_res_token = token in {"11", "13", "14", "15", "16", "55", "65", "4k", "evo"}
         if is_screen_or_res_token:
             full_screen_corpus = f"{title_and_specs} {scraped_url_norm}".strip()
             found_token = _has_whole_word(token, full_screen_corpus)
@@ -321,8 +351,14 @@ def validate_product_identity(
                 found_token = _has_whole_word("10.9", full_screen_corpus) or _has_whole_word("10.8", full_screen_corpus)
             elif not found_token and token == "13":
                 found_token = _has_whole_word("13.3", full_screen_corpus) or _has_whole_word("13.6", full_screen_corpus)
+            elif not found_token and token in {"14", "15", "16"}:
+                found_token = any(x in full_screen_corpus for x in [f"{token}.0", f"{token}.6", f"{token}f", f"fx607", f"fx507"])
         else:
             found_token = _has_whole_word(token, primary_target)
+            if not found_token and not scraped_title_norm:
+                found_token = _has_whole_word(token, f"{primary_target} {specs_text}")
+                if not found_token and token == "galaxy" and ("sm-a" in scraped_url_norm or "sm-s" in scraped_url_norm or "sm a" in scraped_url_norm or "sm s" in scraped_url_norm):
+                    found_token = True
         if not found_token:
             logger.warning(
                 f"[IDENTITY_MISMATCH] Oferta descartada en {store_id}: "

@@ -91,6 +91,7 @@ async def get_health_status(session: AsyncSession = Depends(get_db)):
         total_stores=total_stores,
         active_stores=active_stores,
         last_sync_timestamp=orchestrator.last_sync_timestamp,
+        next_scheduled_update="00:59 America/Lima",
         stores_status=stores_status_dict,
         uptime_seconds=round(uptime, 2),
     )

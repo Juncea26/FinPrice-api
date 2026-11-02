@@ -48,11 +48,13 @@ COMPOUND_COLOR_PHRASES: Tuple[str, ...] = (
     "starlight white",
     "sky blue",
     "rose gold",
+    "zabriskie beige",
 )
 
 # Diccionario completo de tokens de color individuales (Español + Inglés, con y sin tilde)
 SINGLE_COLOR_TOKENS: Set[str] = {
     # Español
+    "zabriskie",
     "negro",
     "negra",
     "blanco",

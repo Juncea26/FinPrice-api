@@ -516,11 +516,19 @@ class CollectorOrchestrator:
             # Si no hubo respuesta en vivo (ej. falla de red temporal), buscar si ya existían ofertas previas válidas en BD
             if not verified_offers:
                 existing_q = await session.execute(
-                    select(ProductEntity).where(ProductEntity.id == prod_id)
+                    select(ProductEntity)
+                    .options(
+                        selectinload(ProductEntity.store_offers),
+                        selectinload(ProductEntity.price_history),
+                    )
+                    .where(ProductEntity.id == prod_id)
                 )
                 existing_prod = existing_q.scalar_one_or_none()
                 if existing_prod and existing_prod.store_offers:
-                    logger.info(f"Conservando instantánea previa validada para '{prod_id}' ante error temporal de scraping.")
+                    logger.info(
+                        f"Conservando instantánea previa validada para '{prod_id}' "
+                        f"({len(existing_prod.store_offers)} tiendas) ante error temporal de scraping."
+                    )
                     continue
 
             # Si se obtuvieron ofertas reales verificadas, actualizar base de datos
@@ -676,6 +684,26 @@ class CollectorOrchestrator:
             "duration_seconds": round(total_duration, 2),
             "timestamp": self.last_sync_timestamp,
         }
+
+    async def run_daily_price_update(
+        self,
+        session: AsyncSession,
+        on_cache_invalidate: Optional[Callable[[], None]] = None,
+    ) -> Dict[str, Any]:
+        """
+        Rutina diaria programada ejecutada automáticamente a las 00:59 AM (America/Lima):
+        1. Actualiza precios en vivo con concurrencia controlada y Triple Candado de Integridad.
+        2. Registra los nuevos puntos de historial de precios para cada producto.
+        3. Realiza recolección forzada de basura (gc.collect()) para garantizar RAM < 512MB.
+        """
+        logger.info("Iniciando actualización diaria programada a las 00:59 AM (America/Lima)...")
+        result = await self.sync_all_catalog_products(
+            session=session,
+            on_cache_invalidate=on_cache_invalidate,
+        )
+        gc.collect()
+        logger.info(f"Actualización diaria completada exitosamente a las 00:59 AM: {result}")
+        return result
 
 
 orchestrator = CollectorOrchestrator()

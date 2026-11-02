@@ -98,6 +98,10 @@ def parse_ripley(
                 official_img = images[0]
             elif prod.get("primaryImage"):
                 official_img = prod.get("primaryImage")
+            if isinstance(official_img, dict):
+                official_img = official_img.get("src") or official_img.get("full") or official_img.get("url")
+            if isinstance(official_img, str) and official_img.startswith("//"):
+                official_img = f"https:{official_img}"
 
             if best_p is not None:
                 prod_desc = str(
@@ -170,6 +174,10 @@ def parse_ripley(
                 list_p = orig_p or (ripley_num if sale_num and ripley_num > sale_num else best_p)
                 imgs = prod.get("images") or []
                 img_u = imgs[0] if isinstance(imgs, list) and imgs else prod.get("fullImage")
+                if isinstance(img_u, dict):
+                    img_u = img_u.get("src") or img_u.get("full") or img_u.get("url")
+                if isinstance(img_u, str) and img_u.startswith("//"):
+                    img_u = f"https:{img_u}"
                 return {
                     "title": prod_title,
                     "price": best_p,
