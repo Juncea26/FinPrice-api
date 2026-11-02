@@ -128,14 +128,34 @@ def _parse_search_results(
     return best_candidate
 
 
+FORBIDDEN_ERROR_PHRASES_CONECTARETAIL = (
+    "¡uy! no hemos encontrado resultados",
+    "no hemos encontrado resultados para tu búsqueda",
+    "ups! 404",
+    "la página que buscas ya no existe",
+    "producto que buscas ya no está disponible",
+    "no encontramos resultados",
+    "producto sin stock",
+)
+
+
 def parse_conectaretail(
     html: str, offer_url: str, canonical_title: Optional[str] = None
 ) -> Optional[Dict[str, Any]]:
     """
-    Extrae título real, precio final, precio original e imagen oficial desde efe.com.pe o lacuracao.pe.
+    Extrae título real, el menor precio de venta vigente, precio original e imagen oficial desde efe.com.pe o lacuracao.pe.
     Aísla estrictamente el contenedor principal (.product-info-main) ignorando carruseles (.block.related, .block.upsell).
     """
     if not html:
+        return None
+
+    vis_html = re.sub(
+        r"<(script|style|noscript|template)\b[^>]*>.*?</\1>",
+        " ",
+        html,
+        flags=re.IGNORECASE | re.DOTALL,
+    ).lower()
+    if any(phrase in vis_html for phrase in FORBIDDEN_ERROR_PHRASES_CONECTARETAIL):
         return None
 
     is_search_url = "/catalogsearch/result" in offer_url or "?q=" in offer_url or "&q=" in offer_url
@@ -145,6 +165,9 @@ def parse_conectaretail(
 
     soup = BeautifulSoup(html, "lxml")
     main_info_box: Optional[Tag] = soup.select_one(".product-info-main")
+
+    if main_info_box and main_info_box.select_one(".stock.unavailable"):
+        return None
 
     if is_search_url or (not main_info_box and soup.select(".product-item-info, li.product-item")):
         return _parse_search_results(soup, offer_url, canonical_title)
@@ -171,8 +194,12 @@ def parse_conectaretail(
     # Buscar imagen oficial dando prioridad a meta og:image y rechazando placeholders o logos
     og_img = soup.find("meta", property="og:image")
     og_content = og_img.get("content") if og_img else None
+    if isinstance(og_content, str) and "/media/catalog/product/" in og_content and "?" in og_content:
+        og_content = og_content.split("?", 1)[0]
     gallery_img = soup.select_one(".fotorama__stage__frame img.fotorama__img, .product.media img")
     gallery_src = (gallery_img.get("src") or gallery_img.get("href")) if gallery_img else None
+    if isinstance(gallery_src, str) and "/media/catalog/product/" in gallery_src and "?" in gallery_src:
+        gallery_src = gallery_src.split("?", 1)[0]
 
     page_image = None
     if is_valid_product_image_url(og_content):

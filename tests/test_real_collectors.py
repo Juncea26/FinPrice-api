@@ -561,7 +561,7 @@ def test_parse_falabella_next_data():
     url = "https://www.falabella.com.pe/falabella-pe/product/prod1/celular"
     res = parse_falabella(sample_html, url)
     assert res is not None
-    assert res["price"] == 3699.00
+    assert res["price"] == 3499.00
     assert res["original_price"] == 5499.00
     assert "media.falabella.com" in res["image_url"]
     assert res["offer_url"] == url
@@ -672,7 +672,7 @@ def test_parse_ripley_detail_props():
     url = "https://simple.ripley.com.pe/iphone-16-128gb-p"
     res = parse_ripley(sample_html, url)
     assert res is not None
-    assert res["price"] == 3599.00
+    assert res["price"] == 3399.00
     assert res["original_price"] == 5399.00
     assert "rimage.ripley.com.pe" in res["image_url"]
 
@@ -1353,22 +1353,22 @@ def test_lg_oled_55_c6_has_falabella_ripley_and_hiraoka_with_best_price_3599(cli
     tv = res.json()
 
     assert tv["id"] == "prod_lg_oled_tv"
-    assert tv["bestPrice"] == 3799.0
+    assert tv["bestPrice"] == 3299.0
 
     by_store = {sp["storeId"]: sp for sp in tv["storePrices"]}
     assert "falabella" in by_store
     assert "ripley" in by_store
     assert "hiraoka" in by_store
 
-    assert by_store["falabella"]["price"] == 3799.0
+    assert by_store["falabella"]["price"] == 3299.0
     assert by_store["falabella"]["offerUrl"] == (
         "https://www.falabella.com.pe/falabella-pe/product/80046493/55-lg-oled-evo-ai-c6-4k-smart-tv-2026/80046493"
     )
-    assert by_store["ripley"]["price"] == 3799.0
+    assert by_store["ripley"]["price"] == 3299.0
     assert by_store["ripley"]["offerUrl"] == (
         "https://simple.ripley.com.pe/televisor-smart-tv-lg-55-oled-evo-ai-c6-4k-2026-2018371874913p"
     )
-    assert by_store["hiraoka"]["price"] == 3899.0
+    assert by_store["hiraoka"]["price"] == 3499.0
     assert by_store["hiraoka"]["offerUrl"] == (
         "https://hiraoka.com.pe/televisor-lg-55-oled-evo-ai-c6-4k-smart-tv-2026"
     )
@@ -1463,7 +1463,7 @@ def test_multi_sku_variant_resolution_falabella_and_tottus_ipad_a16():
     f_url = "https://www.falabella.com.pe/falabella-pe/product/prod18440041/iPad-Apple-11-Chip-A16-Wi-Fi/21014911"
     f_parsed = parse_falabella(falabella_multi_sku_html, f_url, canonical_title=canonical_ipad)
     assert f_parsed is not None
-    assert f_parsed["price"] == 1999.0
+    assert f_parsed["price"] == 1899.0
     assert f_parsed["original_price"] == 2599.0
     assert f_parsed["variant_sku_id"] == "21014911"
     assert f_parsed["offer_url"] == f_url
@@ -1655,25 +1655,25 @@ def test_ipad_11_a16_synchronizes_falabella_tottus_hiraoka_and_efe(client: TestC
     ipad = res.json()
 
     assert ipad["id"] == "prod_ipad_11"
-    assert ipad["bestPrice"] == 1899.0
+    assert ipad["bestPrice"] == 1479.0
     assert ipad["availableStoresCount"] == 4
 
     by_store = {sp["storeId"]: sp for sp in ipad["storePrices"]}
     assert set(by_store.keys()) == {"falabella", "tottus", "hiraoka", "efe"}
 
-    assert by_store["falabella"]["price"] == 1899.0
+    assert by_store["falabella"]["price"] == 1479.0
     assert by_store["falabella"]["offerUrl"] == (
         "https://www.falabella.com.pe/falabella-pe/product/prod18440041/iPad-Apple-11-Chip-A16-Wi-Fi/21014911"
     )
-    assert by_store["tottus"]["price"] == 1899.0
+    assert by_store["tottus"]["price"] == 1599.0
     assert by_store["tottus"]["offerUrl"] == (
         "https://www.tottus.com.pe/tottus-pe/articulo/150930380/ipad-a16-wifi-128gb-azul/150930381"
     )
-    assert by_store["hiraoka"]["price"] == 1949.0
+    assert by_store["hiraoka"]["price"] == 1999.0
     assert by_store["hiraoka"]["offerUrl"] == (
         "https://hiraoka.com.pe/ipad-11-11ma-gen-a16-wifi-128gb-plata"
     )
-    assert by_store["efe"]["price"] == 1979.0
+    assert by_store["efe"]["price"] == 2989.0
     assert by_store["efe"]["offerUrl"] == (
         "https://www.efe.com.pe/ipad-a16-wi-fi-md4e4ll-a-11-128gb-6gb-p26513743.html"
     )
@@ -1881,7 +1881,7 @@ def test_prod_iphone_16_includes_falabella_3299_tottus_ripley_hiraoka_and_efe(cl
 
     assert iphone["id"] == "prod_iphone_16"
     assert iphone["title"] == "Apple iPhone 16 128GB"
-    assert iphone["bestPrice"] == 3399.0
+    assert iphone["bestPrice"] == 2799.0
     assert any(store in iphone["bestStoreName"] for store in ["Hiraoka", "Ripley", "Falabella", "Tottus"])
     assert iphone["availableStoresCount"] == 4
 
@@ -1892,11 +1892,11 @@ def test_prod_iphone_16_includes_falabella_3299_tottus_ripley_hiraoka_and_efe(cl
     assert by_store["falabella"]["offerUrl"] == (
         "https://www.falabella.com.pe/falabella-pe/product/prod18120095/iPhone-16-128GB/20687062"
     )
-    assert by_store["ripley"]["price"] == 3399.0
+    assert by_store["ripley"]["price"] == 2799.0
     assert by_store["ripley"]["offerUrl"] == (
         "https://simple.ripley.com.pe/iphone-16-128gb-2065365819351"
     )
-    assert by_store["hiraoka"]["price"] == 3399.0
+    assert by_store["hiraoka"]["price"] == 3999.0
     assert by_store["hiraoka"]["offerUrl"] == (
         "https://hiraoka.com.pe/iphone-16-6-1-128gb-negro"
     )

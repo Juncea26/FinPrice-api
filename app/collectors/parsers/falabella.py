@@ -41,14 +41,14 @@ def clean_number(val: Any) -> Optional[float]:
 
 def extract_falabella_prices(prices_list: List[Dict[str, Any]]) -> Tuple[Optional[float], Optional[float]]:
     """
-    Extrae (online_price, list_price) de Falabella, IGNORANDO precios exclusivos con tarjeta (cmrPrice / eventPriceCMR).
-    - online_price: Prioriza 'internetPrice' o 'onlinePrice' para todo público.
-    - list_price: Prioriza 'normalPrice' o precios con crossed=True.
+    Extrae (lowest_active_price, list_price) de Falabella / Tottus:
+    - Toma TODOS los precios de venta vigentes no tachados (incluyendo cmrPrice, eventPriceCMR,
+      internetPrice, onlinePrice, eventPrice) y retorna min(active_prices) como mejor precio.
+    - Toma el precio regular/normal tachado más alto (normalPrice o crossed=True) como list_price.
     """
-    internet_price: Optional[float] = None
-    normal_price: Optional[float] = None
-    card_exclusive_price: Optional[float] = None
-    other_prices: List[float] = []
+    active_prices: List[float] = []
+    regular_prices: List[float] = []
+    all_prices: List[float] = []
 
     for p_item in prices_list:
         if not isinstance(p_item, dict):
@@ -63,28 +63,14 @@ def extract_falabella_prices(prices_list: List[Dict[str, Any]]) -> Tuple[Optiona
         if not num:
             continue
 
+        all_prices.append(num)
         if "normal" in p_type or is_crossed or "lista" in p_label:
-            if normal_price is None or num > normal_price:
-                normal_price = num
-        elif "cmr" in p_type or "cmr" in p_label or "tarjeta" in p_label:
-            card_exclusive_price = num
-        elif "internet" in p_type or "online" in p_type or "internet" in p_label or "online" in p_label:
-            if internet_price is None or num < internet_price:
-                internet_price = num
+            regular_prices.append(num)
         else:
-            other_prices.append(num)
+            active_prices.append(num)
 
-    best_p = internet_price
-    if best_p is None and other_prices:
-        best_p = min(other_prices)
-    if best_p is None:
-        best_p = card_exclusive_price
-
-    list_p = normal_price
-    if list_p is None and other_prices:
-        list_p = max(other_prices)
-    if list_p is None:
-        list_p = best_p
+    best_p = min(active_prices) if active_prices else (min(all_prices) if all_prices else None)
+    list_p = max(regular_prices) if regular_prices else (max(all_prices) if all_prices else best_p)
 
     if list_p and best_p and list_p < best_p:
         list_p = best_p
@@ -92,13 +78,33 @@ def extract_falabella_prices(prices_list: List[Dict[str, Any]]) -> Tuple[Optiona
     return best_p, list_p
 
 
+FORBIDDEN_ERROR_PHRASES_FALABELLA = (
+    "¡uy! no hemos encontrado resultados",
+    "no hemos encontrado resultados para tu búsqueda",
+    "ups! 404",
+    "la página que buscas ya no existe",
+    "producto que buscas ya no está disponible",
+    "no encontramos resultados",
+    "producto sin stock",
+)
+
+
 def parse_falabella(
     html: str, offer_url: str, canonical_title: Optional[str] = None
 ) -> Optional[Dict[str, Any]]:
     """
-    Extrae título real, precio actual, precio de lista e imagen oficial desde el HTML de Falabella.
+    Extrae título real, precio más bajo vigente (incluyendo CMR/Internet), precio de lista e imagen oficial desde el HTML de Falabella.
     """
     if not html:
+        return None
+
+    vis_html = re.sub(
+        r"<(script|style|noscript|template)\b[^>]*>.*?</\1>",
+        " ",
+        html,
+        flags=re.IGNORECASE | re.DOTALL,
+    ).lower()
+    if any(phrase in vis_html for phrase in FORBIDDEN_ERROR_PHRASES_FALABELLA):
         return None
 
     _, clean_offer_url = canonicalize_store_url(offer_url)
@@ -240,7 +246,9 @@ def parse_falabella(
 
                 medias = v.get("medias", []) or prod.get("medias", [])
                 if medias and isinstance(medias[0], dict) and medias[0].get("url"):
-                    official_img = medias[0]["url"]
+                    official_img = str(medias[0]["url"])
+                    if "media.falabella.com" in official_img and official_img.endswith("/public"):
+                        official_img = official_img[:-7] + "/w=800,h=800,fit=pad"
 
                 # Si la variante tiene SKU ID explícito y la URL tiene formato /product/{id}/{slug}/{sku}, actualizar al SKU de la variante
                 if variant_id:

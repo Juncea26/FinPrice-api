@@ -39,13 +39,33 @@ def clean_number(val: Any) -> Optional[float]:
         return None
 
 
+FORBIDDEN_ERROR_PHRASES_RIPLEY = (
+    "¡uy! no hemos encontrado resultados",
+    "no hemos encontrado resultados para tu búsqueda",
+    "ups! 404",
+    "la página que buscas ya no existe",
+    "producto que buscas ya no está disponible",
+    "no encontramos resultados",
+    "producto sin stock",
+)
+
+
 def parse_ripley(
     html: str, offer_url: str, canonical_title: Optional[str] = None
 ) -> Optional[Dict[str, Any]]:
     """
-    Extrae título real, precio con Tarjeta Ripley o internet, precio lista e imagen oficial de Ripley.
+    Extrae título real, el menor precio vigente (Tarjeta Ripley o Internet), precio lista e imagen oficial de Ripley.
     """
     if not html:
+        return None
+
+    vis_html = re.sub(
+        r"<(script|style|noscript|template)\b[^>]*>.*?</\1>",
+        " ",
+        html,
+        flags=re.IGNORECASE | re.DOTALL,
+    ).lower()
+    if any(phrase in vis_html for phrase in FORBIDDEN_ERROR_PHRASES_RIPLEY):
         return None
 
     _, clean_offer_url = canonicalize_store_url(offer_url)
@@ -88,9 +108,11 @@ def parse_ripley(
             if master_p:
                 orig_price = master_p
 
-            # Priorizar precio de internet general sobre tarjeta exclusiva
-            best_p = sale_p or ripley_p
-            list_p = orig_price or (ripley_p if sale_p and ripley_p > sale_p else best_p)
+            # Tomar SIEMPRE el menor precio vigente (incluyendo Tarjeta Ripley e Internet)
+            active_candidates = [p for p in (ripley_p, sale_p) if p is not None and p > 0]
+            best_p = min(active_candidates) if active_candidates else None
+            all_candidates = [p for p in (orig_price, ripley_p, sale_p) if p is not None and p > 0]
+            list_p = orig_price or (max(all_candidates) if all_candidates else best_p)
 
             official_img = None
             images = prod.get("images", [])
@@ -159,7 +181,8 @@ def parse_ripley(
                     if num_o:
                         orig_p = num_o
 
-            best_p = sale_num or ripley_num
+            active_candidates = [p for p in (ripley_num, sale_num) if p is not None and p > 0]
+            best_p = min(active_candidates) if active_candidates else None
             if best_p is not None:
                 extracted_meta = extract_product_specs(html, title=prod_title, store_id="ripley")
                 if canonical_title and not validate_product_identity(
@@ -171,7 +194,8 @@ def parse_ripley(
                     description=prod_desc,
                 ):
                     return None
-                list_p = orig_p or (ripley_num if sale_num and ripley_num > sale_num else best_p)
+                all_candidates = [p for p in (orig_p, ripley_num, sale_num) if p is not None and p > 0]
+                list_p = orig_p or (max(all_candidates) if all_candidates else best_p)
                 imgs = prod.get("images") or []
                 img_u = imgs[0] if isinstance(imgs, list) and imgs else prod.get("fullImage")
                 if isinstance(img_u, dict):

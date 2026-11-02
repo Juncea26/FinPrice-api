@@ -181,7 +181,20 @@ def is_valid_product_image_url(url: Optional[str]) -> bool:
     u = url.lower().strip()
     if not u.startswith("http"):
         return False
-    if any(bad in u for bad in ("placeholder", "logo", "no_selection", "default", "pixel.gif")):
+    forbidden_tokens = (
+        "placeholder",
+        "default/logo",
+        "sin-imagen",
+        "no-image",
+        "preparing",
+        "pendiente",
+        "default",
+        "logo",
+        "no_selection",
+        "pixel.gif",
+        "orig_",
+    )
+    if any(bad in u for bad in forbidden_tokens):
         return False
     return True
 

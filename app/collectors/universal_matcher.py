@@ -152,6 +152,8 @@ def _normalize_corpus_text(text: str) -> str:
     cleaned = re.sub(r"\b([a-z]\d+)(pro|plus|ultra|max|fe|lite)\b", r"\1 \2", cleaned)
     cleaned = re.sub(r"\b(\d+)(pro|plus|ultra|max|fe|lite)(5g)?\b", r"\1 \2 \3", cleaned)
     cleaned = re.sub(r"\b(\d{1,4})\s+(gb|tb)\b", r"\1\2", cleaned)
+    cleaned = re.sub(r"\b(128|256|512|1024)\s*ssd\b", r"\1gb ssd", cleaned)
+    cleaned = re.sub(r"\bteclado\s+en\s+(?:espanol|ingles)\b", " ", cleaned)
     return re.sub(r"\s+", " ", cleaned).strip()
 
 

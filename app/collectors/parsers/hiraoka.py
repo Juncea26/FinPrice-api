@@ -131,14 +131,34 @@ def _parse_search_results(
     return best_candidate
 
 
+FORBIDDEN_ERROR_PHRASES_HIRAOKA = (
+    "¡uy! no hemos encontrado resultados",
+    "no hemos encontrado resultados para tu búsqueda",
+    "ups! 404",
+    "la página que buscas ya no existe",
+    "producto que buscas ya no está disponible",
+    "no encontramos resultados",
+    "producto sin stock",
+)
+
+
 def parse_hiraoka(
     html: str, offer_url: str, canonical_title: Optional[str] = None
 ) -> Optional[Dict[str, Any]]:
     """
-    Extrae título real, precio oferta, precio de lista e imagen oficial de Hiraoka.
+    Extrae título real, el menor precio de venta vigente (PRECIO ONLINE / Especial), precio de lista e imagen oficial de Hiraoka.
     Aísla el contenedor .product-info-main y el JSON-LD principal ignorando carruseles.
     """
     if not html:
+        return None
+
+    vis_html = re.sub(
+        r"<(script|style|noscript|template)\b[^>]*>.*?</\1>",
+        " ",
+        html,
+        flags=re.IGNORECASE | re.DOTALL,
+    ).lower()
+    if any(phrase in vis_html for phrase in FORBIDDEN_ERROR_PHRASES_HIRAOKA):
         return None
 
     soup = BeautifulSoup(html, "lxml")
@@ -148,6 +168,9 @@ def parse_hiraoka(
         _, clean_offer_url = canonicalize_store_url(offer_url)
         offer_url = clean_offer_url or offer_url
     main_info_box: Optional[Tag] = soup.select_one(".product-info-main")
+
+    if main_info_box and main_info_box.select_one(".stock.unavailable"):
+        return None
 
     if is_search_url or (not main_info_box and soup.select(".product-item-info, li.product-item")):
         return _parse_search_results(soup, offer_url, canonical_title)

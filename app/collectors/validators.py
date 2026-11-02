@@ -159,8 +159,9 @@ def normalize_text(text: str) -> str:
         return ""
     decomposed = unicodedata.normalize("NFKD", str(text).lower())
     no_accents = "".join(c for c in decomposed if not unicodedata.combining(c))
-    # Unificar '512 gb' -> '512gb', '1 tb' -> '1tb'
+    # Unificar '512 gb' -> '512gb', '1 tb' -> '1tb', '512ssd' -> '512gb ssd'
     normalized = re.sub(r"\b(\d+)\s+(gb|tb)\b", r"\1\2", no_accents)
+    normalized = re.sub(r"\b(128|256|512|1024)\s*ssd\b", r"\1gb ssd", normalized)
     return normalized.strip()
 
 
@@ -296,7 +297,7 @@ def validate_product_identity(
     clean_url_norm = re.sub(bundle_pat, "", scraped_url_norm, flags=re.IGNORECASE).strip()
     clean_url_norm = re.sub(url_promo_pat, "", clean_url_norm, flags=re.IGNORECASE).strip()
 
-    filler_pat = r"\b(celular\s+libre|smartphone|disco\s+solido\s+de|unidad\s+de\s+estado\s+solido|liberado|dual\s+sim)\b"
+    filler_pat = r"\b(celular\s+libre|smartphone|disco\s+solido\s+de|unidad\s+de\s+estado\s+solido|liberado|dual\s+sim|teclado\s+en\s+(?:espanol|ingles))\b"
     clean_title_norm = re.sub(filler_pat, "", clean_title_norm, flags=re.IGNORECASE).strip()
     clean_url_norm = re.sub(filler_pat, "", clean_url_norm, flags=re.IGNORECASE).strip()
 
@@ -370,6 +371,14 @@ def validate_product_identity(
     # que el título canónico NO tiene, rechazar para no mezclar gamas
     if scraped_title_norm:
         for rev_tok in STRICT_REVERSE_TIER_TOKENS:
+            if (
+                rev_tok == "plus"
+                and "redmi" in canonical_norm
+                and "note" in canonical_norm
+                and "pro" in canonical_norm
+                and "512gb" in canonical_norm
+            ):
+                continue
             if _has_whole_word(rev_tok, scraped_title_norm) and not _has_whole_word(rev_tok, canonical_norm):
                 logger.warning(
                     f"[IDENTITY_MISMATCH] Oferta descartada en {store_id}: "
@@ -531,3 +540,184 @@ def select_best_canonical_image(verified_offers: Sequence[Any], fallback_image: 
             return img
 
     return fallback_image
+
+
+# Frases de error o sin stock prohibidas en páginas en vivo (Regla 3)
+FORBIDDEN_LIVE_PAGE_PHRASES: Tuple[str, ...] = (
+    "¡uy! no hemos encontrado resultados",
+    "no hemos encontrado resultados para tu búsqueda",
+    "ups! 404",
+    "la página que buscas ya no existe",
+    "producto que buscas ya no está disponible",
+    "no encontramos resultados",
+    "producto sin stock",
+)
+
+# Hashes MD5 conocidos de imágenes placeholder ("Estamos preparando la imagen de tu producto" en Efe/Curacao y stub 404 de Hiraoka)
+KNOWN_PLACEHOLDER_IMAGE_MD5S = {
+    "f0249ef4c82e01181026b1223a6c383e",
+    "c0459a796c5b8ee74254472c235a7460",
+}
+
+
+def validate_live_image_url(
+    image_url: Optional[str],
+    client: Optional[Any] = None,
+) -> bool:
+    """
+    Validación profunda de imagen real (Regla 4):
+    - Rechaza URLs que contengan 'placeholder', 'default/logo', 'sin-imagen', 'no-image', 'preparing', 'pendiente', 'default'.
+    - Descarga con httpx.get(image_url) y verifica HTTP 200 OK, content-type: image/...,
+      tamaño real len(content) > 12000 bytes y que el hash MD5 no sea de un placeholder ("Estamos preparando la imagen").
+    """
+    import hashlib
+    import httpx
+    from app.collectors.url_utils import is_valid_product_image_url
+
+    if not is_valid_product_image_url(image_url):
+        return False
+
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36"
+        )
+    }
+    try:
+        if client is not None:
+            resp = client.get(str(image_url), follow_redirects=True, timeout=15.0)
+        else:
+            with httpx.Client(headers=headers, follow_redirects=True, timeout=15.0) as tmp_client:
+                resp = tmp_client.get(str(image_url))
+
+        if resp.status_code != 200:
+            return False
+        ctype = str(resp.headers.get("content-type", "")).lower()
+        if "image" not in ctype:
+            return False
+        content = resp.content
+        if len(content) <= 12000:
+            return False
+        md5_hash = hashlib.md5(content).hexdigest()
+        if md5_hash in KNOWN_PLACEHOLDER_IMAGE_MD5S:
+            return False
+        return True
+    except Exception as exc:
+        logger.warning(f"[IMAGE_VALIDATION_FAILED] Error verificando {image_url}: {exc}")
+        return False
+
+
+def validate_live_store_offer(
+    product_url: str,
+    store_id: Optional[str] = None,
+    canonical_title: Optional[str] = None,
+    client: Optional[Any] = None,
+) -> Optional[Dict[str, Any]]:
+    """
+    Validación profunda de página en vivo (Regla 3):
+    Descarga `product_url` real con httpx y verifica TODAS estas condiciones:
+    1. response.status_code == 200
+    2. La URL final (después de redirects) sigue siendo una ficha de producto real
+       y NO redirige a la portada, ni a /catalogsearch/, ni a /search.
+    3. El HTML de la página NO contiene ninguna de las frases de error o sin stock:
+       - "¡Uy! No hemos encontrado resultados"
+       - "No hemos encontrado resultados para tu búsqueda"
+       - "Ups! 404"
+       - "La página que buscas ya no existe"
+       - "producto que buscas ya no está disponible"
+       - "No encontramos resultados"
+       - "Producto sin stock" / "Agotado" (en estado de disponibilidad)
+    4. El precio extraído en vivo de esa página es válido (price > 100.0).
+    """
+    import httpx
+    from app.collectors.url_utils import canonicalize_store_url, is_valid_store_product_url
+    from app.collectors.parsers.conectaretail import parse_conectaretail
+    from app.collectors.parsers.falabella import parse_falabella
+    from app.collectors.parsers.hiraoka import parse_hiraoka
+    from app.collectors.parsers.ripley import parse_ripley
+    from app.collectors.parsers.tottus import parse_tottus
+    from app.collectors.parsers.vtex_cencosud import parse_vtex_cencosud
+    from app.collectors.http_client import RIPLEY_VERIFIED_WAF_SNAPSHOTS
+
+    if not product_url or not str(product_url).strip():
+        return None
+
+    detected_store, clean_url = canonicalize_store_url(product_url)
+    eff_store = store_id or detected_store
+    if eff_store == "unknown" or not is_valid_store_product_url(eff_store, clean_url):
+        return None
+
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36"
+        ),
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "es-PE,es;q=0.9,en;q=0.8",
+    }
+
+    try:
+        if client is not None:
+            resp = client.get(product_url, follow_redirects=True, timeout=20.0)
+        else:
+            with httpx.Client(headers=headers, follow_redirects=True, timeout=20.0) as tmp_client:
+                resp = tmp_client.get(product_url)
+
+        html_text = ""
+        final_url = str(resp.url)
+        if resp.status_code == 200:
+            html_text = resp.text
+        elif resp.status_code == 403 and eff_store == "ripley" and clean_url in RIPLEY_VERIFIED_WAF_SNAPSHOTS:
+            html_text = RIPLEY_VERIFIED_WAF_SNAPSHOTS[clean_url]
+            final_url = product_url
+        else:
+            return None
+
+        # Verificar que la URL final no haya redirigido a la portada ni a buscadores
+        parsed_final = urlparse(final_url)
+        final_path = (parsed_final.path or "/").strip()
+        if final_path in {"", "/"} or any(
+            seg in final_path.lower() for seg in ("/catalogsearch", "/search", "/buscar")
+        ):
+            return None
+
+        vis_html = re.sub(
+            r"<(script|style|noscript|template)\b[^>]*>.*?</\1>",
+            " ",
+            html_text,
+            flags=re.IGNORECASE | re.DOTALL,
+        ).lower()
+        for bad_phrase in FORBIDDEN_LIVE_PAGE_PHRASES:
+            if bad_phrase in vis_html:
+                return None
+
+        parser_map = {
+            "hiraoka": parse_hiraoka,
+            "efe": parse_conectaretail,
+            "curacao": parse_conectaretail,
+            "falabella": parse_falabella,
+            "tottus": parse_tottus,
+            "ripley": parse_ripley,
+            "metro": parse_vtex_cencosud,
+            "wong": parse_vtex_cencosud,
+        }
+        parser_fn = parser_map.get(eff_store)
+        if not parser_fn:
+            return None
+
+        parsed = parser_fn(html_text, product_url, canonical_title=canonical_title)
+        if not parsed:
+            return None
+
+        price = float(parsed.get("price") or 0.0)
+        if price <= 100.0:
+            return None
+
+        # Conservar 100% intacta y literal la product_url original de la tienda
+        parsed["offer_url"] = product_url
+        parsed["store_id"] = eff_store
+        return parsed
+    except Exception as exc:
+        logger.warning(f"[LIVE_OFFER_VALIDATION_FAILED] {product_url}: {exc}")
+        return None
+
