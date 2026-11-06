@@ -380,6 +380,10 @@ def extract_search_candidate_links(
             continue
 
         full_url = urljoin(search_url, best_href)
+        det_store, _ = canonicalize_store_url(full_url)
+        from app.collectors.url_utils import is_marketplace_url
+        if is_marketplace_url(det_store, full_url):
+            continue
         if full_url not in links:
             links.append(full_url)
         if len(links) >= limit:
@@ -392,8 +396,13 @@ def extract_search_candidate_links(
             data = json.loads(nd.string)
             results = data.get("props", {}).get("pageProps", {}).get("results") or []
             if isinstance(results, list):
+                det_search_store, _ = canonicalize_store_url(search_url)
+                expected_seller_tok = "tottus" if det_search_store == "tottus" else "falabella"
                 for item in results:
                     if not isinstance(item, dict):
+                        continue
+                    item_seller = str(item.get("sellerName") or item.get("sellerId") or "").strip().lower()
+                    if item_seller and expected_seller_tok not in item_seller:
                         continue
                     item_title = str(item.get("displayName") or item.get("name") or "")
                     item_url = str(item.get("url") or "")

@@ -33,6 +33,7 @@ from app.services.catalog_service import catalog_service
 logger = get_logger("entrypoint")
 
 _background_task: Optional[asyncio.Task] = None
+_keep_alive_task: Optional[asyncio.Task] = None
 
 
 def calculate_seconds_until_target(
@@ -82,15 +83,36 @@ async def daily_scheduler_loop():
             await asyncio.sleep(60)
 
 
+async def keep_alive_self_ping_loop() -> None:
+    """
+    Corrutina ligera en background que mientras el contenedor esté activo hace
+    self-ping keep-alive cada 12 minutos (720 segundos) a /ping sin gastar cuota de Neon.
+    """
+    import os
+    import httpx
+
+    while True:
+        try:
+            await asyncio.sleep(720)
+            target_base = os.getenv("RENDER_EXTERNAL_URL", f"http://127.0.0.1:{settings.PORT}").rstrip("/")
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                await client.get(f"{target_base}/ping")
+        except asyncio.CancelledError:
+            break
+        except Exception:
+            pass
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """
     Ciclo de vida de FastAPI optimizado para Render y Neon Serverless:
     1. Crea / verifica el esquema de tablas en Neon PostgreSQL (Base.metadata.create_all).
-    2. Sincroniza y hace UPSERT instantáneo de los 25 productos oficiales y sus ofertas (>= 2 tiendas por producto).
-    3. Inicia el programador diario automático a las 00:59 AM (America/Lima).
+    2. Sincroniza y hace UPSERT instantáneo de los 25 productos oficiales y sus ofertas (>= 1 tienda por producto).
+    3. Verifica Catch-Up on Wakeup: si aún no existe el punto de hoy (today_peru) en price_history, lanza run_daily_price_update().
+    4. Inicia el programador diario automático a las 00:59 AM (America/Lima) y el keep-alive cada 12 minutos.
     """
-    global _background_task
+    global _background_task, _keep_alive_task
     logger.info("Encendiendo FinPrice API Standalone...", extra={"env": settings.ENVIRONMENT})
 
     # 1. Crear y verificar tablas en Neon PostgreSQL
@@ -100,21 +122,29 @@ async def lifespan(app: FastAPI):
     async with AsyncSessionLocal() as session:
         synced_count = await sync_and_upsert_catalog(session=session)
         catalog_service.invalidate_cache()
+        if await orchestrator.needs_daily_catchup(session):
+            logger.info("Catch-Up on Wakeup: registrando actualización diaria pendiente para today_peru...")
+            await orchestrator.run_daily_price_update(
+                session=session,
+                on_cache_invalidate=catalog_service.invalidate_cache,
+            )
 
-    logger.info(f"Catálogo oficial de FinPrice sincronizado ({synced_count} productos en Neon con >= 2 tiendas). Arranque instantáneo listo.")
+    logger.info(f"Catálogo oficial de FinPrice sincronizado ({synced_count} productos en Neon con >= 1 tienda). Arranque instantáneo listo.")
     _background_task = asyncio.create_task(daily_scheduler_loop())
+    _keep_alive_task = asyncio.create_task(keep_alive_self_ping_loop())
 
     logger.info(f"FinPrice API en línea y disponible en puerto {settings.PORT}.")
     yield
 
     # Apagado limpio
     logger.info("Deteniendo FinPrice API...")
-    if _background_task and not _background_task.done():
-        _background_task.cancel()
-        try:
-            await _background_task
-        except asyncio.CancelledError:
-            pass
+    for task_ref in (_background_task, _keep_alive_task):
+        if task_ref and not task_ref.done():
+            task_ref.cancel()
+            try:
+                await task_ref
+            except asyncio.CancelledError:
+                pass
     logger.info("FinPrice API apagada correctamente.")
 
 

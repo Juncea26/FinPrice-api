@@ -9,6 +9,7 @@ Sistema de Triple Candado de Integridad de Producto (Zero False-Positive Guard).
    - Descarta ofertas con precio < 55% del precio de referencia inter-tienda
    - Protección de imagen oficial canónica de alta resolución
 """
+import json
 import re
 import statistics
 import unicodedata
@@ -553,6 +554,168 @@ FORBIDDEN_LIVE_PAGE_PHRASES: Tuple[str, ...] = (
     "producto sin stock",
 )
 
+
+def is_official_store_seller(
+    store_id: str,
+    html_or_json: str,
+    url: str = "",
+) -> bool:
+    """
+    REGLA ESTRICTA 1: SOLO PRODUCTOS VENDIDOS POR LA MISMA TIENDA (CERO TERCEROS / MARKETPLACE).
+    Verifica obligatoriamente el campo de vendedor (seller / 'Vendido por') en las 8 tiendas:
+    1. Falabella: sellerName == 'Falabella' / sellerId == 'FALABELLA' y HTML 'Vendido por Falabella'.
+    2. Ripley: 'Vendido por Ripley', isMarketplaceProduct == False, sin '-pmp' en URL.
+    3. La Curacao: 'Vendido por La Curacao'.
+    4. Tiendas Efe: 'Vendido por Tiendas Efe' o 'Efe'.
+    5. Hiraoka: Vendido directamente por 'Hiraoka'.
+    6. Tottus: 'Vendido por Tottus' (sellerName == 'Tottus').
+    7. Metro: En API VTEX seller activo Metro (sellerId == '1' con stock > 0).
+    8. Wong: En API VTEX seller activo Wong (sellerId == '1' con stock > 0).
+    """
+    from app.collectors.url_utils import is_marketplace_url
+
+    s_id = (store_id or "").lower().strip()
+    if is_marketplace_url(s_id, url):
+        logger.warning(f"[MARKETPLACE_URL_REJECTED] {s_id}: {url}")
+        return False
+
+    if not html_or_json or not html_or_json.strip():
+        return False
+
+    raw = html_or_json.strip()
+
+    # Caso VTEX JSON directo (Metro / Wong)
+    if s_id in {"metro", "wong"} and (raw.startswith("[") or raw.startswith("{")):
+        try:
+            data = json.loads(raw)
+            items = data if isinstance(data, list) else [data]
+            for prod in items:
+                if not isinstance(prod, dict):
+                    continue
+                for sku in prod.get("items") or []:
+                    if not isinstance(sku, dict):
+                        continue
+                    for seller in sku.get("sellers") or []:
+                        if not isinstance(seller, dict):
+                            continue
+                        sid = seller.get("sellerId")
+                        if sid is not None and str(sid).strip() != "1":
+                            continue
+                        offer = seller.get("commertialOffer") or {}
+                        qty = int(offer.get("AvailableQuantity") or 0)
+                        is_avail = offer.get("IsAvailable", qty > 0)
+                        price = float(offer.get("Price") or 0.0)
+                        if qty > 0 and is_avail and price > 0:
+                            return True
+            return False
+        except Exception:
+            return False
+
+    # Inspección de __NEXT_DATA__ para Falabella, Tottus y Ripley
+    if s_id in {"falabella", "tottus", "ripley"} and "__NEXT_DATA__" in raw:
+        nd_match = re.search(
+            r'<script[^>]+id=["\']__NEXT_DATA__["\'][^>]*>(.*?)</script>',
+            raw,
+            flags=re.IGNORECASE | re.DOTALL,
+        )
+        if nd_match:
+            try:
+                nd_data = json.loads(nd_match.group(1).strip())
+                page_props = nd_data.get("props", {}).get("pageProps", {})
+                if s_id in {"falabella", "tottus"}:
+                    expected_token = "falabella" if s_id == "falabella" else "tottus"
+                    p_data = page_props.get("productData") or {}
+                    top_seller = str(p_data.get("sellerName") or p_data.get("sellerId") or "").strip().lower()
+                    if top_seller and expected_token not in top_seller:
+                        logger.warning(f"[MARKETPLACE_SELLER_REJECTED] {s_id}: seller={top_seller!r} url={url}")
+                        return False
+                    for var in p_data.get("variants") or []:
+                        if not isinstance(var, dict):
+                            continue
+                        v_seller = str(var.get("sellerName") or var.get("sellerId") or "").strip().lower()
+                        if v_seller and expected_token not in v_seller:
+                            logger.warning(f"[MARKETPLACE_SELLER_REJECTED] {s_id}: variant seller={v_seller!r} url={url}")
+                            return False
+                        for off in var.get("offerings") or var.get("offers") or []:
+                            if isinstance(off, dict):
+                                o_seller = str(off.get("sellerName") or off.get("sellerId") or "").strip().lower()
+                                if o_seller and expected_token not in o_seller:
+                                    logger.warning(f"[MARKETPLACE_SELLER_REJECTED] {s_id}: offering seller={o_seller!r} url={url}")
+                                    return False
+                elif s_id == "ripley":
+                    r_prod = (
+                        page_props.get("detailProps", {}).get("data", {}).get("product")
+                        or page_props.get("product")
+                        or {}
+                    )
+                    if r_prod.get("isMarketplaceProduct") is True:
+                        logger.warning(f"[MARKETPLACE_SELLER_REJECTED] ripley: isMarketplaceProduct=True url={url}")
+                        return False
+                    mkt = r_prod.get("marketplace") or {}
+                    if isinstance(mkt, dict):
+                        shop_name = str(mkt.get("shopName") or mkt.get("sellerName") or "").strip().lower()
+                        if shop_name and "ripley" not in shop_name:
+                            logger.warning(f"[MARKETPLACE_SELLER_REJECTED] ripley: shopName={shop_name!r} url={url}")
+                            return False
+            except Exception:
+                pass
+
+    if s_id == "ripley" and '"isMarketplaceProduct":true' in raw.replace(" ", ""):
+        return False
+
+    if s_id in {"falabella", "tottus", "ripley"} and '"sellerName"' in raw:
+        expected_tok = s_id
+        for sm in re.findall(r'"sellerName"\s*:\s*"([^"]+)"', raw, flags=re.IGNORECASE):
+            sm_clean = sm.strip().lower()
+            if sm_clean and expected_tok not in sm_clean:
+                logger.warning(
+                    f"[MARKETPLACE_SELLER_REJECTED] {s_id}: sellerName={sm_clean!r} no es tienda oficial ({url})"
+                )
+                return False
+
+    # Inspección de texto visible "Vendido por ..."
+    vis_text = re.sub(
+        r"<(script|style|noscript|template)\b[^>]*>.*?</\1>",
+        " ",
+        raw,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    vis_text = re.sub(r"<[^>]+>", " ", vis_text)
+    vis_text = re.sub(r"\s+", " ", vis_text).strip()
+
+    vendido_matches = re.findall(
+        r"Vendido\s+por[:\s]+([A-Za-z0-9\s\.\-&ÁÉÍÓÚáéíóúñÑ]{2,45})",
+        vis_text,
+        flags=re.IGNORECASE,
+    )
+    if vendido_matches:
+        allowed_sellers_map = {
+            "falabella": ("falabella",),
+            "ripley": ("ripley",),
+            "curacao": ("la curacao", "curacao"),
+            "efe": ("tiendas efe", "efe"),
+            "hiraoka": ("hiraoka",),
+            "tottus": ("tottus",),
+            "metro": ("metro", "cencosud"),
+            "wong": ("wong", "cencosud"),
+        }
+        allowed_prefixes = allowed_sellers_map.get(s_id, (s_id,))
+        for raw_seller in vendido_matches:
+            clean_seller = re.split(
+                r"\b(?:raz[oó]n\s+social|ruc|env[ií]o|retiro|garant[ií]a|condici[oó]n|pol[ií]ticas|precio|s/|agregar|comprar|stock|disponible|calificaci[oó]n)\b",
+                raw_seller,
+                flags=re.IGNORECASE,
+            )[0].strip(" .:-|,;").lower()
+            if not clean_seller:
+                continue
+            if not any(clean_seller.startswith(prefix) or clean_seller == prefix for prefix in allowed_prefixes):
+                logger.warning(
+                    f"[MARKETPLACE_SELLER_REJECTED] {s_id}: 'Vendido por {clean_seller}' no es tienda oficial ({url})"
+                )
+                return False
+
+    return True
+
 # Hashes MD5 conocidos de imágenes placeholder ("Estamos preparando la imagen de tu producto" en Efe/Curacao y stub 404 de Hiraoka)
 KNOWN_PLACEHOLDER_IMAGE_MD5S = {
     "f0249ef4c82e01181026b1223a6c383e",
@@ -690,6 +853,23 @@ def validate_live_store_offer(
         for bad_phrase in FORBIDDEN_LIVE_PAGE_PHRASES:
             if bad_phrase in vis_html:
                 return None
+
+        # REGLA ESTRICTA 1: Solo productos vendidos directamente por la tienda oficial (Cero Marketplace)
+        if not is_official_store_seller(eff_store, html_text, product_url):
+            return None
+
+        if eff_store in {"metro", "wong"} and not html_text.strip().startswith("["):
+            from app.collectors.url_utils import build_vtex_api_url_for_product
+            vtex_api_url = build_vtex_api_url_for_product(product_url)
+            if vtex_api_url:
+                if client is not None:
+                    vtex_resp = client.get(vtex_api_url, follow_redirects=True, timeout=15.0)
+                else:
+                    with httpx.Client(headers=headers, follow_redirects=True, timeout=15.0) as tmp_c:
+                        vtex_resp = tmp_c.get(vtex_api_url)
+                if vtex_resp.status_code != 200 or not is_official_store_seller(eff_store, vtex_resp.text, product_url):
+                    return None
+                html_text = vtex_resp.text
 
         parser_map = {
             "hiraoka": parse_hiraoka,

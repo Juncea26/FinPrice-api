@@ -52,6 +52,7 @@ from app.models.schemas import (
     ComplaintCreateSchema,
     ComplaintSchema,
     DynamicFiltersSchema,
+    PriceDropNotificationSchema,
     PricePointSchema,
     ProductResponse,
     ProductSchema,
@@ -175,6 +176,7 @@ class CatalogService:
             if store_prices:
                 eff_best_price = store_prices[0].price
                 eff_best_store = store_prices[0].store_name
+                eff_best_url = store_prices[0].offer_url
                 eff_orig_price = store_prices[0].original_price or eff_best_price
                 if eff_orig_price < eff_best_price:
                     eff_orig_price = eff_best_price
@@ -187,6 +189,7 @@ class CatalogService:
             else:
                 eff_best_price = p.best_price
                 eff_best_store = p.best_store_name
+                eff_best_url = getattr(p, "best_store_url", "") or ""
                 eff_orig_price = p.original_price
                 eff_discount = p.discount_percentage
                 eff_count = p.available_stores_count
@@ -196,16 +199,39 @@ class CatalogService:
                     day_offset=hp.day_offset,
                     date_label=hp.date_label,
                     price=hp.price,
+                    recorded_date=getattr(hp, "recorded_date", None),
                 )
                 for hp in p.price_history
                 if hp.price >= (eff_best_price * 0.55)
             ]
             price_history.sort(key=lambda x: x.day_offset)
 
-            # Si hay menos de 2 fechas distintas observadas (Día 1 del sistema), retornar lista vacía
-            # para que la app Android oculte la gráfica de 30 días (if (history.isEmpty()) return)
             unique_dates = {hp.date_label for hp in price_history}
-            effective_price_history = price_history if len(unique_dates) >= 2 else []
+            effective_price_history = price_history
+            eff_days_tracked = max(
+                1,
+                len(unique_dates) if unique_dates else int(getattr(p, "days_tracked", 1) or 1),
+            )
+
+            hist_min_val = (
+                min([hp.price for hp in price_history] + [eff_best_price])
+                if price_history
+                else eff_best_price
+            )
+            is_hist_min = bool(eff_best_price <= hist_min_val)
+
+            prev_best_p = getattr(p, "previous_best_price", None)
+            if len(price_history) >= 2:
+                prev_day_p = price_history[-2].price
+                if prev_best_p is None or prev_day_p != eff_best_price:
+                    prev_best_p = prev_day_p
+            if prev_best_p is None:
+                prev_best_p = eff_orig_price
+
+            drop_amt = getattr(p, "price_drop_amount", 0.0) or 0.0
+            calc_drop = round(max(0.0, float(prev_best_p) - float(eff_best_price)), 2)
+            if calc_drop > 0:
+                drop_amt = calc_drop
 
             schemas.append(
                 ProductSchema(
@@ -216,6 +242,11 @@ class CatalogService:
                     best_price=eff_best_price,
                     original_price=eff_orig_price,
                     best_store_name=eff_best_store,
+                    best_store_url=eff_best_url,
+                    product_url=eff_best_url,
+                    previous_best_price=prev_best_p,
+                    price_drop_amount=drop_amt,
+                    days_tracked=eff_days_tracked,
                     discount_percentage=eff_discount,
                     available_stores_count=eff_count,
                     image_url=p.image_url,
@@ -223,13 +254,9 @@ class CatalogService:
                     features=features,
                     is_favorite=p.is_favorite,
                     store_prices=store_prices,
-                    historical_min_price=(
-                        min(hp.price for hp in price_history)
-                        if price_history
-                        else eff_best_price
-                    ),
+                    historical_min_price=hist_min_val,
                     tech_specs=tech_specs,
-                    is_historical_min=p.is_historical_min,
+                    is_historical_min=is_hist_min,
                     price_history_30_days=effective_price_history,
                 )
             )
@@ -466,6 +493,7 @@ class CatalogService:
             if adjusted_stores:
                 effective_best_price = adjusted_stores[0].price
                 effective_best_store = adjusted_stores[0].store_name
+                effective_best_url = adjusted_stores[0].offer_url
                 effective_orig_price = adjusted_stores[0].original_price or effective_best_price
                 effective_discount = (
                     round(((effective_orig_price - effective_best_price) / effective_orig_price) * 100)
@@ -475,8 +503,12 @@ class CatalogService:
             else:
                 effective_best_price = prod.best_price
                 effective_best_store = prod.best_store_name
+                effective_best_url = prod.best_store_url
                 effective_orig_price = prod.original_price or prod.best_price
                 effective_discount = prod.discount_percentage
+
+            eff_prev_best = prod.previous_best_price or effective_orig_price
+            eff_drop = round(max(0.0, float(eff_prev_best) - float(effective_best_price)), 2)
 
             result_item = ProductSchema(
                 id=prod.id,
@@ -486,6 +518,11 @@ class CatalogService:
                 best_price=effective_best_price,
                 original_price=effective_orig_price,
                 best_store_name=effective_best_store,
+                best_store_url=effective_best_url,
+                product_url=effective_best_url,
+                previous_best_price=eff_prev_best,
+                price_drop_amount=eff_drop,
+                days_tracked=prod.days_tracked,
                 discount_percentage=effective_discount,
                 available_stores_count=len(adjusted_stores),
                 image_url=prod.image_url,
@@ -520,6 +557,52 @@ class CatalogService:
             if p.id == product_id:
                 return p
         return None
+
+    async def get_price_drop_notifications(
+        self,
+        session: AsyncSession,
+        product_ids: Optional[str] = None,
+    ) -> List[PriceDropNotificationSchema]:
+        """
+        Retorna la lista de productos que han bajado de precio respecto a su precio anterior
+        o regular para alimentar las notificaciones de favoritos en Android.
+        """
+        from zoneinfo import ZoneInfo
+
+        products = await self._get_base_products(session)
+        filter_ids = None
+        if product_ids:
+            filter_ids = {pid.strip() for pid in product_ids.split(",") if pid.strip()}
+
+        now_peru_iso = datetime.now(ZoneInfo("America/Lima")).isoformat()
+        notifications: List[PriceDropNotificationSchema] = []
+
+        for p in products:
+            if filter_ids and p.id not in filter_ids:
+                continue
+            old_p = p.previous_best_price if (p.previous_best_price and p.previous_best_price > p.best_price) else p.original_price
+            drop_amt = round(max(0.0, float(old_p) - float(p.best_price)), 2)
+            if drop_amt <= 0.0:
+                continue
+            best_url = p.best_store_url or (p.store_prices[0].offer_url if p.store_prices else "")
+            if not best_url:
+                continue
+            notifications.append(
+                PriceDropNotificationSchema(
+                    product_id=p.id,
+                    product_title=p.title,
+                    old_price=round(float(old_p), 2),
+                    new_price=round(float(p.best_price), 2),
+                    drop_amount=drop_amt,
+                    store_name=p.best_store_name,
+                    product_url=best_url,
+                    image_url=p.image_url,
+                    timestamp=now_peru_iso,
+                )
+            )
+
+        notifications.sort(key=lambda x: x.drop_amount, reverse=True)
+        return notifications
 
     def get_stores(self) -> List[StoreSchema]:
         """Retorna el listado de las tiendas oficiales y el estado de su Circuit Breaker."""

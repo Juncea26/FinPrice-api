@@ -1643,28 +1643,23 @@ async def test_universal_product_resolver_cascade_fallback_to_broad_query():
 
 def test_ipad_11_a16_synchronizes_falabella_tottus_hiraoka_and_efe(client: TestClient):
     """
-    Verifica que el Apple iPad 11 Pulgadas A16 Wi-Fi 128GB (prod_ipad_11) sincronice:
-    - Falabella: S/ 1,899.00 (https://www.falabella.com.pe/falabella-pe/product/prod18440041/iPad-Apple-11-Chip-A16-Wi-Fi/21014911)
-    - Tottus: S/ 1,899.00 (https://www.tottus.com.pe/tottus-pe/articulo/150930380/ipad-a16-wifi-128gb-azul/150930381)
-    - Hiraoka: S/ 1,949.00 (https://hiraoka.com.pe/ipad-11-11ma-gen-a16-wifi-128gb-plata)
-    - Tiendas Efe: S/ 1,979.00 (https://www.efe.com.pe/ipad-a16-wi-fi-md4e4ll-a-11-128gb-6gb-p26513743.html)
-    con bestPrice = 1899.0.
+    Verifica que el Apple iPad 11 Pulgadas A16 Wi-Fi 128GB (prod_ipad_11) sincronice
+    sus tiendas oficiales 1P en stock:
+    - Tottus: S/ 1,599.00 (https://www.tottus.com.pe/tottus-pe/articulo/150930380/ipad-a16-wifi-128gb-azul/150930381)
+    - Hiraoka: S/ 1,999.00 (https://hiraoka.com.pe/ipad-11-11ma-gen-a16-wifi-128gb-plata)
+    con bestPrice = 1599.0.
     """
     res = client.get("/api/v1/products/prod_ipad_11")
     assert res.status_code == 200
     ipad = res.json()
 
     assert ipad["id"] == "prod_ipad_11"
-    assert ipad["bestPrice"] == 1479.0
-    assert ipad["availableStoresCount"] == 4
+    assert ipad["bestPrice"] == 1599.0
+    assert ipad["availableStoresCount"] == 2
 
     by_store = {sp["storeId"]: sp for sp in ipad["storePrices"]}
-    assert set(by_store.keys()) == {"falabella", "tottus", "hiraoka", "efe"}
+    assert set(by_store.keys()) == {"tottus", "hiraoka"}
 
-    assert by_store["falabella"]["price"] == 1479.0
-    assert by_store["falabella"]["offerUrl"] == (
-        "https://www.falabella.com.pe/falabella-pe/product/prod18440041/iPad-Apple-11-Chip-A16-Wi-Fi/21014911"
-    )
     assert by_store["tottus"]["price"] == 1599.0
     assert by_store["tottus"]["offerUrl"] == (
         "https://www.tottus.com.pe/tottus-pe/articulo/150930380/ipad-a16-wifi-128gb-azul/150930381"
@@ -1672,10 +1667,6 @@ def test_ipad_11_a16_synchronizes_falabella_tottus_hiraoka_and_efe(client: TestC
     assert by_store["hiraoka"]["price"] == 1999.0
     assert by_store["hiraoka"]["offerUrl"] == (
         "https://hiraoka.com.pe/ipad-11-11ma-gen-a16-wifi-128gb-plata"
-    )
-    assert by_store["efe"]["price"] == 2989.0
-    assert by_store["efe"]["offerUrl"] == (
-        "https://www.efe.com.pe/ipad-a16-wi-fi-md4e4ll-a-11-128gb-6gb-p26513743.html"
     )
 
 
@@ -2023,6 +2014,165 @@ def test_multi_color_cheapest_selection_across_stores():
     assert res_h is not None
     assert res_h["price"] == 3399.0
     assert res_h["offer_url"] == "https://hiraoka.com.pe/iphone-16-6-1-128gb-negro"
+
+
+# ==============================================================================
+# 10. REGLA CERO TERCEROS / MARKETPLACE, PRODUCTOS DESDE 1 TIENDA, HISTORIAL DIARIO Y NOTIFICACIONES
+# ==============================================================================
+
+def test_strict_first_party_seller_validation_across_8_stores():
+    """
+    Verifica que el validador is_official_store_seller y is_marketplace_url rechacen
+    terminantemente cualquier producto vendido por terceros de Marketplace en las 8 tiendas:
+    - Falabella: exige sellerId=FALABELLA en búsquedas y rechaza 'Vendido por Neotech'.
+    - Ripley: rechaza URLs -pmp y JSON con isMarketplaceProduct=true o seller!='Ripley'.
+    - La Curacao / Tiendas Efe: exige 'Vendido por La Curacao' / 'Vendido por Tiendas Efe'.
+    - Hiraoka: vendido directamente por Hiraoka.
+    - Tottus: exige 'Vendido por Tottus' (sellerName == 'Tottus').
+    - Metro / Wong: exige sellerId == '1' en la API VTEX.
+    """
+    from app.collectors.url_utils import build_store_search_url, is_marketplace_url
+    from app.collectors.validators import is_official_store_seller
+
+    # 1. Falabella: URL de búsqueda incluye filtro sellerId=FALABELLA
+    fala_search = build_store_search_url("falabella", "Canon G3170")
+    assert "f.derived.variant.sellerId=FALABELLA" in fala_search
+
+    # Falabella: rechaza Neotech (tercero) y acepta Falabella (1P)
+    fala_neotech_html = '<html><body><span>Vendido por Neotech</span><script id="__NEXT_DATA__">{"props":{"pageProps":{"productData":{"variants":[{"offerings":[{"sellerId":"SC57305","sellerName":"Neotech"}]}]}}}}</script></body></html>'
+    fala_official_html = '<html><body><span>Vendido por Falabella</span><script id="__NEXT_DATA__">{"props":{"pageProps":{"productData":{"variants":[{"offerings":[{"sellerId":"FALABELLA","sellerName":"Falabella"}]}]}}}}</script></body></html>'
+    assert is_official_store_seller("falabella", fala_neotech_html, "https://www.falabella.com.pe/falabella-pe/product/142848982/Impresora/142848983") is False
+    assert is_official_store_seller("falabella", fala_official_html, "https://www.falabella.com.pe/falabella-pe/product/883954446/Asus/883954446") is True
+
+    # 2. Ripley: rechaza -pmp y Mercado Ripley, acepta 1P
+    assert is_marketplace_url("ripley", "https://simple.ripley.com.pe/impresora-canon-pmp20000123456") is True
+    assert is_official_store_seller("ripley", '{"isMarketplaceProduct": true, "sellerName": "TecnoStore"}', "https://simple.ripley.com.pe/impresora-canon-2065365819351") is False
+    assert is_official_store_seller("ripley", '<html><body>Vendido por Ripley "isMarketplaceProduct":false</body></html>', "https://simple.ripley.com.pe/iphone-16-128gb-2065365819351") is True
+
+    # 3. La Curacao & 4. Tiendas Efe
+    assert is_official_store_seller("curacao", "<html><body>Vendido por Importaciones Tech</body></html>", "https://www.lacuracao.pe/prod.html") is False
+    assert is_official_store_seller("curacao", "<html><body>Vendido por La Curacao</body></html>", "https://www.lacuracao.pe/prod.html") is True
+    assert is_official_store_seller("efe", "<html><body>Vendido por Distribuidora XYZ</body></html>", "https://www.efe.com.pe/prod.html") is False
+    assert is_official_store_seller("efe", "<html><body>Vendido por Tiendas Efe</body></html>", "https://www.efe.com.pe/prod.html") is True
+
+    # 5. Hiraoka & 6. Tottus
+    assert is_official_store_seller("hiraoka", "<html><body>Hiraoka</body></html>", "https://hiraoka.com.pe/prod") is True
+    assert is_official_store_seller("tottus", '{"sellerName":"Marketplace Seller","sellerId":"SC999"}', "https://www.tottus.com.pe/tottus-pe/articulo/123/prod/124") is False
+    assert is_official_store_seller("tottus", '{"sellerName":"Tottus","sellerId":"TOTTUS"}', "https://www.tottus.com.pe/tottus-pe/articulo/123/prod/124") is True
+
+    # 7. Metro & 8. Wong (VTEX sellerId == "1")
+    vtex_3p = json.dumps([{"items": [{"sellers": [{"sellerId": "seller_externo", "sellerName": "Tercero", "commertialOffer": {"Price": 999.0, "AvailableQuantity": 5}}]}]}])
+    vtex_1p_metro = json.dumps([{"items": [{"sellers": [{"sellerId": "1", "sellerName": "metrope", "commertialOffer": {"Price": 999.0, "AvailableQuantity": 5}}]}]}])
+    assert is_official_store_seller("metro", vtex_3p, "https://www.metro.pe/prod/p") is False
+    assert is_official_store_seller("metro", vtex_1p_metro, "https://www.metro.pe/prod/p") is True
+    assert is_official_store_seller("wong", vtex_1p_metro, "https://www.wong.pe/prod/p") is True
+
+
+@pytest.mark.asyncio
+async def test_single_store_products_allowed_and_canonical_matcher_accepts_1_plus_stores(client: TestClient):
+    """
+    Verifica que:
+    1. Se permitan productos desde 1 tienda en adelante (len(offers) >= 1).
+    2. Cada oferta tenga product_url / productUrl / url y cada producto tenga best_store_url / bestStoreUrl.
+    3. CanonicalMatcherNode acepte fichas con 1 sola tienda oficial y agrupe cuando haya 2 o más.
+    """
+    from app.collectors.graph.canonical_matcher_node import CanonicalMatcherNode
+    from app.collectors.graph.state import ExtractedOfferSchema, GraphState, ProductTargetSpec
+
+    res = client.get("/api/v1/products")
+    assert res.status_code == 200
+    products = res.json()
+    assert len(products) == 25
+
+    single_store_products = [p for p in products if p["availableStoresCount"] == 1]
+    assert len(single_store_products) >= 1
+
+    for p in products:
+        assert p["availableStoresCount"] >= 1
+        assert len(p["storePrices"]) >= 1
+        assert len(p["offers"]) >= 1
+        assert p["bestStoreUrl"].startswith("https://")
+        assert p["best_store_url"] == p["bestStoreUrl"]
+        assert p["productUrl"] == p["bestStoreUrl"]
+        for off in p["storePrices"]:
+            assert off["product_url"].startswith("https://")
+            assert off["productUrl"] == off["product_url"]
+            assert off["url"] == off["product_url"]
+
+    # Probar CanonicalMatcherNode con 1 sola oferta válida
+    matcher = CanonicalMatcherNode()
+    target = ProductTargetSpec(
+        id="prod_single_store_test",
+        title="Apple MacBook Air 13 Pulgadas Chip M1 8GB RAM 256GB SSD",
+        category="Laptops",
+        brand="Apple",
+        raw_tech_specs={"RAM": "8GB", "Almacenamiento": "256GB"},
+    )
+    single_offer = ExtractedOfferSchema(
+        store_id="hiraoka",
+        store_name="Hiraoka",
+        title='Apple MacBook Air 13" Chip M1 8GB RAM 256GB SSD',
+        price=2599.0,
+        original_price=3499.0,
+        offer_url="https://hiraoka.com.pe/computo-y-tecnologia/computadoras/laptops/macbook-air-mgn63ll-a-13-3-chip-m1-256gb-ssd-8gb-ram-space-gray",
+        image_url="https://hiraoka.com.pe/media/catalog/product/1/3/131845-1.jpg",
+        in_stock=True,
+    )
+    state = GraphState(target=target, extracted_offers=[single_offer])
+    out_state = await matcher.execute(state)
+    assert len(out_state.verified_offers) == 1
+    assert out_state.verified_offers[0].store_id == "hiraoka"
+
+
+def test_daily_price_history_advances_and_price_drops_endpoint(client: TestClient):
+    """
+    Verifica que:
+    1. priceHistory30Days / price_history tenga los días reales acumulados hasta hoy (daysTracked >= 4)
+       con etiquetas de fecha reales ('02 Nov', '03 Nov', '04 Nov', '05 Nov').
+    2. Se calculen correctamente historicalMinPrice, isHistoricalMin, previousBestPrice y priceDropAmount.
+    3. El endpoint GET /api/v1/notifications/price-drops devuelva la lista de productos que han bajado
+       de precio con todos los campos requeridos por Android.
+    """
+    res = client.get("/api/v1/products/prod_iphone_16")
+    assert res.status_code == 200
+    iphone = res.json()
+
+    assert iphone["daysTracked"] >= 4
+    assert iphone["days_tracked"] == iphone["daysTracked"]
+    history = iphone["priceHistory30Days"]
+    assert len(history) >= 4
+    labels = [pt["dateLabel"] for pt in history]
+    assert "02 Nov" in labels
+    assert "05 Nov" in labels
+    assert iphone["historicalMinPrice"] <= iphone["bestPrice"]
+    assert iphone["previousBestPrice"] >= iphone["bestPrice"]
+    assert iphone["priceDropAmount"] == round(max(0.0, iphone["previousBestPrice"] - iphone["bestPrice"]), 2)
+
+    # Endpoint de notificaciones de bajada de precio
+    notif_res = client.get("/api/v1/notifications/price-drops")
+    assert notif_res.status_code == 200
+    notifications = notif_res.json()
+    assert isinstance(notifications, list)
+    assert len(notifications) >= 1
+
+    first = notifications[0]
+    for field in (
+        "product_id",
+        "product_title",
+        "old_price",
+        "new_price",
+        "drop_amount",
+        "store_name",
+        "product_url",
+        "image_url",
+        "timestamp",
+    ):
+        assert field in first
+        assert first[field] is not None
+    assert first["drop_amount"] > 0
+    assert first["old_price"] > first["new_price"]
+    assert first["product_url"].startswith("https://")
+
 
 
 

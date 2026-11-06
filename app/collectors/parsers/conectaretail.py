@@ -11,8 +11,8 @@ from bs4 import BeautifulSoup, Tag
 
 from app.core.logging import get_logger
 from app.collectors.spec_extractor import extract_product_specs
-from app.collectors.url_utils import canonicalize_store_url, is_valid_product_image_url
-from app.collectors.validators import validate_product_identity
+from app.collectors.url_utils import canonicalize_store_url, is_marketplace_url, is_valid_product_image_url
+from app.collectors.validators import is_official_store_seller, validate_product_identity
 
 logger = get_logger("parsers.conectaretail")
 
@@ -80,6 +80,12 @@ def _parse_search_results(
         item_title = link_el.get_text(strip=True)
         raw_href = link_el.get("href") or ""
         item_url = urljoin(search_url, raw_href) if raw_href else search_url
+        det_store, _ = canonicalize_store_url(item_url)
+        eff_card_store = "curacao" if det_store == "curacao" else "efe"
+        if is_marketplace_url(eff_card_store, item_url):
+            continue
+        if not is_official_store_seller(eff_card_store, str(card), item_url):
+            continue
 
         if not validate_product_identity(canonical_title, item_title, item_url, store_id="conectaretail"):
             continue
@@ -160,8 +166,11 @@ def parse_conectaretail(
 
     is_search_url = "/catalogsearch/result" in offer_url or "?q=" in offer_url or "&q=" in offer_url
     if not is_search_url:
-        _, clean_offer_url = canonicalize_store_url(offer_url)
+        detected_store, clean_offer_url = canonicalize_store_url(offer_url)
         offer_url = clean_offer_url or offer_url
+        eff_store = "curacao" if detected_store == "curacao" else "efe"
+        if not is_official_store_seller(eff_store, html, offer_url):
+            return None
 
     soup = BeautifulSoup(html, "lxml")
     main_info_box: Optional[Tag] = soup.select_one(".product-info-main")

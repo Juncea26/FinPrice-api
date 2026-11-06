@@ -3,8 +3,8 @@ Router principal /api/v1 agregando módulos de productos, tiendas, comunidad, re
 Incluye diagnóstico de salud en tiempo real en GET /api/v1/health.
 """
 import time
-from typing import Any, Dict
-from fastapi import APIRouter, Depends
+from typing import Any, Dict, List, Optional
+from fastapi import APIRouter, Depends, Query
 from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -19,7 +19,8 @@ from app.core.config import settings
 from app.core.database import get_db
 from app.collectors.orchestrator import orchestrator
 from app.models.entities import ProductEntity
-from app.models.schemas import HealthResponse
+from app.models.schemas import HealthResponse, PriceDropNotificationSchema
+from app.services.catalog_service import catalog_service
 
 api_v1_router = APIRouter(prefix="/api/v1")
 
@@ -94,4 +95,63 @@ async def get_health_status(session: AsyncSession = Depends(get_db)):
         next_scheduled_update="00:59 America/Lima",
         stores_status=stores_status_dict,
         uptime_seconds=round(uptime, 2),
+    )
+
+
+@api_v1_router.post(
+    "/cron/daily-update",
+    tags=["Cron & Sincronización"],
+    summary="Ejecuta la actualización diaria de precios e historial (00:59 AM America/Lima)",
+)
+@api_v1_router.get(
+    "/cron/daily-update",
+    tags=["Cron & Sincronización"],
+    summary="Ejecuta la actualización diaria de precios e historial (00:59 AM America/Lima)",
+)
+async def trigger_daily_cron_update(session: AsyncSession = Depends(get_db)):
+    """
+    Endpoint invocado por GitHub Actions (.github/workflows/daily_cron_0059.yml) a las 00:59 AM (UTC-5)
+    para despertar el contenedor de Render, ejecutar run_daily_price_update() y devolver cuántos
+    productos se actualizaron, cuántos bajaron de precio y cuántos días de historial tienen.
+    """
+    result = await orchestrator.run_daily_price_update(
+        session=session,
+        on_cache_invalidate=catalog_service.invalidate_cache,
+    )
+    if result.get("status") == "in_progress":
+        prods_q = await session.execute(select(ProductEntity))
+        all_prods = prods_q.scalars().all()
+        return {
+            "status": "in_progress",
+            "updated_products": len(all_prods),
+            "price_drops_count": sum(
+                1 for p in all_prods if (getattr(p, "price_drop_amount", 0.0) or 0.0) > 0 or p.best_price < p.original_price
+            ),
+            "days_tracked": max((getattr(p, "days_tracked", 1) or 1 for p in all_prods), default=1),
+        }
+    return result
+
+
+@api_v1_router.get(
+    "/notifications/price-drops",
+    response_model=List[PriceDropNotificationSchema],
+    tags=["Notificaciones"],
+    summary="Lista de productos que han bajado de precio para notificaciones de favoritos",
+)
+async def get_price_drops_notifications(
+    product_ids: Optional[str] = Query(
+        None,
+        max_length=500,
+        description="Lista opcional de product_id separados por coma (ej. favoritos del usuario)",
+    ),
+    session: AsyncSession = Depends(get_db),
+):
+    """
+    Devuelve la lista de productos que han bajado de precio respecto a su precio anterior o regular,
+    indicando product_id, product_title, old_price, new_price, drop_amount, store_name, product_url,
+    image_url y timestamp.
+    """
+    return await catalog_service.get_price_drop_notifications(
+        session=session,
+        product_ids=product_ids,
     )

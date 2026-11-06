@@ -109,16 +109,15 @@ class CanonicalMatcherNode(BaseGraphNode):
 
         unique_store_offers = list(best_by_store.values())
 
-        # 2. REGLA DE DESCARTE ESTRICTA: len(offers) >= 2 OBLIGATORIO
-        # El comparador FinPrice descarta todo producto que solo exista en 1 tienda
-        if len(unique_store_offers) < 2:
+        # 2. REGLA FINPRICE: Permitir productos desde 1 tienda en adelante (len(offers) >= 1)
+        if len(unique_store_offers) < 1:
             logger.warning(
                 f"[CANONICAL_MATCHER_DISCARD] Descartado producto '{target_title}': "
-                f"solo cuenta con {len(unique_store_offers)} tienda(s) (requerido >= 2 tiendas para comparar)."
+                f"no cuenta con ninguna tienda válida (requerido >= 1 tienda)."
             )
             state.verified_offers = []
             state.execution_trace.append(
-                f"CanonicalMatcherNode: DISCARDED '{target_title}' (stores={len(unique_store_offers)} < 2)"
+                f"CanonicalMatcherNode: DISCARDED '{target_title}' (stores=0 < 1)"
             )
             return state
 

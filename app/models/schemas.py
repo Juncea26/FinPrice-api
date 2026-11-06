@@ -29,6 +29,8 @@ class StorePriceSchema(CamelModel):
     price: float = Field(..., gt=0, description="Precio real en Soles (PEN)")
     original_price: Optional[float] = Field(default=None, description="Precio de lista real si existe")
     offer_url: str = Field(..., description="URL real verificada de la oferta")
+    product_url: Optional[str] = Field(default=None, description="Enlace directo real del producto en la tienda")
+    url: Optional[str] = Field(default=None, description="Alias directo de la URL de la oferta")
     is_best_price: bool = Field(default=False, description="True si es la oferta con menor precio actual")
 
     @field_validator("price", "original_price", mode="before")
@@ -45,11 +47,23 @@ class StorePriceSchema(CamelModel):
             raise ValueError("La URL debe iniciar con https://")
         return v
 
+    def model_post_init(self, __context: Any) -> None:
+        if not self.product_url:
+            self.product_url = self.offer_url
+        if not self.url:
+            self.url = self.offer_url
+
+    @computed_field(alias="product_url")
+    @property
+    def product_url_snake(self) -> str:
+        return self.product_url or self.offer_url
+
 
 class PricePointSchema(CamelModel):
     day_offset: int = Field(..., description="Día relativo (0 = Hoy, -1, -2...)")
-    date_label: str = Field(..., description="Etiqueta en español (ej. 'Hoy', '22 Oct')")
+    date_label: str = Field(..., description="Etiqueta en español (ej. '02 Nov', '03 Nov', '04 Nov', '05 Nov')")
     price: float = Field(..., gt=0, description="Precio real observado en Soles (PEN)")
+    recorded_date: Optional[str] = Field(default=None, description="Fecha calendario ISO (ej. '2026-11-05')")
 
     @field_validator("price", mode="before")
     @classmethod
@@ -65,6 +79,11 @@ class ProductSchema(CamelModel):
     best_price: float = Field(..., gt=0, description="Menor precio real encontrado en Soles (PEN)")
     original_price: float = Field(..., gt=0, description="Precio de lista o tachado real")
     best_store_name: str = Field(..., description="Tienda que ofrece el mejor precio actual")
+    best_store_url: str = Field(default="", description="Enlace directo a la tienda con el mejor precio")
+    product_url: str = Field(default="", description="Enlace directo de la oferta ganadora")
+    previous_best_price: Optional[float] = Field(default=None, description="Mejor precio del día anterior o previo")
+    price_drop_amount: float = Field(default=0.0, ge=0.0, description="Monto de bajada de precio en Soles")
+    days_tracked: int = Field(default=1, ge=1, description="Número real de días acumulados en price_history")
     discount_percentage: int = Field(default=0, ge=0, le=100, description="Porcentaje de descuento calculado")
     available_stores_count: int = Field(default=0, ge=0, description="Cantidad de tiendas reales donde sí existe el producto")
     image_url: str = Field(..., description="URL oficial de la imagen del producto")
@@ -82,12 +101,110 @@ class ProductSchema(CamelModel):
         default_factory=list, description="Historial de precios reales acumulado en BD"
     )
 
-    @field_validator("best_price", "original_price", "historical_min_price", mode="before")
+    @field_validator("best_price", "original_price", "historical_min_price", "previous_best_price", "price_drop_amount", mode="before")
     @classmethod
     def round_product_prices(cls, v: Optional[float]) -> Optional[float]:
         if v is not None:
             return round(float(v), 2)
         return v
+
+    def model_post_init(self, __context: Any) -> None:
+        if not self.best_store_url and self.store_prices:
+            self.best_store_url = self.store_prices[0].offer_url
+        if not self.product_url:
+            self.product_url = self.best_store_url
+
+    @computed_field(alias="best_store_url")
+    @property
+    def best_store_url_snake(self) -> str:
+        return self.best_store_url
+
+    @computed_field(alias="product_url")
+    @property
+    def product_url_snake(self) -> str:
+        return self.product_url or self.best_store_url
+
+    @computed_field(alias="previous_best_price")
+    @property
+    def previous_best_price_snake(self) -> Optional[float]:
+        return self.previous_best_price
+
+    @computed_field(alias="price_drop_amount")
+    @property
+    def price_drop_amount_snake(self) -> float:
+        return self.price_drop_amount
+
+    @computed_field(alias="best_store_name")
+    @property
+    def best_store_name_snake(self) -> str:
+        return self.best_store_name
+
+    @computed_field(alias="days_tracked")
+    @property
+    def days_tracked_snake(self) -> int:
+        return self.days_tracked
+
+    @computed_field(alias="offers")
+    @property
+    def offers_alias(self) -> List[StorePriceSchema]:
+        return self.store_prices
+
+    @computed_field(alias="price_history")
+    @property
+    def price_history_alias(self) -> List[PricePointSchema]:
+        return self.price_history_30_days
+
+
+class PriceDropNotificationSchema(CamelModel):
+    product_id: str = Field(..., description="ID del producto")
+    product_title: str = Field(..., description="Título oficial del producto")
+    old_price: float = Field(..., description="Precio anterior o de referencia")
+    new_price: float = Field(..., description="Nuevo mejor precio actual")
+    drop_amount: float = Field(..., description="Monto ahorrado por la bajada de precio")
+    store_name: str = Field(..., description="Tienda oficial donde bajó de precio")
+    product_url: str = Field(..., description="Enlace directo a la oferta en la tienda más barata")
+    image_url: str = Field(..., description="Imagen oficial del producto")
+    timestamp: str = Field(..., description="Fecha y hora de detección ISO-8601")
+
+    @computed_field(alias="product_id")
+    @property
+    def product_id_snake(self) -> str:
+        return self.product_id
+
+    @computed_field(alias="product_title")
+    @property
+    def product_title_snake(self) -> str:
+        return self.product_title
+
+    @computed_field(alias="old_price")
+    @property
+    def old_price_snake(self) -> float:
+        return self.old_price
+
+    @computed_field(alias="new_price")
+    @property
+    def new_price_snake(self) -> float:
+        return self.new_price
+
+    @computed_field(alias="drop_amount")
+    @property
+    def drop_amount_snake(self) -> float:
+        return self.drop_amount
+
+    @computed_field(alias="store_name")
+    @property
+    def store_name_snake(self) -> str:
+        return self.store_name
+
+    @computed_field(alias="product_url")
+    @property
+    def product_url_snake(self) -> str:
+        return self.product_url
+
+    @computed_field(alias="image_url")
+    @property
+    def image_url_snake(self) -> str:
+        return self.image_url
 
 
 class CommunityPhysicalOfferSchema(CamelModel):

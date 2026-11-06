@@ -72,6 +72,15 @@ async def test_products_catalog_and_search():
             assert hist_res.status_code == 200
             hist_data = hist_res.json()
             assert isinstance(hist_data, list)
+            assert len(hist_data) >= 4
+
+            drops_res = await client.get("/api/v1/notifications/price-drops")
+            assert drops_res.status_code == 200
+            drops_data = drops_res.json()
+            assert isinstance(drops_data, list)
+            assert len(drops_data) >= 1
+            assert "product_url" in drops_data[0]
+            assert drops_data[0]["product_url"].startswith("https://")
     finally:
         await engine.dispose()
 

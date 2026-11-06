@@ -44,7 +44,7 @@ AD_AND_TRACKING_PARAMS = {
 }
 
 # Parámetros legítimos de búsqueda que sí deben conservarse en URLs de buscador
-ALLOWED_SEARCH_PARAMS = {"q", "ft", "fq", "ntt", "query"}
+ALLOWED_SEARCH_PARAMS = {"q", "ft", "fq", "ntt", "query", "f.derived.variant.sellerid"}
 
 # Dominios canónicos por tienda
 CANONICAL_HOSTS: Dict[str, str] = {
@@ -58,11 +58,11 @@ CANONICAL_HOSTS: Dict[str, str] = {
     "hiraoka": "hiraoka.com.pe",
 }
 
-# Expresiones regulares de validación de ruta de ficha de producto para las 8 tiendas
+# Expresiones regulares de validación de ruta de ficha de producto para las 8 tiendas (CERO Marketplace pmp)
 STORE_PRODUCT_PATH_PATTERNS: Dict[str, re.Pattern] = {
     "falabella": re.compile(r"^/falabella-pe/product/[^/]+/[^/]+(?:/[^/]+)?/?$", re.IGNORECASE),
     "tottus": re.compile(r"^/tottus-pe/(?:articulo|product)/[^/]+/[^/]+(?:/[^/]+)?/?$", re.IGNORECASE),
-    "ripley": re.compile(r"^/[a-z0-9\-]+-(?:\d+p|pmp\d+|\d{7,15})/?$", re.IGNORECASE),
+    "ripley": re.compile(r"^/[a-z0-9\-]+-(?:\d+p|\d{7,15})/?$", re.IGNORECASE),
     "metro": re.compile(r"^/[a-z0-9\-]+/p/?$", re.IGNORECASE),
     "wong": re.compile(r"^/[a-z0-9\-]+/p/?$", re.IGNORECASE),
     "efe": re.compile(r"^/[a-z0-9\-_]+\.html$", re.IGNORECASE),
@@ -137,10 +137,24 @@ def canonicalize_store_url(url: str) -> Tuple[str, str]:
     return (store_id, canonical_url)
 
 
+def is_marketplace_url(store_id: str, url: str) -> bool:
+    """Detecta patrones de URL exclusivos de vendedores externos (Marketplace) para rechazo inmediato."""
+    u_low = (url or "").lower().strip()
+    if not u_low:
+        return False
+    if store_id == "ripley" and re.search(r"-pmp\d+", u_low):
+        return True
+    if store_id in {"efe", "curacao"} and re.search(r"-\d{8}[a-z0-9\-]*\d{14,}\.html", u_low):
+        return True
+    return False
+
+
 def is_valid_store_product_url(store_id: str, url: str) -> bool:
-    """Verifica si una URL cumple con el patrón estructural de ficha de producto de esa tienda."""
+    """Verifica si una URL cumple con el patrón estructural de ficha de producto de esa tienda (excluyendo Marketplace)."""
     detected_store, clean_u = canonicalize_store_url(url)
     if detected_store != store_id or not clean_u:
+        return False
+    if is_marketplace_url(store_id, clean_u):
         return False
     parsed = urlparse(clean_u)
     pattern = STORE_PRODUCT_PATH_PATTERNS.get(store_id)
@@ -199,6 +213,21 @@ def is_valid_product_image_url(url: Optional[str]) -> bool:
     return True
 
 
+def build_vtex_api_url_for_product(url: str) -> Optional[str]:
+    """
+    Construye el endpoint JSON de VTEX Catalog System para una ficha /p de Metro o Wong.
+    Ej: https://www.metro.pe/slug-123/p -> https://www.metro.pe/api/catalog_system/pub/products/search/slug-123/p
+    """
+    store_id, clean_u = canonicalize_store_url(url)
+    if store_id not in {"metro", "wong"} or not clean_u:
+        return None
+    parsed = urlparse(clean_u)
+    path = (parsed.path or "").strip("/")
+    if not path.endswith("/p"):
+        return None
+    return f"https://{parsed.netloc}/api/catalog_system/pub/products/search/{path}"
+
+
 def build_store_search_url(store_id: str, compact_query: str) -> Optional[str]:
     """Construye la URL de búsqueda oficial de la tienda a partir de una compact_search_query."""
     q_clean = re.sub(r"\s+", " ", (compact_query or "")).strip()
@@ -211,7 +240,7 @@ def build_store_search_url(store_id: str, compact_query: str) -> Optional[str]:
     if store_id in {"efe", "curacao", "hiraoka"}:
         return f"https://{host}/catalogsearch/result/?q={quote_plus(q_clean)}"
     if store_id == "falabella":
-        return f"https://{host}/falabella-pe/search?Ntt={quote(q_clean)}"
+        return f"https://{host}/falabella-pe/search?Ntt={quote(q_clean)}&f.derived.variant.sellerId=FALABELLA"
     if store_id == "tottus":
         return f"https://{host}/tottus-pe/buscar?Ntt={quote(q_clean)}"
     if store_id == "ripley":

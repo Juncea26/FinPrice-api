@@ -111,6 +111,28 @@ sync_engine = create_engine(SYNC_DATABASE_URL, **sync_engine_kwargs)
 SyncSessionLocal = sessionmaker(bind=sync_engine, expire_on_commit=False, autoflush=False)
 
 
+def _ensure_new_columns(sync_conn) -> None:
+    """Agrega columnas nuevas sin pérdida de datos en Neon PostgreSQL o SQLite."""
+    from sqlalchemy import inspect, text
+
+    inspector = inspect(sync_conn)
+    existing_tables = set(inspector.get_table_names())
+    if "products" in existing_tables:
+        prod_cols = {c["name"] for c in inspector.get_columns("products")}
+        if "best_store_url" not in prod_cols:
+            sync_conn.execute(text("ALTER TABLE products ADD COLUMN best_store_url VARCHAR(600) NOT NULL DEFAULT ''"))
+        if "previous_best_price" not in prod_cols:
+            sync_conn.execute(text("ALTER TABLE products ADD COLUMN previous_best_price FLOAT"))
+        if "price_drop_amount" not in prod_cols:
+            sync_conn.execute(text("ALTER TABLE products ADD COLUMN price_drop_amount FLOAT NOT NULL DEFAULT 0.0"))
+        if "days_tracked" not in prod_cols:
+            sync_conn.execute(text("ALTER TABLE products ADD COLUMN days_tracked INTEGER NOT NULL DEFAULT 1"))
+    if "price_history" in existing_tables:
+        hist_cols = {c["name"] for c in inspector.get_columns("price_history")}
+        if "recorded_date" not in hist_cols:
+            sync_conn.execute(text("ALTER TABLE price_history ADD COLUMN recorded_date VARCHAR(20)"))
+
+
 async def init_db() -> None:
     """Crea y verifica todas las tablas del sistema en la base de datos sin borrar datos existentes."""
     # Importar modelos para que estén presentes en Base.metadata
@@ -119,6 +141,7 @@ async def init_db() -> None:
     logger.info("Inicializando/verificando tablas en base de datos...")
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        await conn.run_sync(_ensure_new_columns)
     logger.info("Esquema de base de datos verificado y listo.")
 
 

@@ -1,9 +1,10 @@
 """
 Datos iniciales oficiales de productos reales en tiendas retail peruanas.
 Sincronización UPSERT instantánea en Neon PostgreSQL / SQLite de alto rendimiento (< 200 ms).
-REGLA FINPRICE: CERO PRODUCTOS DE 1 SOLA TIENDA (len(offers) >= 2 OBLIGATORIO).
+REGLA FINPRICE: SOLO PRODUCTOS VENDIDOS POR LA MISMA TIENDA OFICIAL (CERO TERCEROS / MARKETPLACE).
+PERMITIR PRODUCTOS DESDE 1 TIENDA EN ADELANTE (len(offers) >= 1 OBLIGATORIO).
 ESTRICTAMENTE 8 TIENDAS: Tiendas Efe, Falabella, Ripley, La Curacao, Hiraoka, Tottus, Metro, Wong.
-DÍA 1: Historial real de 1 punto (sin curvas simuladas hacia atrás).
+HISTORIAL REAL CRONOLÓGICO: Puntos diarios reales acumulados hasta la fecha actual de Perú (America/Lima).
 CERO DATOS FANTASMA EN COMUNIDAD: La sección de comunidad inicia 100% limpia.
 """
 from datetime import datetime, timezone
@@ -58,7 +59,7 @@ SEED_PRODUCTS: List[Dict[str, Any]] = [   {   'available_stores_count': 4,
                            'GB", "Pantalla": "6.1\\" Super Retina XDR OLED", "Procesador": "Chip A18", "Resolución": '
                            '"2556 x 1179", "Sistema Operativo": "iOS 18"}',
         'title': 'Apple iPhone 16 128GB'},
-    {   'available_stores_count': 3,
+    {   'available_stores_count': 2,
         'best_price': 3299.0,
         'best_store_name': 'La Curacao',
         'brand': 'Samsung',
@@ -100,39 +101,39 @@ SEED_PRODUCTS: List[Dict[str, Any]] = [   {   'available_stores_count': 4,
                            'GB", "Pantalla": "6.7\\" Dynamic AMOLED 2X", "Procesador": "Exynos 2400e", "Resolución": '
                            '"FHD+ (2340 x 1080)", "Sistema Operativo": "Android 14"}',
         'title': 'Samsung Galaxy S24 FE 256GB 8GB RAM'},
-    {   'available_stores_count': 2,
-        'best_price': 2949.0,
-        'best_store_name': 'Ripley',
+    {   'available_stores_count': 3,
+        'best_price': 4199.0,
+        'best_store_name': 'Falabella',
         'brand': 'Samsung',
         'category': 'Smartphones',
-        'description': 'Ficha técnica oficial de Samsung Galaxy S24 Ultra 5G 512GB 12GB RAM. Comparativa multi-tienda '
+        'description': 'Ficha técnica oficial de Samsung Galaxy S26 Ultra 5G 512GB 12GB RAM. Comparativa multi-tienda '
                        'con precios online públicos verificados en tiempo real.',
-        'discount_percentage': 30,
+        'discount_percentage': 39,
         'features_json': '["Almacenamiento: 512 GB", "Conectividad: 5G", "Marca: Samsung", "Memoria RAM: 12 GB", '
-                         '"Pantalla: 6.8\\" Dynamic AMOLED 2X", "Procesador: Snapdragon 8 Gen 3", "Resolución: QHD+ '
-                         '(3120 x 1440)", "Sistema Operativo: Android 14"]',
-        'historical_min_price': 2949.0,
+                         '"Pantalla: 6.9\\" Dynamic AMOLED 2X", "Procesador: Snapdragon 8 Elite Gen 5", "Resolución: QHD+ '
+                         '(3120 x 1440)", "Sistema Operativo: Android 16"]',
+        'historical_min_price': 4199.0,
         'id': 'prod_samsung_galaxy_s24_ultra',
-        'image_url': 'https://media.falabella.com/falabellaPE/155039507_01/w=800,h=800,fit=pad',
+        'image_url': 'https://media.falabella.com/falabellaPE/21398141_1/w=800,h=800,fit=pad',
         'is_favorite': False,
         'is_historical_min': True,
-        'original_price': 4199.0,
+        'original_price': 6899.0,
         'tech_specs_json': '{"Almacenamiento": "512 GB", "Conectividad": "5G", "Marca": "Samsung", "Memoria RAM": "12 '
-                           'GB", "Pantalla": "6.8\\" Dynamic AMOLED 2X", "Procesador": "Snapdragon 8 Gen 3", '
-                           '"Resolución": "QHD+ (3120 x 1440)", "Sistema Operativo": "Android 14"}',
-        'title': 'Samsung Galaxy S24 Ultra 5G 512GB 12GB RAM'},
+                           'GB", "Pantalla": "6.9\\" Dynamic AMOLED 2X", "Procesador": "Snapdragon 8 Elite Gen 5", '
+                           '"Resolución": "QHD+ (3120 x 1440)", "Sistema Operativo": "Android 16"}',
+        'title': 'Samsung Galaxy S26 Ultra 5G 512GB 12GB RAM'},
     {   'available_stores_count': 3,
-        'best_price': 1499.0,
+        'best_price': 1399.0,
         'best_store_name': 'La Curacao',
         'brand': 'Samsung',
         'category': 'Smartphones',
         'description': 'Ficha técnica oficial de Samsung Galaxy A57 5G 256GB 8GB RAM. Comparativa multi-tienda con '
                        'precios online públicos verificados en tiempo real.',
-        'discount_percentage': 32,
+        'discount_percentage': 36,
         'features_json': '["Almacenamiento: 256 GB", "Conectividad: 5G", "Marca: Samsung", "Memoria RAM: 8 GB", '
                          '"Pantalla: 6.7\\" Super AMOLED 120Hz", "Procesador: Exynos 1480", "Resolución: FHD+ (2340 x '
                          '1080)", "Sistema Operativo: Android 15"]',
-        'historical_min_price': 1499.0,
+        'historical_min_price': 1399.0,
         'id': 'prod_samsung_galaxy_a57',
         'image_url': 'https://hiraoka.com.pe/pub/media/catalog/product/1/3/138919_2.jpg',
         'is_favorite': False,
@@ -205,23 +206,23 @@ SEED_PRODUCTS: List[Dict[str, Any]] = [   {   'available_stores_count': 4,
                            '"14\\" OLED WUXGA", "Procesador": "Qualcomm Snapdragon X Plus", "Resolución": "1920 x '
                            '1200", "Sistema Operativo": "Windows 11 Home"}',
         'title': 'Laptop Asus Zenbook A14 14" Snapdragon X 16GB RAM 512GB SSD'},
-    {   'available_stores_count': 3,
-        'best_price': 4999.0,
-        'best_store_name': 'Falabella',
+    {   'available_stores_count': 1,
+        'best_price': 6499.0,
+        'best_store_name': 'Hiraoka',
         'brand': 'Apple',
         'category': 'Laptops',
         'description': 'Ficha técnica oficial de Apple MacBook Air 13" Chip M5 16GB RAM 512GB SSD. Comparativa '
                        'multi-tienda con precios verificados en tiempo real.',
-        'discount_percentage': 22,
+        'discount_percentage': 7,
         'features_json': '["Marca: Apple", "Procesador: Chip Apple M5 (10 núcleos)", "Memoria RAM: 16 GB", '
                          '"Almacenamiento: 512 GB SSD", "Pantalla: 13.6\\" Liquid Retina", "Resolución: 2560 x 1664", '
                          '"Sistema Operativo: macOS"]',
-        'historical_min_price': 4999.0,
+        'historical_min_price': 6499.0,
         'id': 'prod_macbook_air_m1',
         'image_url': 'https://hiraoka.com.pe/pub/media/catalog/product/m/a/macbook_air_13-in_m5_sky_blue_pdp_image_position_1__gens.jpg',
         'is_favorite': False,
         'is_historical_min': True,
-        'original_price': 6399.0,
+        'original_price': 6999.0,
         'tech_specs_json': '{"Almacenamiento": "512 GB SSD", "Marca": "Apple", "Memoria RAM": "16 GB", "Pantalla": '
                            '"13.6\\" Liquid Retina", "Procesador": "Chip Apple M5 (10 núcleos)", "Resolución": "2560 x '
                            '1664", "Sistema Operativo": "macOS"}',
@@ -269,26 +270,26 @@ SEED_PRODUCTS: List[Dict[str, Any]] = [   {   'available_stores_count': 4,
                            '"Sistema Operativo": "Windows 11 Home"}',
         'title': 'Laptop Gamer HP Victus 15.6" AMD Ryzen 7 8GB 512GB SSD RTX 4050'},
     {   'available_stores_count': 2,
-        'best_price': 2999.0,
+        'best_price': 3299.0,
         'best_store_name': 'La Curacao',
         'brand': 'Asus',
         'category': 'Laptops',
-        'description': 'Ficha técnica oficial de Laptop Asus TUF Gaming F16 16" Intel Core 5 205H 8GB 512GB SSD. '
+        'description': 'Ficha técnica oficial de Laptop Asus TUF Gaming F16 16" Intel Core 5 210H 8GB 512GB SSD. '
                        'Comparativa multi-tienda con precios online públicos verificados en tiempo real.',
-        'discount_percentage': 41,
+        'discount_percentage': 15,
         'features_json': '["Almacenamiento: 512 GB SSD", "Marca: Asus", "Memoria RAM: 8 GB", "Pantalla: 16\\" FHD+ '
-                         '144Hz", "Procesador: Intel Core 5 205H", "Resolución: 1920 x 1200", "Sistema Operativo: '
+                         '144Hz", "Procesador: Intel Core 5 210H", "Resolución: 1920 x 1200", "Sistema Operativo: '
                          'Windows 11 Home"]',
-        'historical_min_price': 2999.0,
+        'historical_min_price': 3299.0,
         'id': 'prod_asus_tuf_gaming_f16',
-        'image_url': 'https://www.efe.com.pe/media/catalog/product/f/x/fx607vjr-tu302w_1.jpg',
+        'image_url': 'https://www.efe.com.pe/media/catalog/product/l/a/laptop-asus-tuf_1_.jpg',
         'is_favorite': False,
         'is_historical_min': True,
-        'original_price': 5099.0,
+        'original_price': 3899.0,
         'tech_specs_json': '{"Almacenamiento": "512 GB SSD", "Marca": "Asus", "Memoria RAM": "8 GB", "Pantalla": '
-                           '"16\\" FHD+ 144Hz", "Procesador": "Intel Core 5 205H", "Resolución": "1920 x 1200", '
+                           '"16\\" FHD+ 144Hz", "Procesador": "Intel Core 5 210H", "Resolución": "1920 x 1200", '
                            '"Sistema Operativo": "Windows 11 Home"}',
-        'title': 'Laptop Asus TUF Gaming F16 16" Intel Core 5 205H 8GB 512GB SSD'},
+        'title': 'Laptop Asus TUF Gaming F16 16" Intel Core 5 210H 8GB 512GB SSD'},
     {   'available_stores_count': 2,
         'best_price': 5699.0,
         'best_store_name': 'La Curacao',
@@ -332,14 +333,14 @@ SEED_PRODUCTS: List[Dict[str, Any]] = [   {   'available_stores_count': 4,
                            '"Procesador α9 AI 4K Gen9", "Resolución": "3840 x 2160 (4K UHD)", "Sistema Operativo": '
                            '"webOS 26"}',
         'title': 'Televisor LG 55" OLED evo AI C6 4K Smart TV 2026'},
-    {   'available_stores_count': 2,
+    {   'available_stores_count': 1,
         'best_price': 2799.0,
-        'best_store_name': 'Metro',
+        'best_store_name': 'Wong',
         'brand': 'LG',
         'category': 'TVs',
         'description': 'Ficha técnica oficial de Televisor LG 55" OLED Smart TV OLED55B6PSA. Comparativa multi-tienda '
                        'con precios online públicos verificados en tiempo real.',
-        'discount_percentage': 20,
+        'discount_percentage': 28,
         'features_json': '["Conectividad: Wi-Fi, Bluetooth, 4 x HDMI", "Marca: LG", "Pantalla: 55\\" OLED 120Hz", '
                          '"Resolución: 3840 x 2160 (4K UHD)", "Sistema Operativo: webOS", "Procesador: Procesador α8 '
                          'AI 4K", "Memoria RAM: 2.5 GB", "Almacenamiento: 8 GB"]',
@@ -348,7 +349,7 @@ SEED_PRODUCTS: List[Dict[str, Any]] = [   {   'available_stores_count': 4,
         'image_url': 'https://metroio.vtexassets.com/arquivos/ids/669104/Televisor-LG-OLED-55-OLED55B6PSA-1-367071.jpg?v=639275962615500000',
         'is_favorite': False,
         'is_historical_min': True,
-        'original_price': 3499.0,
+        'original_price': 3899.0,
         'tech_specs_json': '{"Almacenamiento": "8 GB", "Conectividad": "Wi-Fi, Bluetooth, 4 x HDMI", "Marca": "LG", '
                            '"Memoria RAM": "2.5 GB", "Pantalla": "55\\" OLED 120Hz", "Procesador": "Procesador α8 AI '
                            '4K", "Resolución": "3840 x 2160 (4K UHD)", "Sistema Operativo": "webOS"}',
@@ -375,9 +376,9 @@ SEED_PRODUCTS: List[Dict[str, Any]] = [   {   'available_stores_count': 4,
                            '"Procesador NQ4 AI Gen2", "Resolución": "3840 x 2160 (4K UHD)", "Sistema Operativo": '
                            '"Tizen OS"}',
         'title': 'Televisor Samsung 65" Neo QLED 4K UHD Tizen QN85D'},
-    {   'available_stores_count': 2,
+    {   'available_stores_count': 1,
         'best_price': 1099.0,
-        'best_store_name': 'Metro',
+        'best_store_name': 'Wong',
         'brand': 'Samsung',
         'category': 'TVs',
         'description': 'Ficha técnica oficial de Televisor Samsung 55" UHD U8000H Vision AI Smart TV 2026. Comparativa '
@@ -397,18 +398,18 @@ SEED_PRODUCTS: List[Dict[str, Any]] = [   {   'available_stores_count': 4,
                            '"Procesador Crystal 4K Vision AI", "Resolución": "3840 x 2160 (4K UHD)", "Sistema '
                            'Operativo": "Tizen OS"}',
         'title': 'Televisor Samsung 55" UHD U8000H Vision AI Smart TV 2026'},
-    {   'available_stores_count': 4,
-        'best_price': 1479.0,
-        'best_store_name': 'Falabella',
+    {   'available_stores_count': 2,
+        'best_price': 1599.0,
+        'best_store_name': 'Tottus',
         'brand': 'Apple',
         'category': 'Tablets',
         'description': 'Ficha técnica oficial de Apple iPad 11" Chip A16 Wi-Fi 128GB. Comparativa multi-tienda con '
                        'precios online públicos verificados en tiempo real.',
-        'discount_percentage': 43,
+        'discount_percentage': 38,
         'features_json': '["Almacenamiento: 128 GB", "Marca: Apple", "Memoria RAM: 6 GB", "Pantalla: 11\\" Liquid '
                          'Retina", "Procesador: Chip A16 Bionic", "Resolución: 2360 x 1640", "Sistema Operativo: '
                          'iPadOS 18"]',
-        'historical_min_price': 1479.0,
+        'historical_min_price': 1599.0,
         'id': 'prod_ipad_11',
         'image_url': 'https://hiraoka.com.pe/pub/media/catalog/product/i/p/ipad_a16_wifi_silver_pdp_image_position_1__laes_1.jpg',
         'is_favorite': False,
@@ -480,21 +481,21 @@ SEED_PRODUCTS: List[Dict[str, Any]] = [   {   'available_stores_count': 4,
                            '2.5K 90Hz", "Procesador": "MediaTek Dimensity 6300", "Resolución": "2560 x 1600", "Sistema '
                            'Operativo": "Android 15"}',
         'title': 'Tablet Lenovo Idea Tab 11" 4GB RAM 128GB'},
-    {   'available_stores_count': 3,
-        'best_price': 645.0,
-        'best_store_name': 'Falabella',
+    {   'available_stores_count': 2,
+        'best_price': 769.0,
+        'best_store_name': 'Metro',
         'brand': 'Canon',
         'category': 'Impresoras',
         'description': 'Ficha técnica oficial de Impresora Multifuncional Canon Pixma G3170 Wi-Fi. Comparativa '
                        'multi-tienda con precios online públicos verificados en tiempo real.',
-        'discount_percentage': 24,
+        'discount_percentage': 10,
         'features_json': '["Conectividad: Wi-Fi, USB", "Funciones: Impresión, Copia, Escaneo", "Marca: Canon", '
                          '"Resolución: 4800 x 1200 dpi", "Tipo: Multifuncional Tinta Continua", "Procesador: ARM '
                          'Cortex Integrado de Impresión", "Memoria RAM: 128 MB", "Almacenamiento: Memoria Flash '
                          'Integrada", "Pantalla: Panel LCD / LED de Control"]',
-        'historical_min_price': 645.0,
+        'historical_min_price': 769.0,
         'id': 'prod_canon_pixma_g3170',
-        'image_url': 'https://media.falabella.com/falabellaPE/129745573_01/w=800,h=800,fit=pad',
+        'image_url': 'https://wongfood.vteximg.com.br/arquivos/ids/695467/Impresora-Multifuncional-Canon-4-colores-CMYBK-1-351672146.jpg?v=638466506587770000',
         'is_favorite': False,
         'is_historical_min': True,
         'original_price': 850.0,
@@ -617,13 +618,6 @@ SEED_STORE_OFFERS: List[Dict[str, Any]] = [   {   'is_best_price': True,
         'store_id': 'efe',
         'store_name': 'Tiendas Efe'},
     {   'is_best_price': True,
-        'offer_url': 'https://www.falabella.com.pe/falabella-pe/product/143491916/SAMSUNG-GALAXY-S25-ULTRA-512GB-GREY-TITANIUM',
-        'original_price': 7000.0,
-        'price': 3299.0,
-        'product_id': 'prod_samsung_s25_ultra',
-        'store_id': 'falabella',
-        'store_name': 'Falabella'},
-    {   'is_best_price': True,
         'offer_url': 'https://www.lacuracao.pe/galaxy-s24-fe-black-256gb-ee-sm-s721bzkmlep.html',
         'original_price': 2699.0,
         'price': 2699.0,
@@ -638,34 +632,41 @@ SEED_STORE_OFFERS: List[Dict[str, Any]] = [   {   'is_best_price': True,
         'store_id': 'efe',
         'store_name': 'Tiendas Efe'},
     {   'is_best_price': True,
-        'offer_url': 'https://simple.ripley.com.pe/samsung-galaxy-s24-ultra-5g-512gb-negro-pmp20001526360',
-        'original_price': 4199.0,
-        'price': 2949.0,
-        'product_id': 'prod_samsung_galaxy_s24_ultra',
-        'store_id': 'ripley',
-        'store_name': 'Ripley'},
-    {   'is_best_price': False,
-        'offer_url': 'https://www.falabella.com.pe/falabella-pe/product/155039506/samsung-galaxy-s24-ultra-5g-512gb-12gb-ram',
-        'original_price': 3899.0,
-        'price': 3038.9,
+        'offer_url': 'https://www.falabella.com.pe/falabella-pe/product/21398141/celular-samsung-galaxy-s26-ultra-512gb-black/21398141',
+        'original_price': 6899.0,
+        'price': 4199.0,
         'product_id': 'prod_samsung_galaxy_s24_ultra',
         'store_id': 'falabella',
         'store_name': 'Falabella'},
+    {   'is_best_price': False,
+        'offer_url': 'https://hiraoka.com.pe/celular-samsung-galaxy-s26-ultra-6-9-512gb-12gb-ram-black',
+        'original_price': 6899.0,
+        'price': 4599.0,
+        'product_id': 'prod_samsung_galaxy_s24_ultra',
+        'store_id': 'hiraoka',
+        'store_name': 'Hiraoka'},
+    {   'is_best_price': False,
+        'offer_url': 'https://www.tottus.com.pe/tottus-pe/articulo/151775311/celular-galaxy-s26-ultra-12gb-512gb-negro',
+        'original_price': 6899.0,
+        'price': 4899.0,
+        'product_id': 'prod_samsung_galaxy_s24_ultra',
+        'store_id': 'tottus',
+        'store_name': 'Tottus'},
     {   'is_best_price': True,
-        'offer_url': 'https://www.lacuracao.pe/a57-6-7-8gb-256gb-violet-sm-a576bzvnltp.html',
+        'offer_url': 'https://www.lacuracao.pe/a57-6-7-8gb-256gb-dark-blue-sm-a576bdbnltp.html',
         'original_price': 2199.0,
-        'price': 1499.0,
+        'price': 1399.0,
         'product_id': 'prod_samsung_galaxy_a57',
         'store_id': 'curacao',
         'store_name': 'La Curacao'},
     {   'is_best_price': True,
-        'offer_url': 'https://www.efe.com.pe/a57-6-7-8gb-256gb-violet-sm-a576bzvnltp.html',
+        'offer_url': 'https://www.efe.com.pe/a57-6-7-8gb-256gb-dark-blue-sm-a576bdbnltp.html',
         'original_price': 2199.0,
-        'price': 1499.0,
+        'price': 1399.0,
         'product_id': 'prod_samsung_galaxy_a57',
         'store_id': 'efe',
         'store_name': 'Tiendas Efe'},
-    {   'is_best_price': True,
+    {   'is_best_price': False,
         'offer_url': 'https://hiraoka.com.pe/celular-libre-samsung-galaxy-a57-6-7-5g-256gb-8gb-sm-a576bzvnltp-violet',
         'original_price': 2399.0,
         'price': 1499.0,
@@ -729,22 +730,8 @@ SEED_STORE_OFFERS: List[Dict[str, Any]] = [   {   'is_best_price': True,
         'store_id': 'ripley',
         'store_name': 'Ripley'},
     {   'is_best_price': True,
-        'offer_url': 'https://www.falabella.com.pe/falabella-pe/product/159007212/macbook-air-13-6-chip-m5-10n-cpu-8n-gpu-16gb-ram-512gb-ssd-midnight',
-        'original_price': 6399.0,
-        'price': 4999.0,
-        'product_id': 'prod_macbook_air_m1',
-        'store_id': 'falabella',
-        'store_name': 'Falabella'},
-    {   'is_best_price': False,
-        'offer_url': 'https://www.efe.com.pe/apple-macbook-air-13-m5-16gb-ram-512gb-ssd-midnight-teclado-en-ingles-14803186apple599669461604202611351466791.html',
-        'original_price': 7599.0,
-        'price': 5549.0,
-        'product_id': 'prod_macbook_air_m1',
-        'store_id': 'efe',
-        'store_name': 'Tiendas Efe'},
-    {   'is_best_price': False,
         'offer_url': 'https://hiraoka.com.pe/macbook-air-de-13-chip-m5-16gb-ram-disco-solido-de-512gb-azul-cielo',
-        'original_price': 6499.0,
+        'original_price': 6999.0,
         'price': 6499.0,
         'product_id': 'prod_macbook_air_m1',
         'store_id': 'hiraoka',
@@ -778,16 +765,16 @@ SEED_STORE_OFFERS: List[Dict[str, Any]] = [   {   'is_best_price': True,
         'store_id': 'efe',
         'store_name': 'Tiendas Efe'},
     {   'is_best_price': True,
-        'offer_url': 'https://www.lacuracao.pe/c5-205h-512-8g-rtx3050-backpack-fx607vjr-tu302w.html',
-        'original_price': 5099.0,
-        'price': 2999.0,
+        'offer_url': 'https://www.lacuracao.pe/lapg-16-c5-210h-8gb-512ssd-rtx3050-fx607vj-rl011w.html',
+        'original_price': 3899.0,
+        'price': 3299.0,
         'product_id': 'prod_asus_tuf_gaming_f16',
         'store_id': 'curacao',
         'store_name': 'La Curacao'},
     {   'is_best_price': True,
-        'offer_url': 'https://www.efe.com.pe/c5-205h-512-8g-rtx3050-backpack-fx607vjr-tu302w.html',
-        'original_price': 5099.0,
-        'price': 2999.0,
+        'offer_url': 'https://www.efe.com.pe/lapg-16-c5-210h-8gb-512ssd-rtx3050-fx607vj-rl011w.html',
+        'original_price': 3899.0,
+        'price': 3299.0,
         'product_id': 'prod_asus_tuf_gaming_f16',
         'store_id': 'efe',
         'store_name': 'Tiendas Efe'},
@@ -827,13 +814,6 @@ SEED_STORE_OFFERS: List[Dict[str, Any]] = [   {   'is_best_price': True,
         'store_id': 'hiraoka',
         'store_name': 'Hiraoka'},
     {   'is_best_price': True,
-        'offer_url': 'https://www.metro.pe/televisor-lg-oled-55-oled55b6psa-1067136/p',
-        'original_price': 3499.0,
-        'price': 2799.0,
-        'product_id': 'prod_lg_oled_55_b6',
-        'store_id': 'metro',
-        'store_name': 'Metro'},
-    {   'is_best_price': True,
         'offer_url': 'https://www.wong.pe/televisor-lg-oled-55-oled55b6psa-1067136/p',
         'original_price': 3899.0,
         'price': 2799.0,
@@ -855,13 +835,6 @@ SEED_STORE_OFFERS: List[Dict[str, Any]] = [   {   'is_best_price': True,
         'store_id': 'efe',
         'store_name': 'Tiendas Efe'},
     {   'is_best_price': True,
-        'offer_url': 'https://www.metro.pe/televisor-samsung-55-uhd-u8000h-vision-ai-smart-tv-2026-1067747/p',
-        'original_price': 1399.0,
-        'price': 1099.0,
-        'product_id': 'prod_samsung_uhd_55_u8000',
-        'store_id': 'metro',
-        'store_name': 'Metro'},
-    {   'is_best_price': True,
         'offer_url': 'https://www.wong.pe/televisor-samsung-55-uhd-u8000h-vision-ai-smart-tv-2026-1067747/p',
         'original_price': 1399.0,
         'price': 1099.0,
@@ -869,13 +842,6 @@ SEED_STORE_OFFERS: List[Dict[str, Any]] = [   {   'is_best_price': True,
         'store_id': 'wong',
         'store_name': 'Wong'},
     {   'is_best_price': True,
-        'offer_url': 'https://www.falabella.com.pe/falabella-pe/product/prod18440041/iPad-Apple-11-Chip-A16-Wi-Fi/21014911',
-        'original_price': 2599.0,
-        'price': 1479.0,
-        'product_id': 'prod_ipad_11',
-        'store_id': 'falabella',
-        'store_name': 'Falabella'},
-    {   'is_best_price': False,
         'offer_url': 'https://www.tottus.com.pe/tottus-pe/articulo/150930380/ipad-a16-wifi-128gb-azul/150930381',
         'original_price': 2599.0,
         'price': 1599.0,
@@ -889,13 +855,6 @@ SEED_STORE_OFFERS: List[Dict[str, Any]] = [   {   'is_best_price': True,
         'product_id': 'prod_ipad_11',
         'store_id': 'hiraoka',
         'store_name': 'Hiraoka'},
-    {   'is_best_price': False,
-        'offer_url': 'https://www.efe.com.pe/ipad-a16-wi-fi-md4e4ll-a-11-128gb-6gb-p26513743.html',
-        'original_price': 2989.0,
-        'price': 2989.0,
-        'product_id': 'prod_ipad_11',
-        'store_id': 'efe',
-        'store_name': 'Tiendas Efe'},
     {   'is_best_price': True,
         'offer_url': 'https://hiraoka.com.pe/tablet-samsung-galaxy-tab-a11-8-7-64gb-4gb-ram-gray',
         'original_price': 649.0,
@@ -946,26 +905,19 @@ SEED_STORE_OFFERS: List[Dict[str, Any]] = [   {   'is_best_price': True,
         'store_id': 'efe',
         'store_name': 'Tiendas Efe'},
     {   'is_best_price': True,
-        'offer_url': 'https://www.falabella.com.pe/falabella-pe/product/129745572/impresora-multifuncional-canon-g3170',
+        'offer_url': 'https://www.metro.pe/impresora-multifuncional-canon-inalambrica-g3170-1009696/p',
         'original_price': 850.0,
-        'price': 645.0,
+        'price': 769.0,
         'product_id': 'prod_canon_pixma_g3170',
-        'store_id': 'falabella',
-        'store_name': 'Falabella'},
-    {   'is_best_price': False,
-        'offer_url': 'https://www.lacuracao.pe/impresora-g3170-multifuncional-canon-pixma-wi-fi-34715819g31702712202502230487164.html',
-        'original_price': 800.0,
-        'price': 720.0,
+        'store_id': 'metro',
+        'store_name': 'Metro'},
+    {   'is_best_price': True,
+        'offer_url': 'https://www.wong.pe/impresora-multifuncional-canon-inalambrica-g3170-1009696/p',
+        'original_price': 850.0,
+        'price': 769.0,
         'product_id': 'prod_canon_pixma_g3170',
-        'store_id': 'curacao',
-        'store_name': 'La Curacao'},
-    {   'is_best_price': False,
-        'offer_url': 'https://www.efe.com.pe/impresora-g3170-multifuncional-canon-pixma-wi-fi-34715819g31702712202502230487164.html',
-        'original_price': 800.0,
-        'price': 720.0,
-        'product_id': 'prod_canon_pixma_g3170',
-        'store_id': 'efe',
-        'store_name': 'Tiendas Efe'},
+        'store_id': 'wong',
+        'store_name': 'Wong'},
     {   'is_best_price': True,
         'offer_url': 'https://hiraoka.com.pe/impresora-todo-en-uno-hp-smart-tank-580',
         'original_price': 799.0,
@@ -1021,14 +973,23 @@ SEED_PRICE_HISTORY: List[Dict[str, Any]] = []
 async def sync_and_upsert_catalog(session: AsyncSession) -> int:
     """
     Sincronización UPSERT en Neon PostgreSQL / SQLite de alto rendimiento (< 200 ms):
-    - REGLA ESTRICTA FINPRICE: len(offers) >= 2 OBLIGATORIO. Cualquier producto con < 2 ofertas se descarta.
+    - REGLA ESTRICTA FINPRICE: SOLO VENDEDORES OFICIALES DE LAS 8 TIENDAS (CERO TERCEROS / MARKETPLACE).
+    - PERMITE PRODUCTOS DESDE 1 TIENDA EN ADELANTE (len(offers) >= 1).
     - Precarga existentes en memoria para evitar cientos de viajes de red WAN (Round Trips).
     - Actualiza si ya existe por ID o inserta si no existe.
-    - Sincroniza ofertas por tienda (store_offers) e historial de precios (price_history).
+    - Sincroniza ofertas por tienda (store_offers) e historial real de precios por día (price_history)
+      hasta la fecha actual de Perú (America/Lima), calculando mínimo histórico y bajadas de precio.
     - Elimina cualquier registro obsoleto previo y limpia comunidad/ofertas fantasma.
     """
+    from app.collectors.orchestrator import (
+        build_daily_history_points_for_product,
+        get_today_peru,
+        orchestrator,
+    )
+
     logger.info("Ejecutando sync_and_upsert_catalog de alto rendimiento...")
     now_dt = utc_now_naive()
+    today_peru = get_today_peru()
 
     # Precarga en bloque
     prods_res = await session.execute(select(ProductEntity))
@@ -1038,27 +999,55 @@ async def sync_and_upsert_catalog(session: AsyncSession) -> int:
     existing_offers = {(o.product_id, o.store_id): o for o in offers_res.scalars().all()}
 
     hist_res = await session.execute(select(PriceHistoryEntity))
-    existing_hist = {(h.product_id, h.day_offset): h for h in hist_res.scalars().all()}
+    existing_hist_entities = hist_res.scalars().all()
+    existing_hist = {(h.product_id, h.day_offset): h for h in existing_hist_entities}
 
-    # Contar ofertas válidas por producto para garantizar len(offers) >= 2
+    existing_hist_by_prod: Dict[str, Dict[str, float]] = {}
+    for h in existing_hist_entities:
+        m = existing_hist_by_prod.setdefault(h.product_id, {})
+        if getattr(h, "recorded_date", None):
+            m[h.recorded_date] = float(h.price)
+        if h.date_label:
+            m[h.date_label] = float(h.price)
+
+    # Contar ofertas válidas por producto permitiendo desde 1 tienda en adelante (len(offers) >= 1)
     offers_by_prod: Dict[str, List[Dict[str, Any]]] = {}
     for o in SEED_STORE_OFFERS:
         offers_by_prod.setdefault(o["product_id"], []).append(o)
 
-    # Filtrar productos que cumplan estrictamente len(offers) >= 2
+    # Filtrar productos que cumplan len(offers) >= 1
     valid_products_to_seed = []
     for p in SEED_PRODUCTS:
         prod_offers = offers_by_prod.get(p["id"], [])
-        if len(prod_offers) < 2:
+        if len(prod_offers) < 1:
             logger.warning(
                 f"[SEED_DISCARD] Descartando producto {p['id']} de semilla: "
-                f"solo tiene {len(prod_offers)} oferta(s) (requerido >= 2)."
+                f"no tiene ofertas válidas (requerido >= 1)."
             )
             continue
         p["available_stores_count"] = len(prod_offers)
         valid_products_to_seed.append(p)
 
     valid_prod_ids = {p["id"] for p in valid_products_to_seed}
+
+    # Construir puntos diarios reales de historial hasta today_peru por producto
+    computed_hist_by_prod: Dict[str, List[Dict[str, Any]]] = {}
+    valid_hist_keys = set()
+    for p in valid_products_to_seed:
+        pid = p["id"]
+        prod_offers = sorted(offers_by_prod.get(pid, []), key=lambda x: float(x["price"]))
+        best_off = prod_offers[0]
+        best_p = float(best_off["price"])
+        orig_p = float(p.get("original_price") or best_p)
+        pts = build_daily_history_points_for_product(
+            best_price=best_p,
+            original_price=orig_p,
+            today_peru=today_peru,
+            existing_by_date=existing_hist_by_prod.get(pid, {}),
+        )
+        computed_hist_by_prod[pid] = pts
+        for pt in pts:
+            valid_hist_keys.add((pid, pt["day_offset"]))
 
     # 0. Limpieza de productos obsoletos o fuera de catálogo
     for pid, ent in list(existing_prods.items()):
@@ -1070,39 +1059,62 @@ async def sync_and_upsert_catalog(session: AsyncSession) -> int:
         if (pid, sid) not in valid_offer_keys:
             await session.delete(off)
 
-    valid_hist_keys = {(h["product_id"], h["day_offset"]) for h in SEED_PRICE_HISTORY if h["product_id"] in valid_prod_ids}
     for (pid, day), hist in list(existing_hist.items()):
         if (pid, day) not in valid_hist_keys:
             await session.delete(hist)
 
-    # 1. Upsert Productos Válidos (len(offers) >= 2)
+    # 1. Upsert Productos Válidos (len(offers) >= 1)
     for p in valid_products_to_seed:
-        existing = existing_prods.get(p["id"])
+        pid = p["id"]
+        prod_offers = sorted(offers_by_prod.get(pid, []), key=lambda x: float(x["price"]))
+        best_off = prod_offers[0]
+        best_p = float(best_off["price"])
+        best_store_url = best_off["offer_url"]
+        best_store_name = best_off["store_name"]
+        orig_p = float(p.get("original_price") or best_p)
+
+        pts = computed_hist_by_prod.get(pid, [])
+        all_hist_prices = [float(pt["price"]) for pt in pts] + [best_p]
+        hist_min_p = round(min(all_hist_prices), 2)
+        is_hist_min = bool(best_p <= hist_min_p)
+        prev_best_p = round(float(pts[-2]["price"]), 2) if len(pts) >= 2 else round(orig_p, 2)
+        drop_amt = round(max(0.0, prev_best_p - best_p), 2)
+        days_tracked = max(1, len(pts))
+
+        existing = existing_prods.get(pid)
         if existing:
             existing.title = p["title"]
             existing.category = p["category"]
             existing.brand = p["brand"]
-            existing.best_price = p["best_price"]
-            existing.original_price = p["original_price"]
-            existing.best_store_name = p["best_store_name"]
+            existing.best_price = best_p
+            existing.original_price = orig_p
+            existing.best_store_name = best_store_name
+            existing.best_store_url = best_store_url
+            existing.previous_best_price = prev_best_p
+            existing.price_drop_amount = drop_amt
+            existing.days_tracked = days_tracked
             existing.discount_percentage = p["discount_percentage"]
             existing.available_stores_count = p["available_stores_count"]
             existing.image_url = p["image_url"]
             existing.description = p["description"]
             existing.features_json = p["features_json"]
             existing.tech_specs_json = p["tech_specs_json"]
-            existing.historical_min_price = p.get("historical_min_price", p["best_price"])
-            existing.is_historical_min = bool(p.get("is_historical_min", False))
+            existing.historical_min_price = hist_min_p
+            existing.is_historical_min = is_hist_min
             existing.updated_at = now_dt
         else:
             new_prod = ProductEntity(
-                id=p["id"],
+                id=pid,
                 title=p["title"],
                 category=p["category"],
                 brand=p["brand"],
-                best_price=p["best_price"],
-                original_price=p["original_price"],
-                best_store_name=p["best_store_name"],
+                best_price=best_p,
+                original_price=orig_p,
+                best_store_name=best_store_name,
+                best_store_url=best_store_url,
+                previous_best_price=prev_best_p,
+                price_drop_amount=drop_amt,
+                days_tracked=days_tracked,
                 discount_percentage=p["discount_percentage"],
                 available_stores_count=p["available_stores_count"],
                 image_url=p["image_url"],
@@ -1110,8 +1122,8 @@ async def sync_and_upsert_catalog(session: AsyncSession) -> int:
                 features_json=p["features_json"],
                 tech_specs_json=p["tech_specs_json"],
                 is_favorite=bool(p.get("is_favorite", False)),
-                historical_min_price=p.get("historical_min_price", p["best_price"]),
-                is_historical_min=bool(p.get("is_historical_min", False)),
+                historical_min_price=hist_min_p,
+                is_historical_min=is_hist_min,
                 created_at=_parse_dt(p.get("created_at")),
                 updated_at=now_dt,
             )
@@ -1142,24 +1154,26 @@ async def sync_and_upsert_catalog(session: AsyncSession) -> int:
             )
             session.add(new_off)
 
-    # 3. Upsert Historial de Precios (Día 1)
-    for h in SEED_PRICE_HISTORY:
-        if h["product_id"] not in valid_prod_ids:
-            continue
-        existing_h = existing_hist.get((h["product_id"], h["day_offset"]))
-        if existing_h:
-            existing_h.price = h["price"]
-            existing_h.date_label = h["date_label"]
-            existing_h.recorded_at = now_dt
-        else:
-            new_h = PriceHistoryEntity(
-                product_id=h["product_id"],
-                day_offset=h["day_offset"],
-                date_label=h["date_label"],
-                price=h["price"],
-                recorded_at=_parse_dt(h.get("recorded_at")),
-            )
-            session.add(new_h)
+    # 3. Upsert Historial de Precios Real por Día hasta today_peru
+    for pid, pts in computed_hist_by_prod.items():
+        for pt in pts:
+            key = (pid, pt["day_offset"])
+            existing_h = existing_hist.get(key)
+            if existing_h:
+                existing_h.price = pt["price"]
+                existing_h.date_label = pt["date_label"]
+                existing_h.recorded_date = pt["recorded_date"]
+                existing_h.recorded_at = now_dt
+            else:
+                new_h = PriceHistoryEntity(
+                    product_id=pid,
+                    day_offset=pt["day_offset"],
+                    date_label=pt["date_label"],
+                    recorded_date=pt["recorded_date"],
+                    price=pt["price"],
+                    recorded_at=now_dt,
+                )
+                session.add(new_h)
 
     # 4. Limpieza estricta de cualquier dato fantasma en comunidad
     await session.execute(
@@ -1171,7 +1185,12 @@ async def sync_and_upsert_catalog(session: AsyncSession) -> int:
     )
 
     await session.commit()
-    logger.info(f"sync_and_upsert_catalog completado con éxito: {len(valid_products_to_seed)} productos sincronizados.")
+    orchestrator.last_sync_date = today_peru
+    orchestrator.last_sync_timestamp = now_dt.isoformat() + "Z"
+    logger.info(
+        f"sync_and_upsert_catalog completado con éxito: {len(valid_products_to_seed)} productos sincronizados "
+        f"(fecha Perú: {today_peru.isoformat()})."
+    )
     return len(valid_products_to_seed)
 
 

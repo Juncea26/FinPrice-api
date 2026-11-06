@@ -42,6 +42,10 @@ class ProductEntity(Base):
     best_price = Column(Float, nullable=False, default=0.0)
     original_price = Column(Float, nullable=False, default=0.0)
     best_store_name = Column(String(100), nullable=False, default="En verificación")
+    best_store_url = Column(String(600), nullable=False, default="")
+    previous_best_price = Column(Float, nullable=True)
+    price_drop_amount = Column(Float, nullable=False, default=0.0)
+    days_tracked = Column(Integer, nullable=False, default=1)
     discount_percentage = Column(Integer, nullable=False, default=0)
     available_stores_count = Column(Integer, nullable=False, default=0)
     image_url = Column(String(500), nullable=False, default="")
@@ -115,7 +119,8 @@ class PriceHistoryEntity(Base):
         String(80), ForeignKey("products.id", ondelete="CASCADE"), nullable=False, index=True
     )
     day_offset = Column(Integer, nullable=False)  # 0 = Hoy, -1, -2...
-    date_label = Column(String(50), nullable=False)  # "Hoy", "22 Oct"
+    date_label = Column(String(50), nullable=False)  # "02 Nov", "03 Nov", etc.
+    recorded_date = Column(String(20), nullable=True, index=True)  # "2026-11-05"
     price = Column(Float, nullable=False)
     recorded_at = Column(DateTime, default=utc_now_naive)
 

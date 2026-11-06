@@ -56,15 +56,15 @@ class StrictValidatorNode(BaseGraphNode):
         # 2. Filtro Anti-Outliers de Precios Inter-Tiendas
         clean_offers = validate_cross_store_prices(valid_offers)
 
-        # 3. REGLA INNEGOCIABLE: len(clean_offers) >= 2
-        if len(clean_offers) < 2:
+        # 3. REGLA FINPRICE: Permitir productos desde 1 tienda en adelante (len(clean_offers) >= 1)
+        if len(clean_offers) < 1:
             logger.warning(
                 f"[STRICT_VALIDATOR_DISCARD] Descartado producto '{target.title}': "
-                f"después de validación estricta solo quedan {len(clean_offers)} ofertas válidas (< 2)."
+                f"después de validación estricta quedan 0 ofertas válidas (< 1)."
             )
             state.verified_offers = []
             state.execution_trace.append(
-                f"StrictValidatorNode: DISCARDED '{target.title}' (valid_stores={len(clean_offers)} < 2)"
+                f"StrictValidatorNode: DISCARDED '{target.title}' (valid_stores=0 < 1)"
             )
             return state
 

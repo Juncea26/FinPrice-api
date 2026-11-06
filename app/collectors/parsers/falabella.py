@@ -11,7 +11,7 @@ from bs4 import BeautifulSoup
 from app.core.logging import get_logger
 from app.collectors.spec_extractor import extract_product_specs
 from app.collectors.url_utils import canonicalize_store_url, is_valid_product_image_url
-from app.collectors.validators import validate_product_identity
+from app.collectors.validators import is_official_store_seller, validate_product_identity
 
 logger = get_logger("parsers.falabella")
 
@@ -107,8 +107,12 @@ def parse_falabella(
     if any(phrase in vis_html for phrase in FORBIDDEN_ERROR_PHRASES_FALABELLA):
         return None
 
-    _, clean_offer_url = canonicalize_store_url(offer_url)
+    detected_store, clean_offer_url = canonicalize_store_url(offer_url)
     offer_url = clean_offer_url or offer_url
+    eff_store = "tottus" if detected_store == "tottus" else "falabella"
+
+    if not is_official_store_seller(eff_store, html, offer_url):
+        return None
 
     soup = BeautifulSoup(html, "lxml")
     h1_el = soup.select_one("h1.jsx-product-name, .product-name h1, h1")
@@ -130,10 +134,13 @@ def parse_falabella(
                 for item in search_results:
                     if not isinstance(item, dict):
                         continue
+                    item_seller = str(item.get("sellerName") or item.get("sellerId") or "").strip().lower()
+                    if item_seller and eff_store not in item_seller:
+                        continue
                     item_title = str(item.get("displayName") or item.get("name") or "").strip()
                     item_url = str(item.get("url") or offer_url).strip()
                     if not validate_product_identity(
-                        canonical_title, item_title, item_url, store_id="falabella"
+                        canonical_title, item_title, item_url, store_id=eff_store
                     ):
                         continue
                     prices = item.get("prices", [])

@@ -2,17 +2,33 @@
 Endpoints de productos: GET /api/v1/products y GET /api/v1/products/{product_id}
 Soporta filtrado dinámico sobre cualquier faceta extraída de tech_specs.
 """
+import asyncio
+from datetime import datetime
 from typing import Dict, List, Literal, Optional
+from zoneinfo import ZoneInfo
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.database import get_db
+from app.core.database import AsyncSessionLocal, get_db, is_test
 from app.core.security import check_read_rate_limit, sanitize_input_text
+from app.collectors.orchestrator import get_today_peru, orchestrator
 from app.collectors.spec_extractor import CANONICAL_SPEC_MAP, map_to_canonical_key
 from app.models.schemas import PricePointSchema, ProductSchema
 from app.services.catalog_service import catalog_service
 
 router = APIRouter(prefix="/products", tags=["Productos"])
+
+
+async def _run_catchup_in_background() -> None:
+    try:
+        async with AsyncSessionLocal() as bg_session:
+            if await orchestrator.needs_daily_catchup(bg_session):
+                await orchestrator.run_daily_price_update(
+                    session=bg_session,
+                    on_cache_invalidate=catalog_service.invalidate_cache,
+                )
+    except Exception:
+        pass
 
 RESERVED_QUERY_PARAMS = {
     "search",
@@ -81,6 +97,16 @@ async def get_products(
             if clean_val:
                 dynamic_specs[canonical_key] = clean_val
 
+    # Catch-Up en segundo plano en la primera petición GET /api/v1/products del día
+    # si last_sync_date < today_peru y la hora en Perú ya pasó de las 00:59 AM
+    if not is_test and not orchestrator._is_syncing:
+        now_peru = datetime.now(ZoneInfo("America/Lima"))
+        today_peru = now_peru.date()
+        is_past_0059 = (now_peru.hour > 0) or (now_peru.hour == 0 and now_peru.minute >= 59)
+        if is_past_0059 and (orchestrator.last_sync_date is None or orchestrator.last_sync_date < today_peru):
+            if await orchestrator.needs_daily_catchup(session):
+                asyncio.create_task(_run_catchup_in_background())
+
     return await catalog_service.get_products(
         session=session,
         search=clean_search,
@@ -120,6 +146,16 @@ async def search_products(
     clean_search = sanitize_input_text(search_term, max_length=80)
     clean_category = sanitize_input_text(category, max_length=80)
     clean_brand = sanitize_input_text(brand, max_length=80)
+    # Catch-Up en segundo plano en la primera petición GET /api/v1/products del día
+    # si last_sync_date < today_peru y la hora en Perú ya pasó de las 00:59 AM
+    if not is_test and not orchestrator._is_syncing:
+        now_peru = datetime.now(ZoneInfo("America/Lima"))
+        today_peru = now_peru.date()
+        is_past_0059 = (now_peru.hour > 0) or (now_peru.hour == 0 and now_peru.minute >= 59)
+        if is_past_0059 and (orchestrator.last_sync_date is None or orchestrator.last_sync_date < today_peru):
+            if await orchestrator.needs_daily_catchup(session):
+                asyncio.create_task(_run_catchup_in_background())
+
     return await catalog_service.get_products(
         session=session,
         search=clean_search,

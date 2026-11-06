@@ -80,6 +80,9 @@ def parse_vtex_api_item(item_dict: Dict[str, Any], default_url: str = "") -> Opt
         for seller in sellers:
             if not isinstance(seller, dict):
                 continue
+            seller_id = seller.get("sellerId")
+            if seller_id is not None and str(seller_id).strip() != "1":
+                continue
             offer = seller.get("commertialOffer") or {}
             avail = offer.get("AvailableQuantity", 1)
             is_avail_flag = offer.get("IsAvailable", True)

@@ -11,7 +11,7 @@ from bs4 import BeautifulSoup
 from app.core.logging import get_logger
 from app.collectors.spec_extractor import extract_product_specs
 from app.collectors.url_utils import canonicalize_store_url, is_valid_product_image_url
-from app.collectors.validators import validate_product_identity
+from app.collectors.validators import is_official_store_seller, validate_product_identity
 
 logger = get_logger("parsers.ripley")
 
@@ -70,6 +70,9 @@ def parse_ripley(
 
     _, clean_offer_url = canonicalize_store_url(offer_url)
     offer_url = clean_offer_url or offer_url
+
+    if not is_official_store_seller("ripley", html, offer_url):
+        return None
 
     soup = BeautifulSoup(html, "lxml")
 
