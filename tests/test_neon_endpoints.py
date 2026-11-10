@@ -11,7 +11,7 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 
 from main import app
-from app.core.database import engine
+from app.core.database import engine, reader_engine
 
 
 @pytest.mark.asyncio
@@ -28,6 +28,7 @@ async def test_ping_endpoints():
             assert res_head.status_code == 200
     finally:
         await engine.dispose()
+        await reader_engine.dispose()
 
 
 @pytest.mark.asyncio
@@ -44,6 +45,7 @@ async def test_health_endpoint():
             assert data["totalProducts"] >= 6
     finally:
         await engine.dispose()
+        await reader_engine.dispose()
 
 
 @pytest.mark.asyncio
@@ -72,7 +74,7 @@ async def test_products_catalog_and_search():
             assert hist_res.status_code == 200
             hist_data = hist_res.json()
             assert isinstance(hist_data, list)
-            assert len(hist_data) >= 4
+            assert len(hist_data) == 1
 
             drops_res = await client.get("/api/v1/notifications/price-drops")
             assert drops_res.status_code == 200
@@ -83,6 +85,7 @@ async def test_products_catalog_and_search():
             assert drops_data[0]["product_url"].startswith("https://")
     finally:
         await engine.dispose()
+        await reader_engine.dispose()
 
 
 @pytest.mark.asyncio
@@ -143,6 +146,7 @@ async def test_community_posts_lifecycle():
             except Exception:
                 pass
         await engine.dispose()
+        await reader_engine.dispose()
 
 
 @pytest.mark.asyncio
@@ -200,6 +204,7 @@ async def test_complaints_and_cancellations():
         except Exception:
             pass
         await engine.dispose()
+        await reader_engine.dispose()
 
 
 @pytest.mark.asyncio
@@ -216,3 +221,4 @@ async def test_legacy_products():
             assert "lowest_price" in data[0]
     finally:
         await engine.dispose()
+        await reader_engine.dispose()

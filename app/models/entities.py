@@ -126,6 +126,7 @@ class PriceHistoryEntity(Base):
 
     __table_args__ = (
         UniqueConstraint("product_id", "day_offset", name="uq_real_product_day"),
+        UniqueConstraint("product_id", "recorded_date", name="uq_product_recorded_date"),
     )
 
     product = relationship("ProductEntity", back_populates="price_history")

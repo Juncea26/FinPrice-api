@@ -16,7 +16,7 @@ from datetime import datetime, timezone
 from typing import Dict, List, Literal, Optional
 
 from fastapi import HTTPException, status
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
@@ -618,6 +618,46 @@ class CatalogService:
             for s in statuses
         ]
 
+    @staticmethod
+    def _is_ghost_community_record(
+        author_name: Optional[str] = None,
+        text_content: Optional[str] = None,
+        title: Optional[str] = None,
+        price: Optional[float] = None,
+    ) -> bool:
+        """Detecta y bloquea el registro fantasma de pruebas ('Usuario Real' / 'Precio en liquidación de vitrina')."""
+        author_l = (author_name or "").strip().lower()
+        text_l = (text_content or "").strip().lower()
+        title_l = (title or "").strip().lower()
+        if "usuario real" in author_l:
+            return True
+        if "liquidación de vitrina" in text_l or "liquidacion de vitrina" in text_l:
+            return True
+        if "liquidación de vitrina" in title_l or "liquidacion de vitrina" in title_l:
+            return True
+        return False
+
+    async def purge_ghost_community_data(self, session: AsyncSession) -> None:
+        """Elimina definitivamente registros fantasma de 'Usuario Real' en community_posts y community_offers."""
+        try:
+            await session.execute(
+                delete(CommunityPostEntity).where(
+                    (CommunityPostEntity.author_name.ilike("%Usuario Real%"))
+                    | (CommunityPostEntity.content.ilike("%liquidación de vitrina%"))
+                    | (CommunityPostEntity.title.ilike("%liquidación de vitrina%"))
+                )
+            )
+            await session.execute(
+                delete(CommunityOfferEntity).where(
+                    (CommunityOfferEntity.author_name.ilike("%Usuario Real%"))
+                    | (CommunityOfferEntity.comment.ilike("%liquidación de vitrina%"))
+                    | (CommunityOfferEntity.price_found == 3699.0)
+                )
+            )
+            await session.commit()
+        except Exception:
+            await session.rollback()
+
     async def get_community_offers(
         self,
         session: AsyncSession,
@@ -626,7 +666,7 @@ class CatalogService:
         district: Optional[str] = None,
         product_id: Optional[str] = None,
     ) -> List[CommunityPhysicalOfferSchema]:
-        """Lee ofertas comunitarias reales guardadas en la base de datos."""
+        """Lee ofertas comunitarias reales guardadas en la base de datos (filtrando registros fantasma)."""
         stmt = select(CommunityOfferEntity)
         if department:
             stmt = stmt.where(CommunityOfferEntity.department.ilike(f"%{department.strip()}%"))
@@ -658,12 +698,26 @@ class CatalogService:
                 author_name=o.author_name or "Usuario FinPrice",
             )
             for o in items
+            if not self._is_ghost_community_record(
+                author_name=o.author_name,
+                text_content=o.comment,
+                price=o.price_found,
+            )
         ]
 
     async def create_community_offer(
         self, session: AsyncSession, offer_in: CommunityOfferCreateSchema
     ) -> CommunityPhysicalOfferSchema:
         """Registra una oferta física real en la base de datos validando ubigeo."""
+        if self._is_ghost_community_record(
+            author_name=offer_in.author_name,
+            text_content=offer_in.comment,
+            price=offer_in.price_found,
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Publicación bloqueada: no se permiten registros fantasma de 'Usuario Real' ni 'liquidación de vitrina'.",
+            )
         norm_dept = offer_in.department.strip()
         matched = next((d for d in PERU_DEPARTMENTS if d.lower() == norm_dept.lower()), None)
         if not matched:
@@ -774,6 +828,18 @@ class CatalogService:
             author_name=offer.author_name,
         )
 
+    async def delete_community_offer(self, session: AsyncSession, offer_id: str) -> bool:
+        """Elimina una oferta física comunitaria por ID."""
+        res = await session.execute(
+            select(CommunityOfferEntity).where(CommunityOfferEntity.id == offer_id)
+        )
+        offer = res.scalar_one_or_none()
+        if not offer:
+            return False
+        await session.delete(offer)
+        await session.commit()
+        return True
+
     async def get_community_posts(
         self,
         session: AsyncSession,
@@ -783,7 +849,7 @@ class CatalogService:
         product_id: Optional[str] = None,
         search: Optional[str] = None,
     ) -> List[CommunityPostSchema]:
-        """Lee publicaciones comunitarias reales guardadas en la base de datos."""
+        """Lee publicaciones comunitarias reales guardadas en la base de datos (filtrando registros fantasma)."""
         stmt = select(CommunityPostEntity)
         if department:
             stmt = stmt.where(CommunityPostEntity.department.ilike(f"%{department.strip()}%"))
@@ -827,6 +893,12 @@ class CatalogService:
                 updated_at=p.updated_at.isoformat() if p.updated_at else None,
             )
             for p in items
+            if not self._is_ghost_community_record(
+                author_name=p.author_name,
+                text_content=p.content,
+                title=p.title,
+                price=p.price,
+            )
         ]
 
     async def get_community_post_by_id(
@@ -864,6 +936,16 @@ class CatalogService:
         self, session: AsyncSession, post_in: CommunityPostCreateSchema
     ) -> CommunityPostSchema:
         """Registra una nueva publicación comunitaria en Neon PostgreSQL."""
+        if self._is_ghost_community_record(
+            author_name=post_in.author_name,
+            text_content=post_in.content,
+            title=post_in.title,
+            price=post_in.price,
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Publicación bloqueada: no se permiten registros fantasma de 'Usuario Real' ni 'liquidación de vitrina'.",
+            )
         now_utc = datetime.now(timezone.utc)
         now_naive = now_utc.replace(tzinfo=None)
         post_id = f"post_{uuid.uuid4().hex[:10]}"

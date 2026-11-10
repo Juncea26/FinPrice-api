@@ -26,14 +26,17 @@ class Settings(BaseSettings):
 
     # Seguridad y autenticación
     FINPRICE_ADMIN_API_KEY: str = "finprice_secret_admin_key_2026"
+    FINPRICE_TOKEN_SECRET: str = "finprice_hmac_token_secret_key_2026"
     ALLOWED_ORIGINS: Union[str, List[str]] = "*"
 
     # Base de datos asíncrona real (lee de variable de entorno o .env, fallback a SQLite local)
     DATABASE_URL: str = os.getenv("DATABASE_URL", "sqlite:///./finprice.db")
+    WRITER_DATABASE_URL: str = os.getenv("WRITER_DATABASE_URL", "")
+    READER_DATABASE_URL: str = os.getenv("READER_DATABASE_URL", "")
     CACHE_TTL_SECONDS: int = 60
 
-    # Rate Limiting
-    RATE_LIMIT_READ_PER_MINUTE: int = 60
+    # Rate Limiting (50 peticiones por minuto por IP)
+    RATE_LIMIT_READ_PER_MINUTE: int = 50
     RATE_LIMIT_WRITE_PER_MINUTE: int = 5
 
     # Parámetros del motor de recolección en vivo (Optimizado para 512 MB RAM)

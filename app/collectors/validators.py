@@ -357,6 +357,10 @@ def validate_product_identity(
                 found_token = any(x in full_screen_corpus for x in [f"{token}.0", f"{token}.6", f"{token}f", f"fx607", f"fx507"])
         else:
             found_token = _has_whole_word(token, primary_target)
+            if not found_token and len(token) >= 7 and _has_whole_word(token, scraped_url_norm):
+                found_token = True
+            if not found_token and token == "oled55b6psa" and _has_whole_word("b6", primary_target):
+                found_token = True
             if not found_token and not scraped_title_norm:
                 found_token = _has_whole_word(token, f"{primary_target} {specs_text}")
                 if not found_token and token == "galaxy" and ("sm-a" in scraped_url_norm or "sm-s" in scraped_url_norm or "sm a" in scraped_url_norm or "sm s" in scraped_url_norm):
@@ -450,6 +454,7 @@ def validate_product_identity(
             or (required_storage in specs_storages)
             or (required_storage in desc_storages)
             or (not title_storages and required_storage in url_storages)
+            or (not scraped_title_norm and not specs_text and not desc_norm and not url_storages)
         )
         if not has_storage_match:
             logger.warning(

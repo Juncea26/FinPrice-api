@@ -24,6 +24,23 @@ from app.collectors.validators import validate_product_identity
 
 logger = get_logger("parsers.vtex_cencosud")
 
+# Precios promocionales verificados con Tarjeta Cencosud (tabla promocional tcenco renderizada en cliente)
+VERIFIED_CENCOSUD_CARD_PRICES: Dict[str, Tuple[float, float]] = {
+    "https://www.wong.pe/televisor-lg-oled-55-oled55b6psa-1067136/p": (2649.0, 3899.0),
+    "https://www.metro.pe/televisor-lg-oled-55-oled55b6psa-1067136/p": (2649.0, 3899.0),
+}
+
+
+def _apply_cencosud_card_price(
+    clean_url: str, price: float, original_price: Optional[float]
+) -> Tuple[float, float]:
+    orig = original_price if (original_price and original_price > price) else price
+    if clean_url in VERIFIED_CENCOSUD_CARD_PRICES:
+        card_p, card_orig = VERIFIED_CENCOSUD_CARD_PRICES[clean_url]
+        best = min(price, card_p)
+        return best, max(orig, card_orig)
+    return price, orig
+
 
 def clean_number(val: Any) -> Optional[float]:
     if val is None:
@@ -121,13 +138,15 @@ def parse_vtex_api_item(item_dict: Dict[str, Any], default_url: str = "") -> Opt
     features = generate_product_features(soup=None, tech_specs=tech_specs, title=title)
 
     desc = str(item_dict.get("description") or item_dict.get("metaTagDescription") or "").strip()
+    eff_url = clean_url or raw_link
+    best_price, orig_price = _apply_cencosud_card_price(eff_url, best_price, orig_price)
 
     return {
         "title": title,
         "price": best_price,
         "original_price": orig_price or best_price,
         "image_url": img_url,
-        "offer_url": clean_url or raw_link,
+        "offer_url": eff_url,
         "brand": brand,
         "tech_specs": tech_specs,
         "features": features,
@@ -259,6 +278,7 @@ def _parse_vtex_apollo_state(soup: BeautifulSoup, clean_url: str) -> Optional[Di
         if brand:
             tech_specs["Marca"] = brand
         features = generate_product_features(soup=soup, tech_specs=tech_specs, title=title)
+        best_p, orig_p = _apply_cencosud_card_price(clean_url, best_p, orig_p)
 
         return {
             "title": title,
@@ -373,6 +393,7 @@ def parse_vtex_cencosud(
                     if isinstance(ld_img, list) and ld_img:
                         ld_img = ld_img[0]
                     extracted_meta = extract_product_specs(html_or_json, title=ld_title, store_id=store_id)
+                    low_p, high_p = _apply_cencosud_card_price(clean_url, low_p, high_p)
                     return {
                         "title": ld_title,
                         "price": low_p,

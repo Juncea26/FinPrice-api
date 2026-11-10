@@ -21,11 +21,25 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.v1.router import api_v1_router
 from app.core.config import settings
-from app.core.database import AsyncSessionLocal, get_db, init_db
+from app.core.database import (
+    AsyncSessionLocal,
+    WriterSessionLocal,
+    get_db,
+    get_read_db,
+    init_db,
+)
 from app.core.logging import get_logger
-from app.core.security import check_read_rate_limit, sanitize_input_text
+from app.core.security import (
+    RateLimitAndWAFMiddleware,
+    check_read_rate_limit,
+    sanitize_input_text,
+)
 from app.core.seed_data import seed_database_fast, sync_and_upsert_catalog
-from app.collectors.orchestrator import orchestrator
+from app.collectors.orchestrator import (
+    SCHEDULE_WINDOWS,
+    SCHEDULE_WINDOWS_LABELS,
+    orchestrator,
+)
 from app.models.entities import ProductEntity
 from app.models.schemas import ProductResponse
 from app.services.catalog_service import catalog_service
@@ -50,26 +64,50 @@ def calculate_seconds_until_target(
     return max(1.0, (target - now).total_seconds())
 
 
+def calculate_seconds_until_next_window(
+    tz_name: str = "America/Lima",
+) -> tuple[float, str]:
+    """
+    Calcula los segundos exactos restantes hasta el próximo corte programado
+    entre las 4 ventanas diarias: 00:59, 06:59, 12:59 y 18:59 (America/Lima).
+    Retorna (segundos_restantes, etiqueta_ventana).
+    """
+    tz = ZoneInfo(tz_name)
+    now = datetime.now(tz)
+    candidates = []
+    for hour, minute in SCHEDULE_WINDOWS:
+        candidate = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+        if candidate <= now:
+            candidate += timedelta(days=1)
+        candidates.append((candidate, f"{hour:02d}:{minute:02d}"))
+    next_dt, label = min(candidates, key=lambda item: item[0])
+    return max(1.0, (next_dt - now).total_seconds()), label
+
+
 async def daily_scheduler_loop():
     """
-    Bucle en segundo plano programado para ejecutarse diariamente a las 00:59 AM (hora de Perú, America/Lima, UTC-5).
-    Calcula de forma exacta y no bloqueante los segundos restantes hasta las 00:59:00 AM.
+    Bucle en segundo plano programado para ejecutarse 4 veces al día:
+    00:59, 06:59, 12:59 y 18:59 (hora de Perú, America/Lima, UTC-5).
     """
-    logger.info("Programador diario de FinPrice activo: actualización automática diaria a las 00:59 AM (America/Lima).")
+    logger.info(
+        f"Programador de 4 cortes diarios activo ({', '.join(SCHEDULE_WINDOWS_LABELS)} America/Lima)."
+    )
     while True:
         try:
-            sleep_seconds = calculate_seconds_until_target(target_hour=0, target_minute=59, tz_name="America/Lima")
+            sleep_seconds, window_label = calculate_seconds_until_next_window(tz_name="America/Lima")
             hours = int(sleep_seconds // 3600)
             minutes = int((sleep_seconds % 3600) // 60)
             seconds = int(sleep_seconds % 60)
             logger.info(
-                f"Programador diario en reposo. Siguiente actualización automática en {hours}h {minutes}m {seconds}s (a las 00:59 AM Lima)."
+                f"Programador en reposo. Siguiente corte automático ({window_label} Lima) en {hours}h {minutes}m {seconds}s."
             )
             await asyncio.sleep(sleep_seconds)
 
-            logger.info("¡Hora programada alcanzada (00:59 AM America/Lima)! Ejecutando actualización de precios...")
-            async with AsyncSessionLocal() as session:
-                await orchestrator.run_daily_price_update(
+            logger.info(
+                f"¡Ventana programada alcanzada ({window_label} America/Lima)! Ejecutando actualización de precios..."
+            )
+            async with WriterSessionLocal() as session:
+                await orchestrator.run_scheduled_price_update(
                     session=session,
                     on_cache_invalidate=catalog_service.invalidate_cache,
                 )
@@ -79,7 +117,7 @@ async def daily_scheduler_loop():
             logger.info("Programador diario cancelado por apagado del servidor.")
             break
         except Exception as e:
-            logger.error(f"Error imprevisto en programador diario (00:59 AM): {e}")
+            logger.error(f"Error imprevisto en programador de 4 ventanas diarias: {e}")
             await asyncio.sleep(60)
 
 
@@ -118,13 +156,14 @@ async def lifespan(app: FastAPI):
     # 1. Crear y verificar tablas en Neon PostgreSQL
     await init_db()
 
-    # 2. Sincronización UPSERT instantánea (< 200 ms) en Neon PostgreSQL
-    async with AsyncSessionLocal() as session:
+    # 2. Sincronización UPSERT instantánea (< 200 ms) y purga de registros fantasma en Neon PostgreSQL
+    async with WriterSessionLocal() as session:
+        await catalog_service.purge_ghost_community_data(session)
         synced_count = await sync_and_upsert_catalog(session=session)
         catalog_service.invalidate_cache()
-        if await orchestrator.needs_daily_catchup(session):
-            logger.info("Catch-Up on Wakeup: registrando actualización diaria pendiente para today_peru...")
-            await orchestrator.run_daily_price_update(
+        if await orchestrator.needs_scheduled_catchup(session):
+            logger.info("Catch-Up on Wakeup: registrando corte programado pendiente para today_peru...")
+            await orchestrator.run_scheduled_price_update(
                 session=session,
                 on_cache_invalidate=catalog_service.invalidate_cache,
             )
@@ -213,6 +252,7 @@ async def security_and_logging_middleware(request: Request, call_next):
     return response
 
 
+app.add_middleware(RateLimitAndWAFMiddleware)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.ALLOWED_ORIGINS,
@@ -244,7 +284,7 @@ def root():
 )
 async def legacy_get_products(
     search: Optional[str] = Query(None, max_length=80),
-    session: AsyncSession = Depends(get_db),
+    session: AsyncSession = Depends(get_read_db),
 ):
     clean_search = sanitize_input_text(search, max_length=80)
     return await catalog_service.get_legacy_products(session=session, search=clean_search)

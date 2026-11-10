@@ -9,8 +9,8 @@ from zoneinfo import ZoneInfo
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.database import AsyncSessionLocal, get_db, is_test
-from app.core.security import check_read_rate_limit, sanitize_input_text
+from app.core.database import WriterSessionLocal, get_read_db, is_test
+from app.core.security import check_read_rate_limit, sanitize_input_text, verify_api_token_or_client
 from app.collectors.orchestrator import get_today_peru, orchestrator
 from app.collectors.spec_extractor import CANONICAL_SPEC_MAP, map_to_canonical_key
 from app.models.schemas import PricePointSchema, ProductSchema
@@ -21,9 +21,9 @@ router = APIRouter(prefix="/products", tags=["Productos"])
 
 async def _run_catchup_in_background() -> None:
     try:
-        async with AsyncSessionLocal() as bg_session:
-            if await orchestrator.needs_daily_catchup(bg_session):
-                await orchestrator.run_daily_price_update(
+        async with WriterSessionLocal() as bg_session:
+            if await orchestrator.needs_scheduled_catchup(bg_session):
+                await orchestrator.run_scheduled_price_update(
                     session=bg_session,
                     on_cache_invalidate=catalog_service.invalidate_cache,
                 )
@@ -50,7 +50,7 @@ RESERVED_QUERY_PARAMS = {
     "",
     response_model=List[ProductSchema],
     summary="Listado y filtrado dinámico de productos con precios y specs reales",
-    dependencies=[Depends(check_read_rate_limit)],
+    dependencies=[Depends(check_read_rate_limit), Depends(verify_api_token_or_client)],
 )
 async def get_products(
     request: Request,
@@ -67,7 +67,7 @@ async def get_products(
     enabled_stores: Optional[str] = Query(None, max_length=150),
     sort_order: Literal["LOW_TO_HIGH", "HIGH_TO_LOW"] = Query("LOW_TO_HIGH"),
     limit: int = Query(250, ge=1, le=500, description="Límite de productos a retornar"),
-    session: AsyncSession = Depends(get_db),
+    session: AsyncSession = Depends(get_read_db),
 ):
     """
     Retorna los productos con precios y fichas técnicas reales extraídas de tiendas de Perú.
@@ -130,7 +130,7 @@ async def get_products(
     "/search",
     response_model=List[ProductSchema],
     summary="Búsqueda rápida de productos por palabra clave",
-    dependencies=[Depends(check_read_rate_limit)],
+    dependencies=[Depends(check_read_rate_limit), Depends(verify_api_token_or_client)],
 )
 async def search_products(
     request: Request,
@@ -139,7 +139,7 @@ async def search_products(
     category: Optional[str] = Query(None, max_length=80),
     brand: Optional[str] = Query(None, max_length=80),
     limit: int = Query(250, ge=1, le=500, description="Límite de productos"),
-    session: AsyncSession = Depends(get_db),
+    session: AsyncSession = Depends(get_read_db),
 ):
     """Búsqueda directa de productos por término (compatible con app Android)."""
     search_term = q or search
@@ -169,11 +169,11 @@ async def search_products(
     "/{product_id}",
     response_model=ProductSchema,
     summary="Detalle completo de producto con historial y ofertas por tienda",
-    dependencies=[Depends(check_read_rate_limit)],
+    dependencies=[Depends(check_read_rate_limit), Depends(verify_api_token_or_client)],
 )
 async def get_product_by_id(
     product_id: str,
-    session: AsyncSession = Depends(get_db),
+    session: AsyncSession = Depends(get_read_db),
 ):
     """Retorna el detalle completo y serie de precios reales observados para el producto."""
     clean_id = sanitize_input_text(product_id, max_length=80)
@@ -190,11 +190,11 @@ async def get_product_by_id(
     "/{product_id}/history",
     response_model=List[PricePointSchema],
     summary="Historial de precios de los últimos 30 días para gráfica móvil",
-    dependencies=[Depends(check_read_rate_limit)],
+    dependencies=[Depends(check_read_rate_limit), Depends(verify_api_token_or_client)],
 )
 async def get_product_price_history(
     product_id: str,
-    session: AsyncSession = Depends(get_db),
+    session: AsyncSession = Depends(get_read_db),
 ):
     """Retorna la serie temporal de precios reales observados en los últimos 30 días."""
     clean_id = sanitize_input_text(product_id, max_length=80)

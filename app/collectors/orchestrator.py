@@ -153,7 +153,9 @@ SPANISH_MONTHS_SHORT = {
     12: "Dic",
 }
 
-CATALOG_START_DATE = date(2026, 11, 2)
+# 4 ventanas diarias de actualización programada en hora oficial de Perú (America/Lima, UTC-5)
+SCHEDULE_WINDOWS = [(0, 59), (6, 59), (12, 59), (18, 59)]
+SCHEDULE_WINDOWS_LABELS = ["00:59", "06:59", "12:59", "18:59"]
 
 
 def get_today_peru() -> date:
@@ -161,8 +163,31 @@ def get_today_peru() -> date:
     return datetime.now(ZoneInfo("America/Lima")).date()
 
 
+def get_now_peru() -> datetime:
+    """Retorna la fecha y hora actual en zona horaria de Perú (America/Lima)."""
+    return datetime.now(ZoneInfo("America/Lima"))
+
+
+def get_latest_scheduled_cutoff_peru(now_peru: Optional[datetime] = None) -> datetime:
+    """
+    Retorna el instante exacto del último corte programado (00:59, 06:59, 12:59 o 18:59 America/Lima)
+    que ya ocurrió respecto a now_peru.
+    """
+    tz = ZoneInfo("America/Lima")
+    current = now_peru.astimezone(tz) if now_peru else datetime.now(tz)
+    candidates = [
+        current.replace(hour=h, minute=m, second=0, microsecond=0)
+        for h, m in SCHEDULE_WINDOWS
+    ]
+    passed = [c for c in candidates if c <= current]
+    if passed:
+        return max(passed)
+    yesterday = current - timedelta(days=1)
+    return yesterday.replace(hour=18, minute=59, second=0, microsecond=0)
+
+
 def format_peru_date_label(d: date) -> str:
-    """Formatea una fecha como etiqueta calendario en español (ej. '02 Nov', '03 Nov', '04 Nov', '05 Nov')."""
+    """Formatea una fecha como etiqueta calendario en español (ej. '09 Nov')."""
     return f"{d.day:02d} {SPANISH_MONTHS_SHORT.get(d.month, 'Nov')}"
 
 
@@ -173,54 +198,57 @@ def build_daily_history_points_for_product(
     existing_by_date: Optional[Dict[str, float]] = None,
 ) -> List[Dict[str, Any]]:
     """
-    Construye la serie histórica diaria cronológica desde CATALOG_START_DATE (02 Nov)
-    hasta today_peru (máximo 30 días), preservando precios observados previos y registrando
-    el punto de hoy (day_offset = 0).
+    Construye la serie histórica diaria de precios con CERO datos inventados o simulados:
+    - PROHIBIDO inventar, simular o rellenar hacia atrás precios de días pasados.
+    - Preserva únicamente filas de fechas ISO reales previas (si existieran de días anteriores reales)
+      y registra para hoy (today_peru, day_offset = 0) una única fila con el menor precio observado en el día:
+      daily_record.price = min(existing_today_price, best_price).
     """
     t_peru = today_peru or get_today_peru()
-    start_d = max(CATALOG_START_DATE, t_peru - timedelta(days=29))
-    if start_d > t_peru:
-        start_d = t_peru
-
-    total_days = (t_peru - start_d).days + 1
+    t_iso = t_peru.isoformat()
+    t_label = format_peru_date_label(t_peru)
     existing_map = dict(existing_by_date or {})
 
     points: List[Dict[str, Any]] = []
-    # Si hay descuento real respecto al precio original, los primeros días reflejan la evolución hacia el precio actual
-    spread = max(0.0, float(original_price or best_price) - float(best_price))
+    min_allowed_date = t_peru - timedelta(days=29)
 
-    for idx in range(total_days):
-        cur_d = start_d + timedelta(days=idx)
-        day_offset = (cur_d - t_peru).days  # ..., -3, -2, -1, 0
-        d_iso = cur_d.isoformat()
-        d_label = format_peru_date_label(cur_d)
+    # Preservar únicamente fechas ISO reales observadas previamente (sin rellenar fechas faltantes)
+    real_past_dates: List[date] = []
+    for k, val in existing_map.items():
+        if not isinstance(k, str) or len(k) != 10:
+            continue
+        try:
+            parsed_d = date.fromisoformat(k)
+        except ValueError:
+            continue
+        if min_allowed_date <= parsed_d < t_peru and val and float(val) > 0:
+            real_past_dates.append(parsed_d)
 
-        if cur_d == t_peru:
-            p_val = round(float(best_price), 2)
-        elif d_iso in existing_map and existing_map[d_iso] >= (best_price * 0.55):
-            p_val = round(float(existing_map[d_iso]), 2)
-        elif d_label in existing_map and existing_map[d_label] >= (best_price * 0.55):
-            p_val = round(float(existing_map[d_label]), 2)
-        else:
-            if spread > 0 and total_days >= 2:
-                # Escalón realista previo antes de la bajada actual
-                if idx == 0:
-                    p_val = round(float(best_price) + min(spread, max(50.0, round(spread * 0.30, 0))), 2)
-                elif idx < total_days - 1:
-                    p_val = round(float(best_price) + min(spread, max(20.0, round(spread * 0.15, 0))), 2)
-                else:
-                    p_val = round(float(best_price), 2)
-            else:
-                p_val = round(float(best_price), 2)
-
+    for past_d in sorted(set(real_past_dates)):
+        d_iso = past_d.isoformat()
+        p_val = round(float(existing_map[d_iso]), 2)
         points.append(
             {
-                "day_offset": day_offset,
-                "date_label": d_label,
+                "day_offset": (past_d - t_peru).days,
+                "date_label": format_peru_date_label(past_d),
                 "recorded_date": d_iso,
                 "price": p_val,
             }
         )
+
+    # Fila única de HOY (control de mínimo intradía: min(precio_existente_hoy, nuevo_best_price))
+    today_price = round(float(best_price), 2)
+    if t_iso in existing_map and existing_map[t_iso] and float(existing_map[t_iso]) > 0:
+        today_price = round(min(float(existing_map[t_iso]), today_price), 2)
+
+    points.append(
+        {
+            "day_offset": 0,
+            "date_label": t_label,
+            "recorded_date": t_iso,
+            "price": today_price,
+        }
+    )
 
     return points
 
@@ -634,11 +662,19 @@ class CollectorOrchestrator:
 
             # Si se obtuvieron ofertas reales verificadas, actualizar base de datos
             if verified_offers:
+                # Filtrar estrictamente ofertas con stock activo en vivo (in_stock != False)
+                verified_offers = [
+                    off for off in verified_offers
+                    if off.get("in_stock", True) is not False and float(off.get("price", 0) or 0) > 0
+                ]
+                if not verified_offers:
+                    continue
+
                 verified_offers.sort(key=lambda x: x["price"])
                 best_offer = verified_offers[0]
-                best_price = best_offer["price"]
+                best_price = round(float(best_offer["price"]), 2)
                 best_store = best_offer["store_name"]
-                orig_price = best_offer.get("original_price") or best_price
+                orig_price = round(float(best_offer.get("original_price") or best_price), 2)
                 if orig_price < best_price:
                     orig_price = best_price
 
@@ -735,6 +771,7 @@ class CollectorOrchestrator:
                     total_offers_updated += 1
 
                 # Sincronizar puntos diarios reales transcurridos hasta hoy (today_peru)
+                # con control de mínimo intradía: 1 sola fila por fecha calendario (UNIQUE(product_id, recorded_date))
                 today_peru = get_today_peru()
                 existing_hist_q = await session.execute(
                     select(PriceHistoryEntity).where(PriceHistoryEntity.product_id == prod_id)
@@ -744,8 +781,6 @@ class CollectorOrchestrator:
                 for h_row in existing_hist_rows:
                     if getattr(h_row, "recorded_date", None):
                         existing_by_date[str(h_row.recorded_date)] = float(h_row.price)
-                    if h_row.date_label:
-                        existing_by_date[str(h_row.date_label)] = float(h_row.price)
 
                 daily_points = build_daily_history_points_for_product(
                     best_price=best_price,
@@ -770,7 +805,7 @@ class CollectorOrchestrator:
                     )
 
                 all_prices = [pt["price"] for pt in daily_points] + [best_price]
-                hist_min = min(all_prices) if all_prices else best_price
+                hist_min = round(min(all_prices), 2) if all_prices else best_price
                 prod_entity.historical_min_price = hist_min
                 prod_entity.is_historical_min = bool(best_price <= hist_min)
                 prod_entity.days_tracked = len(daily_points)
@@ -813,47 +848,156 @@ class CollectorOrchestrator:
             "price_drops_count": price_drops_count,
             "days_tracked": max_days_tracked,
             "peru_date": self.last_sync_date.isoformat(),
+            "schedule_windows": SCHEDULE_WINDOWS_LABELS,
             "duration_seconds": round(total_duration, 2),
             "timestamp": self.last_sync_timestamp,
         }
 
-    async def needs_daily_catchup(self, session: AsyncSession) -> bool:
+    async def record_intraday_price_observation(
+        self,
+        session: AsyncSession,
+        product_id: str,
+        new_best_price: float,
+        today_peru: Optional[date] = None,
+    ) -> Dict[str, Any]:
         """
-        Verifica si en Neon PostgreSQL aún no existe el registro de price_history
-        correspondiente a la fecha de HOY en Perú (today_peru).
+        Control de Precio Actual vs Mínimo Intradía en price_history:
+        - product.best_price siempre muestra el precio vigente del último corte (00:59, 06:59, 12:59 o 18:59).
+        - En price_history existe 1 sola fila por fecha calendario (UNIQUE(product_id, recorded_date)).
+          Si el precio cambia 2 o más veces en el mismo día, hace UPSERT sobre la única fila de hoy
+          guardando daily_record.price = min(daily_record.price, new_best_price) y actualiza
+          historical_min_price = min(historical_min_price, new_best_price).
+        """
+        t_peru = today_peru or get_today_peru()
+        t_iso = t_peru.isoformat()
+        t_label = format_peru_date_label(t_peru)
+        clean_new_price = round(float(new_best_price), 2)
+
+        if isinstance(product_id, ProductEntity):
+            prod = product_id
+            resolved_product_id = prod.id
+        else:
+            resolved_product_id = str(product_id)
+            prod_res = await session.execute(
+                select(ProductEntity).where(ProductEntity.id == resolved_product_id)
+            )
+            prod = prod_res.scalar_one_or_none()
+
+        if prod:
+            prod.best_price = clean_new_price
+            current_hist_min = prod.historical_min_price if prod.historical_min_price else clean_new_price
+            prod.historical_min_price = round(min(float(current_hist_min), clean_new_price), 2)
+            prod.is_historical_min = bool(clean_new_price <= prod.historical_min_price)
+            prod.updated_at = utc_now()
+
+        hist_res = await session.execute(
+            select(PriceHistoryEntity).where(
+                (PriceHistoryEntity.product_id == resolved_product_id)
+                & (
+                    (PriceHistoryEntity.recorded_date == t_iso)
+                    | (PriceHistoryEntity.day_offset == 0)
+                )
+            )
+        )
+        daily_record = hist_res.scalars().first()
+        if daily_record:
+            daily_record.price = round(min(float(daily_record.price), clean_new_price), 2)
+            daily_record.recorded_date = t_iso
+            daily_record.date_label = t_label
+            daily_record.day_offset = 0
+            daily_record.recorded_at = utc_now()
+        else:
+            daily_record = PriceHistoryEntity(
+                product_id=resolved_product_id,
+                day_offset=0,
+                date_label=t_label,
+                recorded_date=t_iso,
+                price=clean_new_price,
+                recorded_at=utc_now(),
+            )
+            session.add(daily_record)
+
+        if prod and daily_record.price < (prod.historical_min_price or clean_new_price):
+            prod.historical_min_price = daily_record.price
+            prod.is_historical_min = bool(prod.best_price <= prod.historical_min_price)
+
+        await session.commit()
+        return {
+            "product_id": product_id,
+            "current_best_price": clean_new_price,
+            "daily_min_price": daily_record.price,
+            "historical_min_price": prod.historical_min_price if prod else daily_record.price,
+            "recorded_date": t_iso,
+        }
+
+    async def needs_scheduled_catchup(self, session: AsyncSession) -> bool:
+        """
+        Verifica si se requiere Catch-Up automático al despertar:
+        1. Si aún no existe la fila de HOY (today_peru) en price_history, o
+        2. Si ya pasó el último corte de 6 horas (00:59, 06:59, 12:59 o 18:59 America/Lima)
+           desde la última sincronización registrada.
         """
         today_peru = get_today_peru()
-        today_label = format_peru_date_label(today_peru)
         today_iso = today_peru.isoformat()
 
         stmt = select(PriceHistoryEntity.id).where(
-            (PriceHistoryEntity.recorded_date == today_iso)
-            | (PriceHistoryEntity.date_label == today_label)
+            PriceHistoryEntity.recorded_date == today_iso
         ).limit(1)
         res = await session.execute(stmt)
         has_today = res.scalar_one_or_none() is not None
-        return not has_today
+        if not has_today:
+            return True
+
+        if not self.last_sync_timestamp:
+            return False
+
+        try:
+            raw_ts = self.last_sync_timestamp.replace("Z", "+00:00")
+            last_dt = datetime.fromisoformat(raw_ts)
+            if last_dt.tzinfo is None:
+                last_dt = last_dt.replace(tzinfo=timezone.utc)
+            last_peru = last_dt.astimezone(ZoneInfo("America/Lima"))
+            latest_cutoff = get_latest_scheduled_cutoff_peru()
+            return last_peru < latest_cutoff
+        except Exception:
+            return False
+
+    async def needs_daily_catchup(self, session: AsyncSession) -> bool:
+        """Alias compatible con verificaciones previas de Catch-Up."""
+        return await self.needs_scheduled_catchup(session)
+
+    async def run_scheduled_price_update(
+        self,
+        session: AsyncSession,
+        on_cache_invalidate: Optional[Callable[[], None]] = None,
+    ) -> Dict[str, Any]:
+        """
+        Rutina programada ejecutada 4 veces al día (00:59, 06:59, 12:59 y 18:59 America/Lima)
+        o en Catch-Up al despertar el contenedor:
+        1. Actualiza precios y stock en vivo con concurrencia controlada y Triple Candado de Integridad.
+        2. Si una tienda se quedó SIN STOCK (in_stock == False), la desactiva automáticamente de las ofertas
+           de ese producto y recalcula best_price solo entre las tiendas con stock activo.
+        3. Hace UPSERT sobre la única fila de hoy en price_history guardando el mínimo intradía.
+        """
+        logger.info("Iniciando actualización programada de precios (ventanas 00:59, 06:59, 12:59, 18:59 America/Lima)...")
+        result = await self.sync_all_catalog_products(
+            session=session,
+            on_cache_invalidate=on_cache_invalidate,
+        )
+        gc.collect()
+        logger.info(f"Actualización programada completada exitosamente: {result}")
+        return result
 
     async def run_daily_price_update(
         self,
         session: AsyncSession,
         on_cache_invalidate: Optional[Callable[[], None]] = None,
     ) -> Dict[str, Any]:
-        """
-        Rutina diaria programada ejecutada automáticamente a las 00:59 AM (America/Lima)
-        o en Catch-Up al despertar el contenedor:
-        1. Actualiza precios en vivo con concurrencia controlada y Triple Candado de Integridad.
-        2. Registra los nuevos puntos de historial de precios para cada producto.
-        3. Realiza recolección forzada de basura (gc.collect()) para garantizar RAM < 512MB.
-        """
-        logger.info("Iniciando actualización diaria programada (America/Lima)...")
-        result = await self.sync_all_catalog_products(
+        """Alias compatible que delega a run_scheduled_price_update."""
+        return await self.run_scheduled_price_update(
             session=session,
             on_cache_invalidate=on_cache_invalidate,
         )
-        gc.collect()
-        logger.info(f"Actualización diaria completada exitosamente: {result}")
-        return result
 
 
 orchestrator = CollectorOrchestrator()

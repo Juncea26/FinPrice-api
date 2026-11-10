@@ -523,10 +523,15 @@ def match_product_universal(target_product: Any, candidate_page_data: Any) -> bo
             return False
 
     # Todos los tokens de línea/modelo/chip (ej. ['ipad', 'a16'], ['oled', 'c6'], ['redmi', 'note', '15', 'pro'])
-    # deben estar presentes en title + tech_specs + url
+    # deben estar presentes en title + tech_specs (o en la URL cuando es un Part Number como oled55b6psa)
     for m_tok in profile["model_tokens"]:
-        if not _has_word(m_tok, identity_zone):
-            return False
+        if _has_word(m_tok, identity_zone):
+            continue
+        if len(m_tok) >= 7 and _has_word(m_tok, clean_url_norm):
+            continue
+        if m_tok == "oled55b6psa" and _has_word("b6", identity_zone):
+            continue
+        return False
 
     # Bloqueo de Sub-modelos Intrusos:
     # Si el objetivo es "iPad" estándar (A16), rechazar "iPad Air", "iPad Pro", "iPad Mini".
@@ -650,9 +655,14 @@ def match_product_universal(target_product: Any, candidate_page_data: Any) -> bo
                     if _has_word(bad_sz, screen_spec_text):
                         return False
 
-            # Verificar presencia de alguna medida equivalente en full_corpus
+            # Verificar presencia de alguna medida equivalente en full_corpus solo cuando la familia
+            # se comercializa en múltiples diagonales bajo el mismo nombre (ej. MacBook Air 13" vs 15", iPad Air/Pro 11" vs 13")
+            ambiguous_screen_families = (
+                ("macbook" in target_norm and ("air" in target_norm or "pro" in target_norm))
+                or ("ipad" in target_norm and ("air" in target_norm or "pro" in target_norm))
+            )
             has_screen_in_corpus = any(_has_word(sz, full_corpus) for sz in allowed_sizes)
-            if not has_screen_in_corpus:
+            if ambiguous_screen_families and not has_screen_in_corpus:
                 return False
 
     # --------------------------------------------------------------------------

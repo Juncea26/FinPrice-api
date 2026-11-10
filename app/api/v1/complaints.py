@@ -9,7 +9,7 @@ from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.database import get_db
+from app.core.database import get_read_db, get_write_db
 from app.core.security import check_read_rate_limit, check_write_rate_limit, sanitize_input_text
 from app.models.schemas import (
     CancellationSuggestionCreateSchema,
@@ -38,7 +38,7 @@ router = APIRouter(tags=["Libro de Reclamaciones y Cancelaciones"])
 )
 async def create_complaint(
     complaint_in: ComplaintCreateSchema,
-    session: AsyncSession = Depends(get_db),
+    session: AsyncSession = Depends(get_write_db),
 ):
     """
     Registra formalmente una hoja de reclamación en el Libro de Reclamaciones virtual
@@ -64,7 +64,7 @@ async def list_complaints(
     email: Optional[str] = Query(None, max_length=120),
     document_number: Optional[str] = Query(None, max_length=30),
     claim_number: Optional[str] = Query(None, max_length=60),
-    session: AsyncSession = Depends(get_db),
+    session: AsyncSession = Depends(get_read_db),
 ):
     """Permite consultar el estado de quejas y reclamos mediante email, DNI o código de reclamo."""
     clean_email = sanitize_input_text(email, max_length=120)
@@ -93,7 +93,7 @@ async def list_complaints(
 )
 async def get_complaint(
     claim_id: str,
-    session: AsyncSession = Depends(get_db),
+    session: AsyncSession = Depends(get_read_db),
 ):
     """Retorna los detalles y estado de atención de una hoja de reclamación por su ID o código REC."""
     clean_id = sanitize_input_text(claim_id, max_length=60)
@@ -122,7 +122,7 @@ async def get_complaint(
 )
 async def create_cancellation_suggestion(
     suggestion_in: CancellationSuggestionCreateSchema,
-    session: AsyncSession = Depends(get_db),
+    session: AsyncSession = Depends(get_write_db),
 ):
     """Registra motivos y sugerencias cuando un usuario cancela o evalúa cancelar su suscripción."""
     return await catalog_service.create_cancellation_suggestion(

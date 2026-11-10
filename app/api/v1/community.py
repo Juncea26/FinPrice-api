@@ -11,7 +11,7 @@ from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.database import get_db
+from app.core.database import get_read_db, get_write_db
 from app.core.security import check_read_rate_limit, check_write_rate_limit, sanitize_input_text
 from app.models.schemas import (
     CommunityOfferCreateSchema,
@@ -41,7 +41,7 @@ async def list_community_posts(
     district: Optional[str] = Query(None, max_length=80),
     product_id: Optional[str] = Query(None, max_length=80),
     search: Optional[str] = Query(None, max_length=100),
-    session: AsyncSession = Depends(get_db),
+    session: AsyncSession = Depends(get_read_db),
 ):
     """Retorna publicaciones de ofertas compartidas por la comunidad de usuarios."""
     clean_dept = sanitize_input_text(department, max_length=80)
@@ -69,7 +69,7 @@ async def list_community_posts(
 )
 async def create_community_post(
     post_in: CommunityPostCreateSchema,
-    session: AsyncSession = Depends(get_db),
+    session: AsyncSession = Depends(get_write_db),
 ):
     """Crea una publicación comunitaria sobre una oferta encontrada en tiendas de Perú."""
     return await catalog_service.create_community_post(session=session, post_in=post_in)
@@ -83,7 +83,7 @@ async def create_community_post(
 )
 async def get_community_post(
     post_id: str,
-    session: AsyncSession = Depends(get_db),
+    session: AsyncSession = Depends(get_read_db),
 ):
     """Obtiene una publicación específica por su identificador."""
     clean_id = sanitize_input_text(post_id, max_length=80)
@@ -105,7 +105,7 @@ async def get_community_post(
 async def update_community_post(
     post_id: str,
     post_in: CommunityPostUpdateSchema,
-    session: AsyncSession = Depends(get_db),
+    session: AsyncSession = Depends(get_write_db),
 ):
     """Permite editar campos de una publicación existente en la comunidad."""
     clean_id = sanitize_input_text(post_id, max_length=80)
@@ -122,7 +122,7 @@ async def update_community_post(
 )
 async def delete_community_post(
     post_id: str,
-    session: AsyncSession = Depends(get_db),
+    session: AsyncSession = Depends(get_write_db),
 ):
     """Elimina una publicación comunitaria por ID."""
     clean_id = sanitize_input_text(post_id, max_length=80)
@@ -156,7 +156,7 @@ async def list_community_offers(
     province: Optional[str] = Query(None, max_length=80),
     district: Optional[str] = Query(None, max_length=80),
     product_id: Optional[str] = Query(None, max_length=80),
-    session: AsyncSession = Depends(get_db),
+    session: AsyncSession = Depends(get_read_db),
 ):
     """Retorna la lista de ofertas físicas reales reportadas por usuarios en tiendas y malls del Perú."""
     clean_dept = sanitize_input_text(department, max_length=80)
@@ -189,7 +189,7 @@ async def list_community_offers(
 )
 async def create_community_offer(
     offer_in: CommunityOfferCreateSchema,
-    session: AsyncSession = Depends(get_db),
+    session: AsyncSession = Depends(get_write_db),
 ):
     """Registra una oferta física real encontrada en tienda local."""
     return await catalog_service.create_community_offer(session=session, offer_in=offer_in)
@@ -210,10 +210,37 @@ async def create_community_offer(
 async def update_community_offer_endpoint(
     offer_id: str,
     offer_in: Dict[str, Any],
-    session: AsyncSession = Depends(get_db),
+    session: AsyncSession = Depends(get_write_db),
 ):
     """Actualiza los datos de una oferta física reportada previamente."""
     clean_id = sanitize_input_text(offer_id, max_length=80)
     return await catalog_service.update_community_offer(
         session=session, offer_id=clean_id, offer_update=offer_in
     )
+
+
+@router.delete(
+    "/community-offers/{offer_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Eliminar una oferta física comunitaria",
+    dependencies=[Depends(check_write_rate_limit)],
+)
+@router.delete(
+    "/community/offers/{offer_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    include_in_schema=False,
+    dependencies=[Depends(check_write_rate_limit)],
+)
+async def delete_community_offer_endpoint(
+    offer_id: str,
+    session: AsyncSession = Depends(get_write_db),
+):
+    """Elimina una oferta física comunitaria por ID."""
+    clean_id = sanitize_input_text(offer_id, max_length=80)
+    deleted = await catalog_service.delete_community_offer(session=session, offer_id=clean_id)
+    if not deleted:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Oferta comunitaria con ID '{clean_id}' no encontrada.",
+        )
+    return None

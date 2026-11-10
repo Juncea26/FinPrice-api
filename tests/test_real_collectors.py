@@ -93,9 +93,17 @@ def client():
         matched_title = _title_for_url(url)
         json_title = matched_title.replace('"', '\\"')
         is_lg_oled = "oled" in url.lower() and "c6" in url.lower()
+        is_lg_oled_b6 = "oled" in url.lower() and "b6" in url.lower()
         is_ipad_a16 = "ipad" in url.lower() and "a16" in url.lower()
         is_iphone_16 = "iphone-16" in url.lower()
+        is_tab_a11 = "tab-a11" in url.lower()
         if "falabella" in url:
+            if is_tab_a11:
+                return """
+                <html><script id="__NEXT_DATA__" type="application/json">
+                {"props":{"pageProps":{"productData":{"id":"21239694","name":"Tablet Samsung Galaxy Tab A11 8.7\\" 64GB 4GB RAM","sellerName":"Falabella","attributes":{"specifications":[{"name":"Capacidad de almacenamiento","value":"64GB"},{"name":"Memoria RAM","value":"4GB"},{"name":"Tamaño de la pantalla","value":"8.7"}]},"variants":[{"id":"21239694","name":"Galaxy Tab A11 64GB","prices":[{"type":"internetPrice","price":["449.00"],"crossed":false},{"type":"normalPrice","price":["899.00"],"crossed":true}],"medias":[{"url":"https://media.falabella.com/falabellaPE/147828270_01/public"}]}]}}}}
+                </script></html>
+                """
             if is_ipad_a16:
                 return """
                 <html><script id="__NEXT_DATA__" type="application/json">
@@ -116,6 +124,12 @@ def client():
             </script></html>
             """.replace("__TITLE__", json_title).replace("__PRICE__", f_price)
         elif "tottus" in url:
+            if is_tab_a11:
+                return """
+                <html><script id="__NEXT_DATA__" type="application/json">
+                {"props":{"pageProps":{"productData":{"id":"147828269","name":"Tablet Samsung Galaxy Tab A11 64GB Gray","sellerName":"Tottus","attributes":{"specifications":[{"name":"Tamaño de la pantalla","value":"8.7"},{"name":"Capacidad de almacenamiento","value":"64GB"},{"name":"marca","value":"SAMSUNG"}]},"variants":[{"id":"147828270","name":"Tablet Samsung Galaxy Tab A11 64GB Gray","prices":[{"type":"cmrPrice","price":["459"],"crossed":false},{"type":"internetPrice","price":["479"],"crossed":false},{"type":"normalPrice","price":["549"],"crossed":true}],"medias":[{"url":"https://media.falabella.com/tottusPE/147828270_01/public"}]}]}}}}
+                </script></html>
+                """
             if is_ipad_a16:
                 return """
                 <html><script id="__NEXT_DATA__" type="application/json">
@@ -131,9 +145,17 @@ def client():
             return None
         elif "efe" in url or "curacao" in url:
             e_price = (
-                "5139.00"
-                if is_lg_oled
-                else ("1979.00" if is_ipad_a16 else ("3499.00" if is_iphone_16 else "1899.00"))
+                "549.00"
+                if is_tab_a11
+                else (
+                    "2999.00"
+                    if is_lg_oled_b6
+                    else (
+                        "5139.00"
+                        if is_lg_oled
+                        else ("1979.00" if is_ipad_a16 else ("3499.00" if is_iphone_16 else "1899.00"))
+                    )
+                )
             )
             return """
             <html><head><meta property="og:image" content="https://www.efe.com.pe/media/catalog/product/prod1.jpg" /></head>
@@ -146,9 +168,13 @@ def client():
             """.replace("__TITLE__", matched_title).replace("__PRICE__", e_price)
         elif "hiraoka" in url:
             h_price = (
-                "3899.00"
-                if is_lg_oled
-                else ("1949.00" if is_ipad_a16 else ("3399.00" if is_iphone_16 else "1829.00"))
+                "499.00"
+                if is_tab_a11
+                else (
+                    "3899.00"
+                    if is_lg_oled
+                    else ("1949.00" if is_ipad_a16 else ("3399.00" if is_iphone_16 else "1829.00"))
+                )
             )
             return """
             <html><body>
@@ -161,6 +187,12 @@ def client():
             </body></html>
             """.replace("__JSON_TITLE__", json_title).replace("__TITLE__", matched_title).replace("__PRICE__", h_price)
         elif "ripley" in url:
+            if is_tab_a11:
+                return """
+                <html><script id="__NEXT_DATA__" type="application/json">
+                {"props":{"pageProps":{"detailProps":{"data":{"product":{"name":"TABLET SAMSUNG GALAXY TAB A11 8.7 64GB","images":["https://home.ripley.com.pe/Attachment/WOP_5/2004367413754/2004367413754_2.jpg"],"parentpricestock":{"price":{"card":{"valueNumber":439},"sale":{"valueNumber":459},"master":{"valueNumber":649}}}}}}}}}
+                </script></html>
+                """
             r_price = "3799" if is_lg_oled else "3399"
             return """
             <html><script id="__NEXT_DATA__" type="application/json">
@@ -199,6 +231,15 @@ def client():
         asyncio.run(_reset_and_sync())
         with TestClient(app) as test_client:
             yield test_client
+
+        async def _restore_verified_catalog():
+            from app.core.seed_data import sync_and_upsert_catalog
+            async with AsyncSessionLocal() as session:
+                await catalog_service.purge_ghost_community_data(session)
+                await sync_and_upsert_catalog(session=session)
+                catalog_service.invalidate_cache()
+
+        asyncio.run(_restore_verified_catalog())
 
 
 @pytest.fixture(autouse=True)
@@ -934,11 +975,12 @@ def test_enabled_stores_dynamic_recalc(client: TestClient):
 
 
 def test_community_offers_flow(client: TestClient):
-    """Verifica creación y consulta de ofertas físicas comunitarias con validación de ubigeo."""
+    """Verifica creación, bloqueo de datos fantasma y limpieza total de ofertas físicas comunitarias."""
     prods_res = client.get("/api/v1/products")
     first_prod_id = prods_res.json()[0]["id"]
 
-    offer_payload = {
+    # 1. Verificar que el candado bloquea 'Usuario Real' / 'Precio en liquidación de vitrina'
+    ghost_payload = {
         "productId": first_prod_id,
         "physicalStoreName": "Tiendas Efe Chiclayo Centro",
         "department": "Lambayeque",
@@ -948,16 +990,37 @@ def test_community_offers_flow(client: TestClient):
         "comment": "Precio en liquidación de vitrina",
         "authorName": "Usuario Real",
     }
-    res_create = client.post("/api/v1/community-offers", json=offer_payload)
-    assert res_create.status_code == 201
-    created = res_create.json()
-    assert created["department"] == "Lambayeque"
-    assert created["priceFound"] == 3699.00
+    res_ghost = client.post("/api/v1/community-offers", json=ghost_payload)
+    assert res_ghost.status_code == 422
 
-    invalid_payload = offer_payload.copy()
-    invalid_payload["department"] = "ProvinciaInventada"
-    res_err = client.post("/api/v1/community-offers", json=invalid_payload)
-    assert res_err.status_code == 422
+    # 2. Crear y limpiar oferta legítima de prueba
+    offer_payload = {
+        "productId": first_prod_id,
+        "physicalStoreName": "Hiraoka Miraflores",
+        "department": "Lima",
+        "province": "Lima",
+        "district": "Miraflores",
+        "priceFound": 1899.00,
+        "comment": "Oferta temporal verificada en tienda física",
+        "authorName": "Tester QA FinPrice",
+    }
+    created_id = None
+    try:
+        res_create = client.post("/api/v1/community-offers", json=offer_payload)
+        assert res_create.status_code == 201
+        created = res_create.json()
+        created_id = created["id"]
+        assert created["department"] == "Lima"
+        assert created["priceFound"] == 1899.00
+
+        invalid_payload = offer_payload.copy()
+        invalid_payload["department"] = "ProvinciaInventada"
+        res_err = client.post("/api/v1/community-offers", json=invalid_payload)
+        assert res_err.status_code == 422
+    finally:
+        if created_id:
+            del_res = client.delete(f"/api/v1/community-offers/{created_id}")
+            assert del_res.status_code == 204
 
 
 def test_admin_sync_security(client: TestClient):
@@ -2127,9 +2190,9 @@ async def test_single_store_products_allowed_and_canonical_matcher_accepts_1_plu
 def test_daily_price_history_advances_and_price_drops_endpoint(client: TestClient):
     """
     Verifica que:
-    1. priceHistory30Days / price_history tenga los días reales acumulados hasta hoy (daysTracked >= 4)
-       con etiquetas de fecha reales ('02 Nov', '03 Nov', '04 Nov', '05 Nov').
-    2. Se calculen correctamente historicalMinPrice, isHistoricalMin, previousBestPrice y priceDropAmount.
+    1. priceHistory30Days / price_history tenga ÚNICAMENTE 1 fila real correspondiente a hoy
+       (daysTracked == 1, cero días pasados inventados o rellenados hacia atrás).
+    2. historicalMinPrice sea exactamente igual al bestPrice real verificado de hoy.
     3. El endpoint GET /api/v1/notifications/price-drops devuelva la lista de productos que han bajado
        de precio con todos los campos requeridos por Android.
     """
@@ -2137,14 +2200,13 @@ def test_daily_price_history_advances_and_price_drops_endpoint(client: TestClien
     assert res.status_code == 200
     iphone = res.json()
 
-    assert iphone["daysTracked"] >= 4
-    assert iphone["days_tracked"] == iphone["daysTracked"]
+    assert iphone["daysTracked"] == 1
+    assert iphone["days_tracked"] == 1
     history = iphone["priceHistory30Days"]
-    assert len(history) >= 4
-    labels = [pt["dateLabel"] for pt in history]
-    assert "02 Nov" in labels
-    assert "05 Nov" in labels
-    assert iphone["historicalMinPrice"] <= iphone["bestPrice"]
+    assert len(history) == 1
+    assert history[0]["price"] == iphone["bestPrice"]
+    assert iphone["historicalMinPrice"] == iphone["bestPrice"]
+    assert iphone["isHistoricalMin"] is True
     assert iphone["previousBestPrice"] >= iphone["bestPrice"]
     assert iphone["priceDropAmount"] == round(max(0.0, iphone["previousBestPrice"] - iphone["bestPrice"]), 2)
 
@@ -2172,6 +2234,170 @@ def test_daily_price_history_advances_and_price_drops_endpoint(client: TestClien
     assert first["drop_amount"] > 0
     assert first["old_price"] > first["new_price"]
     assert first["product_url"].startswith("https://")
+
+
+def test_galaxy_tab_a11_groups_all_6_official_stores(client: TestClient):
+    """
+    Verifica que Tablet Samsung Galaxy Tab A11 8.7" 64GB 4GB RAM agrupe sus 6 tiendas oficiales:
+    Ripley (S/ 439.00), Falabella (S/ 449.00), Tottus (S/ 459.00), Hiraoka (S/ 499.00),
+    Tiendas Efe (S/ 549.00) y La Curacao (S/ 549.00).
+    """
+    res = client.get("/api/v1/products/prod_samsung_galaxy_tab_a11")
+    assert res.status_code == 200
+    tab = res.json()
+    store_ids = {sp["storeId"] for sp in tab["storePrices"]}
+    assert store_ids == {"ripley", "falabella", "tottus", "hiraoka", "efe", "curacao"}
+    assert tab["availableStoresCount"] == 6
+    assert tab["bestPrice"] == 439.0
+    assert tab["bestStoreName"] == "Ripley"
+    assert len(tab["priceHistory30Days"]) == 1
+    assert tab["historicalMinPrice"] == 439.0
+
+
+def test_rate_limiting_50_requests_per_minute_and_waf_blacklist(client: TestClient):
+    """
+    Verifica:
+    1. Límite de 50 peticiones por minuto por IP: las primeras 50 devuelven 200 OK y la #51 devuelve HTTP 429
+       con header Retry-After: 60.
+    2. IP en IP_BLACKLIST recibe HTTP 403 Forbidden inmediato.
+    3. Inyección SQL (' OR 1=1) en query string recibe HTTP 403 Forbidden y banea la IP automáticamente.
+    """
+    from app.core.security import IP_BLACKLIST, rate_limiter
+
+    rate_limiter.reset()
+    test_ip = "200.48.225.88"
+    headers = {"X-Forwarded-For": test_ip}
+
+    for i in range(50):
+        r = client.get("/api/v1/stores", headers=headers)
+        assert r.status_code == 200, f"Fallo en petición #{i + 1}"
+
+    r_51 = client.get("/api/v1/stores", headers=headers)
+    assert r_51.status_code == 429
+    assert r_51.headers.get("Retry-After") == "60"
+    assert "50" in r_51.json()["detail"]
+
+    # IP en lista negra predefinida
+    r_blacklisted = client.get("/api/v1/products", headers={"X-Forwarded-For": "185.220.101.1"})
+    assert r_blacklisted.status_code == 403
+
+    # Inyección SQL bloqueada por WAF antes de tocar PostgreSQL
+    sqli_ip = "190.119.44.77"
+    r_sqli = client.get("/api/v1/products?search=' OR 1=1 --", headers={"X-Forwarded-For": sqli_ip})
+    assert r_sqli.status_code == 403
+    assert sqli_ip in IP_BLACKLIST
+
+    rate_limiter.reset()
+
+
+def test_token_authentication_and_security_architecture_endpoint(client: TestClient):
+    """
+    Verifica:
+    1. POST /api/v1/auth/token emite un token HMAC-SHA256 válido.
+    2. El token es aceptado en Authorization: Bearer <token> y X-FinPrice-Token.
+    3. GET /api/v1/security/architecture expone las 5 capas de seguridad, el pool de 10 conexiones
+       y las 4 ventanas diarias (00:59, 06:59, 12:59, 18:59).
+    """
+    tok_res = client.post("/api/v1/auth/token?client_id=finprice-android-app")
+    assert tok_res.status_code == 200
+    tok_data = tok_res.json()
+    token = tok_data["access_token"]
+    assert tok_data["token_type"] == "Bearer"
+    assert len(token) > 20
+
+    res_with_token = client.get(
+        "/api/v1/products",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert res_with_token.status_code == 200
+
+    res_bad_token = client.get(
+        "/api/v1/products",
+        headers={"Authorization": "Bearer token_falso_manipulado"},
+    )
+    assert res_bad_token.status_code == 401
+
+    arch_res = client.get("/api/v1/security/architecture")
+    assert arch_res.status_code == 200
+    arch = arch_res.json()
+    assert arch["rate_limiting"]["max_requests_per_minute_per_ip"] == 50
+    assert arch["database_separation_and_pool"]["pool_size"] == 5
+    assert arch["database_separation_and_pool"]["max_overflow"] == 5
+    assert arch["database_separation_and_pool"]["max_total_connections"] == 10
+    assert arch["scheduled_updates"]["daily_windows"] == ["00:59", "06:59", "12:59", "18:59"]
+
+
+@pytest.mark.asyncio
+async def test_read_only_database_session_blocks_dml_and_ddl():
+    """
+    Verifica que ReaderSessionLocal (get_read_db) solo permita SELECT y bloquee cualquier
+    intento de DELETE, UPDATE, INSERT o DROP con PermissionError.
+    """
+    from sqlalchemy import text
+    from app.core.database import ReaderSessionLocal, engine, reader_engine
+
+    try:
+        async with ReaderSessionLocal() as read_session:
+            res = await read_session.execute(text("SELECT COUNT(*) FROM products"))
+            assert (res.scalar() or 0) >= 1
+
+            with pytest.raises(Exception) as exc_info:
+                await read_session.execute(text("DELETE FROM products WHERE id = 'prod_iphone_16'"))
+            err_msg = str(exc_info.value).lower()
+            assert "read_only" in err_msg or "read-only" in err_msg or "solo lectura" in err_msg
+    finally:
+        await engine.dispose()
+        await reader_engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_intraday_minimum_price_control_single_row_per_date():
+    """
+    Verifica que record_intraday_price_observation mantenga 1 sola fila por fecha en price_history
+    guardando el mínimo del día min(daily_record.price, new_best_price), mientras product.best_price
+    refleja el precio vigente del último corte.
+    """
+    from sqlalchemy import select
+    from app.core.database import WriterSessionLocal, engine, reader_engine
+    from app.models.entities import PriceHistoryEntity, ProductEntity
+
+    try:
+        async with WriterSessionLocal() as session:
+            prod_q = await session.execute(
+                select(ProductEntity).where(ProductEntity.id == "prod_samsung_galaxy_tab_a11")
+            )
+            product = prod_q.scalar_one()
+            original_best = product.best_price
+
+            # Simular corte 12:59 con rebaja intradía a S/ 419.00
+            await orchestrator.record_intraday_price_observation(session, product, 419.0)
+            await session.commit()
+
+            # Simular corte 18:59 donde el precio sube a S/ 449.00
+            await orchestrator.record_intraday_price_observation(session, product, 449.0)
+            await session.commit()
+
+            hist_q = await session.execute(
+                select(PriceHistoryEntity).where(
+                    PriceHistoryEntity.product_id == "prod_samsung_galaxy_tab_a11"
+                )
+            )
+            rows = hist_q.scalars().all()
+            assert len(rows) == 1
+            # El mínimo del día en price_history se conserva en 419.0 aunque el precio actual subió a 449.0
+            assert rows[0].price == 419.0
+            assert product.best_price == 449.0
+            assert product.historical_min_price == 419.0
+
+            # Restaurar estado real verificado (S/ 439.00)
+            rows[0].price = original_best
+            product.best_price = original_best
+            product.historical_min_price = original_best
+            await session.commit()
+    finally:
+        await engine.dispose()
+        await reader_engine.dispose()
+
 
 
 

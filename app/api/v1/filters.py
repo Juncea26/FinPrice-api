@@ -6,7 +6,7 @@ y especificaciones técnicas (RAM, Almacenamiento, Procesador, Conectividad, etc
 from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.database import get_db
+from app.core.database import get_read_db
 from app.core.security import check_read_rate_limit
 from app.models.schemas import DynamicFiltersSchema
 from app.services.catalog_service import catalog_service
@@ -20,7 +20,7 @@ router = APIRouter(prefix="/filters", tags=["Filtros & Facetas Dinámicas"])
     summary="Facetas dinámicas de filtrado por categoría, marca y especificaciones técnicas",
     dependencies=[Depends(check_read_rate_limit)],
 )
-async def get_dynamic_filters(session: AsyncSession = Depends(get_db)):
+async def get_dynamic_filters(session: AsyncSession = Depends(get_read_db)):
     """
     Calcula dinámicamente a partir de los productos activos en la base de datos:
     - categories: ['Todos', 'Smartphones', 'Laptops', 'Tablets', 'TVs']

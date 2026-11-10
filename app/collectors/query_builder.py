@@ -129,6 +129,9 @@ FORBIDDEN_QUERY_MARKETING_WORDS: Set[str] = {
     "5g",
     "4g",
     "lte",
+    "snapdragon",
+    "qualcomm",
+    "mediatek",
 }
 
 # Mapa de líneas de producto que ya implican la marca (para no duplicar "Apple iPad" -> "iPad")
@@ -260,7 +263,7 @@ def _extract_storage_and_inches(
     # 2. Pulgadas de pantalla desde el título y tech_specs
     screen_inches_token: Optional[str] = None
     inch_match = re.search(
-        r"\b(\d{1,2}(?:\.\d)?)\s*(?:\"|''|pulgadas|pulg|inch)\b",
+        r"\b(\d{1,2}(?:\.\d)?)\s*(?:\"|''|(?:pulgadas|pulg|inch)\b)",
         _strip_accents(product_title),
         flags=re.IGNORECASE,
     )
@@ -307,7 +310,7 @@ def build_search_queries(
 
     # Normalizar título eliminando colores, decimales de pulgadas (ej. '13.6 Pulgadas') y unidades pegadas ('512GB', '12GB')
     cleaned = _strip_accents(strip_color_tokens(product_title))
-    cleaned = re.sub(r"\b\d{1,2}\.\d+\s*(?:pulgadas|pulg|\"|'')?\b", " ", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"\b\d{1,2}\.\d+\s*(?:\"|''|(?:pulgadas|pulg)\b)?", " ", cleaned, flags=re.IGNORECASE)
     cleaned = re.sub(r"\b\d{1,4}\s*(?:gb|tb|mah|mp|hz|w)\b", " ", cleaned, flags=re.IGNORECASE)
     cleaned = re.sub(r"\b(?:10ma|11ma|10a|11a)\s*(?:gen|generacion)?\b", " ", cleaned, flags=re.IGNORECASE)
 
@@ -318,6 +321,13 @@ def build_search_queries(
         low = tok.lower()
         if low in FORBIDDEN_QUERY_COLORS or low in FORBIDDEN_QUERY_MARKETING_WORDS:
             continue
+        if low == "x" and "snapdragon" in cleaned.lower():
+            continue
+        m_oled_sku = re.match(r"^oled(\d{2})([a-z]\d+)[a-z]*$", low)
+        if m_oled_sku:
+            if not screen_inches_token:
+                screen_inches_token = m_oled_sku.group(1)
+            low = m_oled_sku.group(2)
         if low in capacity_and_inch_tokens:
             continue
         # Ignorar si es la medida en pulgadas de una tablet/laptop acompañada de modelo explícito (ej. 'iPad 11 A16')

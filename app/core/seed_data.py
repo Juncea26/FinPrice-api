@@ -333,18 +333,18 @@ SEED_PRODUCTS: List[Dict[str, Any]] = [   {   'available_stores_count': 4,
                            '"Procesador α9 AI 4K Gen9", "Resolución": "3840 x 2160 (4K UHD)", "Sistema Operativo": '
                            '"webOS 26"}',
         'title': 'Televisor LG 55" OLED evo AI C6 4K Smart TV 2026'},
-    {   'available_stores_count': 1,
-        'best_price': 2799.0,
+    {   'available_stores_count': 4,
+        'best_price': 2649.0,
         'best_store_name': 'Wong',
         'brand': 'LG',
         'category': 'TVs',
         'description': 'Ficha técnica oficial de Televisor LG 55" OLED Smart TV OLED55B6PSA. Comparativa multi-tienda '
                        'con precios online públicos verificados en tiempo real.',
-        'discount_percentage': 28,
+        'discount_percentage': 32,
         'features_json': '["Conectividad: Wi-Fi, Bluetooth, 4 x HDMI", "Marca: LG", "Pantalla: 55\\" OLED 120Hz", '
                          '"Resolución: 3840 x 2160 (4K UHD)", "Sistema Operativo: webOS", "Procesador: Procesador α8 '
                          'AI 4K", "Memoria RAM: 2.5 GB", "Almacenamiento: 8 GB"]',
-        'historical_min_price': 2799.0,
+        'historical_min_price': 2649.0,
         'id': 'prod_lg_oled_55_b6',
         'image_url': 'https://metroio.vtexassets.com/arquivos/ids/669104/Televisor-LG-OLED-55-OLED55B6PSA-1-367071.jpg?v=639275962615500000',
         'is_favorite': False,
@@ -419,17 +419,17 @@ SEED_PRODUCTS: List[Dict[str, Any]] = [   {   'available_stores_count': 4,
                            'Liquid Retina", "Procesador": "Chip A16 Bionic", "Resolución": "2360 x 1640", "Sistema '
                            'Operativo": "iPadOS 18"}',
         'title': 'Apple iPad 11" Chip A16 Wi-Fi 128GB'},
-    {   'available_stores_count': 3,
-        'best_price': 429.0,
-        'best_store_name': 'Hiraoka',
+    {   'available_stores_count': 6,
+        'best_price': 439.0,
+        'best_store_name': 'Ripley',
         'brand': 'Samsung',
         'category': 'Tablets',
         'description': 'Ficha técnica oficial de Tablet Samsung Galaxy Tab A11 8.7" 64GB 4GB RAM. Comparativa '
                        'multi-tienda con precios online públicos verificados en tiempo real.',
-        'discount_percentage': 34,
+        'discount_percentage': 32,
         'features_json': '["Almacenamiento: 64 GB", "Marca: Samsung", "Memoria RAM: 4 GB", "Pantalla: 8.7\\" WXGA+", '
                          '"Procesador: MediaTek Helio G99", "Resolución: 1340 x 800", "Sistema Operativo: Android 14"]',
-        'historical_min_price': 429.0,
+        'historical_min_price': 439.0,
         'id': 'prod_samsung_galaxy_tab_a11',
         'image_url': 'https://hiraoka.com.pe/pub/media/catalog/product/1/3/137729_3_1.jpg',
         'is_favorite': False,
@@ -816,10 +816,31 @@ SEED_STORE_OFFERS: List[Dict[str, Any]] = [   {   'is_best_price': True,
     {   'is_best_price': True,
         'offer_url': 'https://www.wong.pe/televisor-lg-oled-55-oled55b6psa-1067136/p',
         'original_price': 3899.0,
-        'price': 2799.0,
+        'price': 2649.0,
         'product_id': 'prod_lg_oled_55_b6',
         'store_id': 'wong',
         'store_name': 'Wong'},
+    {   'is_best_price': True,
+        'offer_url': 'https://www.metro.pe/televisor-lg-oled-55-oled55b6psa-1067136/p',
+        'original_price': 3899.0,
+        'price': 2649.0,
+        'product_id': 'prod_lg_oled_55_b6',
+        'store_id': 'metro',
+        'store_name': 'Metro'},
+    {   'is_best_price': False,
+        'offer_url': 'https://www.efe.com.pe/tv-55-smart-webos-oled-4k-uhd-oled55b6psa.html',
+        'original_price': 4399.0,
+        'price': 3299.0,
+        'product_id': 'prod_lg_oled_55_b6',
+        'store_id': 'efe',
+        'store_name': 'Tiendas Efe'},
+    {   'is_best_price': False,
+        'offer_url': 'https://www.lacuracao.pe/tv-55-smart-webos-oled-4k-uhd-oled55b6psa.html',
+        'original_price': 4399.0,
+        'price': 3299.0,
+        'product_id': 'prod_lg_oled_55_b6',
+        'store_id': 'curacao',
+        'store_name': 'La Curacao'},
     {   'is_best_price': True,
         'offer_url': 'https://www.lacuracao.pe/tv-samsung-65-neo-qled-4k-uhd-tizen-qn85d-2024-qn65qn85dbgxpe.html',
         'original_price': 7999.0,
@@ -856,9 +877,30 @@ SEED_STORE_OFFERS: List[Dict[str, Any]] = [   {   'is_best_price': True,
         'store_id': 'hiraoka',
         'store_name': 'Hiraoka'},
     {   'is_best_price': True,
+        'offer_url': 'https://simple.ripley.com.pe/tablet-samsung-galaxy-tab-a11-87-64gb-2004367413754p',
+        'original_price': 649.0,
+        'price': 439.0,
+        'product_id': 'prod_samsung_galaxy_tab_a11',
+        'store_id': 'ripley',
+        'store_name': 'Ripley'},
+    {   'is_best_price': False,
+        'offer_url': 'https://www.falabella.com.pe/falabella-pe/product/21239694/galaxy-tab-a11/21239694',
+        'original_price': 899.0,
+        'price': 449.0,
+        'product_id': 'prod_samsung_galaxy_tab_a11',
+        'store_id': 'falabella',
+        'store_name': 'Falabella'},
+    {   'is_best_price': False,
+        'offer_url': 'https://www.tottus.com.pe/tottus-pe/articulo/147828269/tablet-samsung-galaxy-tab-a11-64gb-gray/147828270',
+        'original_price': 549.0,
+        'price': 459.0,
+        'product_id': 'prod_samsung_galaxy_tab_a11',
+        'store_id': 'tottus',
+        'store_name': 'Tottus'},
+    {   'is_best_price': False,
         'offer_url': 'https://hiraoka.com.pe/tablet-samsung-galaxy-tab-a11-8-7-64gb-4gb-ram-gray',
         'original_price': 649.0,
-        'price': 429.0,
+        'price': 499.0,
         'product_id': 'prod_samsung_galaxy_tab_a11',
         'store_id': 'hiraoka',
         'store_name': 'Hiraoka'},
@@ -1006,9 +1048,7 @@ async def sync_and_upsert_catalog(session: AsyncSession) -> int:
     for h in existing_hist_entities:
         m = existing_hist_by_prod.setdefault(h.product_id, {})
         if getattr(h, "recorded_date", None):
-            m[h.recorded_date] = float(h.price)
-        if h.date_label:
-            m[h.date_label] = float(h.price)
+            m[str(h.recorded_date)] = float(h.price)
 
     # Contar ofertas válidas por producto permitiendo desde 1 tienda en adelante (len(offers) >= 1)
     offers_by_prod: Dict[str, List[Dict[str, Any]]] = {}
@@ -1043,7 +1083,7 @@ async def sync_and_upsert_catalog(session: AsyncSession) -> int:
             best_price=best_p,
             original_price=orig_p,
             today_peru=today_peru,
-            existing_by_date=existing_hist_by_prod.get(pid, {}),
+            existing_by_date=None,
         )
         computed_hist_by_prod[pid] = pts
         for pt in pts:
@@ -1175,12 +1215,21 @@ async def sync_and_upsert_catalog(session: AsyncSession) -> int:
                 )
                 session.add(new_h)
 
-    # 4. Limpieza estricta de cualquier dato fantasma en comunidad
+    # 4. Limpieza estricta de cualquier dato fantasma en comunidad (community_posts y community_offers)
     await session.execute(
         delete(CommunityPostEntity).where(
-            (CommunityPostEntity.author_name == "Usuario Real") |
-            (CommunityPostEntity.title.like("%liquidación de vitrina%")) |
+            (CommunityPostEntity.author_name.ilike("%Usuario Real%")) |
+            (CommunityPostEntity.title.ilike("%liquidación de vitrina%")) |
+            (CommunityPostEntity.content.ilike("%liquidación de vitrina%")) |
             (CommunityPostEntity.product_id.notin_(valid_prod_ids))
+        )
+    )
+    await session.execute(
+        delete(CommunityOfferEntity).where(
+            (CommunityOfferEntity.author_name.ilike("%Usuario Real%")) |
+            (CommunityOfferEntity.comment.ilike("%liquidación de vitrina%")) |
+            (CommunityOfferEntity.price_found == 3699.0) |
+            (CommunityOfferEntity.product_id.notin_(valid_prod_ids))
         )
     )
 

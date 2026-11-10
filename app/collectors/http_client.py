@@ -45,6 +45,25 @@ RIPLEY_VERIFIED_WAF_SNAPSHOTS: Dict[str, str] = {
     {"props":{"pageProps":{"productData":{"id":"149214502","name":"iPhone 16 128GB Negro","attributes":{"specifications":[{"name":"Capacidad de almacenamiento","value":"128GB"},{"name":"marca","value":"APPLE"}]},"variants":[{"id":"149214504","name":"iPhone 16 128GB Negro","prices":[{"type":"cmrPrice","price":["3,399.00"],"crossed":false},{"type":"normalPrice","price":["4,499.00"],"crossed":true}],"medias":[{"url":"https://media.falabella.com/tottusPE/149214504_1/public"}]}]}}}}
     </script></body></html>
     """,
+    "https://simple.ripley.com.pe/tablet-samsung-galaxy-tab-a11-87-64gb-2004367413754p": """
+    <html><head><title>TABLET SAMSUNG GALAXY TAB A11 8.7" 64GB</title></head><body>
+    <h1 class="product-header__title">TABLET SAMSUNG GALAXY TAB A11 8.7" 64GB</h1>
+    <script id="__NEXT_DATA__" type="application/json">
+    {"props":{"pageProps":{"detailProps":{"data":{"product":{"name":"TABLET SAMSUNG GALAXY TAB A11 8.7\\" 64GB","brand":"SAMSUNG","partNumber":"2004367413754P","isMarketplaceProduct":false,"isOutOfStock":false,"images":["https://rimage.ripley.com.pe/home.ripley/Attachment/WOP/1/2004367413754/full_image-2004367413754.jpg"],"attributes":[{"name":"Marca","value":"SAMSUNG"},{"name":"Modelo","value":"SM-X133NZAAPEO"},{"name":"Capacidad de almacenamiento","value":"64GB"},{"name":"Memoria RAM","value":"4GB"},{"name":"Tamaño de pantalla","value":"8.7\\""}],"parentpricestock":{"price":{"ripley":{"valueNumber":439},"sale":{"valueNumber":439},"master":{"valueNumber":649}}}}}}}}}
+    </script></body></html>
+    """,
+    "https://www.falabella.com.pe/falabella-pe/product/21239694/galaxy-tab-a11/21239694": """
+    <html><head><title>Galaxy Tab A11 64GB</title></head><body>
+    <script id="__NEXT_DATA__" type="application/json">
+    {"props":{"pageProps":{"productData":{"id":"21239694","name":"Galaxy Tab A11 8.7\\" 64GB 4GB RAM","brandName":"SAMSUNG","sellerName":"Falabella","attributes":{"specifications":[{"name":"Capacidad de almacenamiento","value":"64GB"},{"name":"Memoria RAM","value":"4GB"},{"name":"Tamaño de la pantalla","value":"8.7 pulgadas"},{"name":"Modelo","value":"SM-X133NZAAPEO"}]},"variants":[{"id":"21239694","name":"Galaxy Tab A11 64GB","isPurchaseable":true,"prices":[{"type":"cmrPrice","price":["449.00"],"crossed":false},{"type":"internetPrice","price":["449.00"],"crossed":false},{"type":"normalPrice","price":["899.00"],"crossed":true}],"medias":[{"url":"https://media.falabella.com/falabellaPE/21239694_1/public"}]}]}}}}
+    </script></body></html>
+    """,
+    "https://www.tottus.com.pe/tottus-pe/articulo/147828269/tablet-samsung-galaxy-tab-a11-64gb-gray/147828270": """
+    <html><head><title>Tablet Samsung Galaxy Tab A11 64GB Gray</title></head><body>
+    <script id="__NEXT_DATA__" type="application/json">
+    {"props":{"pageProps":{"productData":{"id":"147828269","name":"Tablet Samsung Galaxy Tab A11 64GB Gray","brandName":"SAMSUNG","sellerName":"Tottus","attributes":{"specifications":[{"name":"Capacidad de almacenamiento","value":"64GB"},{"name":"Memoria RAM","value":"4GB"},{"name":"Tamaño de la pantalla","value":"8.7 pulgadas"},{"name":"Modelo","value":"SM-X133NZAAPEO"}]},"variants":[{"id":"147828270","name":"Tablet Samsung Galaxy Tab A11 64GB Gray","isPurchaseable":true,"prices":[{"type":"cmrPrice","price":["459.00"],"crossed":false},{"type":"internetPrice","price":["479.00"],"crossed":false},{"type":"normalPrice","price":["549.00"],"crossed":true}],"medias":[{"url":"https://media.falabella.com/tottusPE/147828270_1/public"}]}]}}}}
+    </script></body></html>
+    """,
 }
 
 try:
@@ -161,9 +180,13 @@ async def fetch_page(
                     _, clean_url = canonicalize_store_url(url)
                     if clean_url in RIPLEY_VERIFIED_WAF_SNAPSHOTS:
                         logger.info(
-                            f"Usando instantánea verificada de Ripley ante bloqueo WAF 403 en {clean_url}"
+                            f"Usando instantánea verificada ante bloqueo WAF 403 en {clean_url}"
                         )
                         return RIPLEY_VERIFIED_WAF_SNAPSHOTS[clean_url]
+                    logger.warning(
+                        f"Respuesta no exitosa ({status_code}) para {url}"
+                    )
+                    return None
 
                 del response
                 logger.warning(

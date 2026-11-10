@@ -16,8 +16,20 @@ from app.api.v1.products import router as products_router
 from app.api.v1.stores import router as stores_router
 from app.api.v1.sync import router as sync_router
 from app.core.config import settings
-from app.core.database import get_db
-from app.collectors.orchestrator import orchestrator
+from app.core.database import (
+    MAX_OVERFLOW,
+    MAX_TOTAL_POOL_CONNECTIONS,
+    POOL_SIZE,
+    get_read_db,
+    get_write_db,
+)
+from app.core.security import (
+    IP_BLACKLIST,
+    MAX_REQUESTS_PER_MINUTE_PER_IP,
+    create_api_access_token,
+    sanitize_input_text,
+)
+from app.collectors.orchestrator import SCHEDULE_WINDOWS_LABELS, orchestrator
 from app.models.entities import ProductEntity
 from app.models.schemas import HealthResponse, PriceDropNotificationSchema
 from app.services.catalog_service import catalog_service
@@ -42,7 +54,7 @@ APP_START_TIME = time.time()
     tags=["Diagnóstico"],
     summary="Diagnóstico integral de FinPrice API en la nube",
 )
-async def get_health_status(session: AsyncSession = Depends(get_db)):
+async def get_health_status(session: AsyncSession = Depends(get_read_db)):
     """
     Retorna el estado operativo integral:
     - Estado de la conexión a Neon PostgreSQL (SELECT 1)
@@ -92,29 +104,96 @@ async def get_health_status(session: AsyncSession = Depends(get_db)):
         total_stores=total_stores,
         active_stores=active_stores,
         last_sync_timestamp=orchestrator.last_sync_timestamp,
-        next_scheduled_update="00:59 America/Lima",
+        next_scheduled_update="00:59, 06:59, 12:59, 18:59 America/Lima",
         stores_status=stores_status_dict,
         uptime_seconds=round(uptime, 2),
     )
 
 
 @api_v1_router.post(
+    "/auth/token",
+    tags=["Seguridad & Autenticación"],
+    summary="Emite un Token firmado HMAC-SHA256 para la App Móvil Android",
+)
+async def issue_client_token(
+    client_id: str = Query("finprice-android-app", max_length=80),
+):
+    """
+    Genera un token firmado HMAC-SHA256 válido para autenticar peticiones en la capa API
+    mediante `Authorization: Bearer <token>` o `X-FinPrice-Token: <token>`.
+    """
+    clean_client = sanitize_input_text(client_id, max_length=80) or "finprice-android-app"
+    return create_api_access_token(client_id=clean_client, expires_in_seconds=86400 * 7)
+
+
+@api_v1_router.get(
+    "/security/architecture",
+    tags=["Seguridad & Autenticación"],
+    summary="Resumen en vivo de las 5 capas de seguridad y pool de conexiones",
+)
+async def get_security_architecture():
+    """
+    Documenta y expone en vivo la configuración activa de ciberseguridad y rendimiento:
+    1. Rate Limiting por IP (50 peticiones/minuto por IP, ventana deslizante 60s).
+    2. WAF + IP Blacklist + Anti-SQLi/XSS en memoria antes de tocar PostgreSQL.
+    3. Autenticación por Token HMAC-SHA256 en la capa API.
+    4. Separación de Base de Datos (Writer para Scraper vs Read-Only para App) + Pool 10 conexiones.
+    5. Programador de 4 actualizaciones diarias (00:59, 06:59, 12:59, 18:59 America/Lima).
+    """
+    return {
+        "rate_limiting": {
+            "enabled": True,
+            "max_requests_per_minute_per_ip": MAX_REQUESTS_PER_MINUTE_PER_IP,
+            "window_seconds": 60,
+            "exceeded_status_code": 429,
+            "retry_after_seconds": 60,
+        },
+        "waf_and_blacklist": {
+            "enabled": True,
+            "blacklisted_ips_count": len(IP_BLACKLIST),
+            "sample_blacklisted_ips": sorted(list(IP_BLACKLIST))[:10],
+            "auto_ban_on_sqli_or_xss": True,
+            "auto_ban_after_consecutive_rate_limit_violations": 5,
+            "blocked_status_code": 403,
+        },
+        "token_authentication": {
+            "enabled": True,
+            "algorithm": "HMAC-SHA256",
+            "token_endpoint": "/api/v1/auth/token",
+            "accepted_headers": ["Authorization: Bearer <token>", "X-FinPrice-Token"],
+        },
+        "database_separation_and_pool": {
+            "writer_session": "WriterSessionLocal (get_write_db) - SELECT, INSERT, UPDATE, DELETE (Scraper & Admin)",
+            "reader_session": "ReaderSessionLocal (get_read_db) - Solo SELECT (default_transaction_read_only = on / finprice_reader)",
+            "pool_size": POOL_SIZE,
+            "max_overflow": MAX_OVERFLOW,
+            "max_total_connections": MAX_TOTAL_POOL_CONNECTIONS,
+        },
+        "scheduled_updates": {
+            "timezone": "America/Lima (UTC-5)",
+            "daily_windows": SCHEDULE_WINDOWS_LABELS,
+            "intraday_min_price_tracking": True,
+        },
+    }
+
+
+@api_v1_router.post(
     "/cron/daily-update",
     tags=["Cron & Sincronización"],
-    summary="Ejecuta la actualización diaria de precios e historial (00:59 AM America/Lima)",
+    summary="Ejecuta la actualización programada de precios e historial (00:59, 06:59, 12:59, 18:59 America/Lima)",
 )
 @api_v1_router.get(
     "/cron/daily-update",
     tags=["Cron & Sincronización"],
-    summary="Ejecuta la actualización diaria de precios e historial (00:59 AM America/Lima)",
+    summary="Ejecuta la actualización programada de precios e historial (00:59, 06:59, 12:59, 18:59 America/Lima)",
 )
-async def trigger_daily_cron_update(session: AsyncSession = Depends(get_db)):
+async def trigger_daily_cron_update(session: AsyncSession = Depends(get_write_db)):
     """
-    Endpoint invocado por GitHub Actions (.github/workflows/daily_cron_0059.yml) a las 00:59 AM (UTC-5)
-    para despertar el contenedor de Render, ejecutar run_daily_price_update() y devolver cuántos
-    productos se actualizaron, cuántos bajaron de precio y cuántos días de historial tienen.
+    Endpoint invocado en las 4 ventanas diarias (00:59, 06:59, 12:59 y 18:59 America/Lima)
+    para ejecutar run_scheduled_price_update() y devolver cuántos productos se actualizaron,
+    cuántos bajaron de precio y cuántos días de historial tienen.
     """
-    result = await orchestrator.run_daily_price_update(
+    result = await orchestrator.run_scheduled_price_update(
         session=session,
         on_cache_invalidate=catalog_service.invalidate_cache,
     )
@@ -144,7 +223,7 @@ async def get_price_drops_notifications(
         max_length=500,
         description="Lista opcional de product_id separados por coma (ej. favoritos del usuario)",
     ),
-    session: AsyncSession = Depends(get_db),
+    session: AsyncSession = Depends(get_read_db),
 ):
     """
     Devuelve la lista de productos que han bajado de precio respecto a su precio anterior o regular,
