@@ -12,7 +12,7 @@ from bs4 import BeautifulSoup, Tag
 from app.core.logging import get_logger
 from app.collectors.spec_extractor import extract_product_specs
 from app.collectors.url_utils import canonicalize_store_url, is_valid_product_image_url
-from app.collectors.validators import is_official_store_seller, validate_product_identity
+from app.collectors.validators import check_is_in_stock, is_official_store_seller, validate_product_identity
 
 logger = get_logger("parsers.hiraoka")
 
@@ -20,6 +20,8 @@ CAROUSEL_AND_RELATED_SELECTORS = (
     ".block.upsell, .block.related, .block.crosssell, "
     ".products-upsell, .products-related, .products-crosssell, "
     "[data-content-type='products'], .widget.block-products-list, "
+    ".warranty, .garantia, .garantia-extendida, .asistencia-plus, "
+    "[class*='warranty'], [class*='garantia'], [id*='warranty'], [id*='garantia'], "
     "aside, footer, nav"
 )
 
@@ -74,19 +76,32 @@ def _parse_search_results(
     best_candidate: Optional[Dict[str, Any]] = None
     cards = soup.select(".product-item-info, li.product-item")
     for card in cards:
+        if card.select_one(".stock.unavailable"):
+            continue
         # En Hiraoka puede haber un primer link con la marca y un segundo con el nombre del producto
         links = card.select("a.product-item-link")
         item_title = ""
+        card_brand = ""
         item_url = search_url
         for lk in links:
             txt = lk.get_text(strip=True)
             if len(txt) > len(item_title):
+                if item_title and not card_brand:
+                    card_brand = item_title
                 item_title = txt
                 raw_href = lk.get("href") or ""
                 item_url = urljoin(search_url, raw_href) if raw_href else search_url
+            elif txt and not card_brand:
+                card_brand = txt
 
         if not item_title:
             continue
+
+        if card_brand and card_brand.lower() not in item_title.lower():
+            item_title = f"{card_brand} {item_title}".strip()
+
+        _, clean_card_url = canonicalize_store_url(item_url)
+        item_url = clean_card_url or item_url
 
         if not validate_product_identity(canonical_title, item_title, item_url, store_id="hiraoka"):
             continue
@@ -120,10 +135,12 @@ def _parse_search_results(
 
         cand = {
             "title": item_title,
+            "brand": card_brand,
             "price": current_p,
             "original_price": old_p if (old_p and old_p > current_p) else current_p,
             "image_url": img_url,
             "offer_url": item_url,
+            "in_stock": True,
         }
         if best_candidate is None or current_p < best_candidate["price"]:
             best_candidate = cand
@@ -174,12 +191,29 @@ def parse_hiraoka(
     if main_info_box and main_info_box.select_one(".stock.unavailable"):
         return None
 
+    if is_search_url and main_info_box and not soup.select(".product-item-info, li.product-item"):
+        canon_link = soup.find("link", rel="canonical")
+        og_url_meta = soup.find("meta", property="og:url")
+        redirected_u = (
+            (canon_link.get("href") if canon_link else None)
+            or (og_url_meta.get("content") if og_url_meta else None)
+        )
+        if redirected_u and "/catalogsearch/" not in str(redirected_u):
+            _, clean_offer_url = canonicalize_store_url(str(redirected_u))
+            offer_url = clean_offer_url or str(redirected_u)
+            is_search_url = False
+
     if is_search_url or (not main_info_box and soup.select(".product-item-info, li.product-item")):
         return _parse_search_results(soup, offer_url, canonical_title)
 
-    # Eliminar carruseles de productos relacionados, upsell y crosssell
+    # Eliminar carruseles de productos relacionados, upsell, crosssell y garantías extendidas
     for unwanted in soup.select(CAROUSEL_AND_RELATED_SELECTORS):
         unwanted.decompose()
+    if main_info_box:
+        for opt_box in main_info_box.select(".product-options-wrapper, .fieldset, .warranty-box"):
+            opt_txt = opt_box.get_text(" ", strip=True).lower()
+            if "asistencia plus" in opt_txt or "garantía extendida" in opt_txt or "garantia extendida" in opt_txt:
+                opt_box.decompose()
 
     h1_title = _extract_main_h1_title(soup)
     extracted_meta = extract_product_specs(html, title=h1_title, store_id="hiraoka")
@@ -196,7 +230,48 @@ def parse_hiraoka(
         else (str(meta_desc.get("content") or "").strip() if meta_desc else "")
     )
 
-    # 1. Estrategia JSON-LD del Producto Principal
+    # Determinar el alcance de precios en el DOM principal
+    has_full_page_layout = bool(soup.select_one(".page-wrapper, #maincontent, .columns"))
+    if main_info_box is not None:
+        price_scope: Optional[Tag] = main_info_box
+    elif not has_full_page_layout:
+        price_scope = soup
+    else:
+        price_scope = None
+
+    # Recolectar candidatos de las 4 fuentes de prioridad de Hiraoka (Módulo 2.2)
+    active_prices: list[float] = []
+    regular_prices: list[float] = []
+    candidate_img: Optional[str] = None
+    effective_title: str = h1_title
+    ld_desc: str = page_desc
+
+    # 1) <meta property="product:price:amount" content="...">
+    meta_price = soup.find("meta", property="product:price:amount")
+    if meta_price and meta_price.get("content"):
+        mp = clean_number(meta_price["content"])
+        if mp:
+            active_prices.append(mp)
+
+    # 2) .product-info-main [data-price-type="finalPrice"] -> atributo data-price-amount
+    if price_scope is not None:
+        final_el = price_scope.select_one('[data-price-type="finalPrice"][data-price-amount]')
+        if final_el and final_el.get("data-price-amount"):
+            fp = clean_number(final_el["data-price-amount"])
+            if fp:
+                active_prices.append(fp)
+        old_el = price_scope.select_one(
+            '[data-price-type="oldPrice"][data-price-amount], '
+            '[data-price-type="oldPrice"] .price, '
+            ".old-price .price"
+        )
+        if old_el:
+            raw_old = old_el.get("data-price-amount") or old_el.get_text()
+            op = clean_number(raw_old)
+            if op:
+                regular_prices.append(op)
+
+    # 3) JSON-LD <script type="application/ld+json"> (@type == "Product") -> offers.price / offers[0].price
     for s in soup.find_all("script", type="application/ld+json"):
         if not s.string:
             continue
@@ -208,142 +283,98 @@ def parse_hiraoka(
                     continue
 
                 ld_name = str(item.get("name") or "").strip()
-                effective_title = h1_title or ld_name
                 if h1_title and ld_name and h1_title.lower()[:12] not in ld_name.lower() and ld_name.lower()[:12] not in h1_title.lower():
                     continue
+                if not effective_title and ld_name:
+                    effective_title = ld_name
 
                 offers = item.get("offers", [])
                 offers_list = offers if isinstance(offers, list) else [offers]
-                prices_found = []
-                sale_price = None
-                list_price = None
-
                 for off in offers_list:
                     if isinstance(off, dict):
                         p = clean_number(off.get("price"))
                         if p:
-                            prices_found.append(p)
+                            active_prices.append(p)
                         price_spec = off.get("priceSpecification", {})
                         if isinstance(price_spec, dict):
                             p_type = price_spec.get("priceType", "")
                             spec_price = clean_number(price_spec.get("price"))
                             if "SalePrice" in p_type and spec_price:
-                                sale_price = spec_price
+                                active_prices.append(spec_price)
                             elif "ListPrice" in p_type and spec_price:
-                                list_price = spec_price
+                                regular_prices.append(spec_price)
 
                 official_img = item.get("image")
                 if isinstance(official_img, list) and official_img:
                     official_img = official_img[0]
-
-                if prices_found or sale_price:
-                    best = sale_price or min(prices_found)
-                    orig = list_price or max(prices_found)
-
-                    if not h1_title and effective_title:
-                        extracted_meta = extract_product_specs(
-                            html, title=effective_title, store_id="hiraoka"
-                        )
-                    ld_desc = str(item.get("description") or page_desc).strip()
-                    if canonical_title and not validate_product_identity(
-                        canonical_title,
-                        effective_title,
-                        offer_url,
-                        store_id="hiraoka",
-                        tech_specs=extracted_meta["tech_specs"],
-                        description=ld_desc,
-                    ):
-                        return None
-
-                    og_img = soup.find("meta", property="og:image")
-                    candidate_img = official_img if (isinstance(official_img, str) and is_valid_product_image_url(official_img)) else None
-                    if not candidate_img and og_img and is_valid_product_image_url(og_img.get("content")):
-                        candidate_img = og_img.get("content")
-
-                    return {
-                        "title": effective_title,
-                        "price": best,
-                        "original_price": orig if orig and orig > best else best,
-                        "image_url": candidate_img,
-                        "offer_url": offer_url,
-                        "brand": extracted_meta["brand"],
-                        "tech_specs": extracted_meta["tech_specs"],
-                        "features": extracted_meta["features"],
-                        "description": ld_desc,
-                    }
+                if isinstance(official_img, str) and is_valid_product_image_url(official_img):
+                    candidate_img = official_img
+                if item.get("description"):
+                    ld_desc = str(item.get("description")).strip()
         except Exception as e:
             logger.debug(f"Error parseando JSON-LD en Hiraoka: {e}")
 
-    # Determinar el alcance de precios en el DOM principal
-    has_full_page_layout = bool(soup.select_one(".page-wrapper, #maincontent, .columns"))
-    if main_info_box is not None:
-        price_scope: Optional[Tag] = main_info_box
-    elif not has_full_page_layout:
-        price_scope = soup
-    else:
-        price_scope = None
-
-    # 2. Selectores CSS Magento 2 estrictamente dentro de .product-info-main
+    # 4) Bloque .special-price .price / .hiraoka-online-price / [data-price-type="finalPrice"] .price dentro de price_scope
     if price_scope is not None:
-        price_elem = price_scope.select_one(
-            '[data-price-type="finalPrice"][data-price-amount], '
-            '[data-price-type="finalPrice"] .price, '
-            ".special-price .price, "
-            ".price-box .price"
+        for sel in (
+            ".hiraoka-online-price .price",
+            ".hiraoka-online-price",
+            ".special-price .price",
+            '[data-price-type="finalPrice"] .price',
+            ".price-box .price",
+        ):
+            el = price_scope.select_one(sel)
+            if el:
+                sp = clean_number(el.get("data-price-amount") or el.get_text())
+                if sp:
+                    active_prices.append(sp)
+
+    if not effective_title:
+        og_title_el = soup.find("meta", property="og:title")
+        if og_title_el and og_title_el.get("content"):
+            effective_title = str(og_title_el.get("content")).strip()
+
+    if not candidate_img:
+        og_img = soup.find("meta", property="og:image")
+        if og_img and is_valid_product_image_url(og_img.get("content")):
+            candidate_img = og_img.get("content")
+
+    if active_prices:
+        best = min(active_prices)
+        orig = max(regular_prices) if regular_prices else max(active_prices)
+        if not check_is_in_stock("hiraoka", html, status_code=200, has_valid_price=True):
+            return None
+
+        if not h1_title and effective_title:
+            extracted_meta = extract_product_specs(
+                html, title=effective_title, store_id="hiraoka"
+            )
+        full_title_for_val = (
+            f"{extracted_meta['brand']} {effective_title}".strip()
+            if extracted_meta.get("brand") and extracted_meta["brand"].lower() not in effective_title.lower()
+            else effective_title
         )
-        if price_elem:
-            raw_p = price_elem.get("data-price-amount") or price_elem.get_text()
-            p = clean_number(raw_p)
-            if p:
-                old_elem = price_scope.select_one(
-                    '[data-price-type="oldPrice"][data-price-amount], '
-                    '[data-price-type="oldPrice"] .price, '
-                    ".old-price .price"
-                )
-                raw_old = (old_elem.get("data-price-amount") or old_elem.get_text()) if old_elem else None
-                orig = clean_number(raw_old) or p
-                og_img = soup.find("meta", property="og:image")
-                og_url = og_img.get("content") if og_img else None
-                valid_img = og_url if is_valid_product_image_url(og_url) else None
+        if canonical_title and not validate_product_identity(
+            canonical_title,
+            full_title_for_val,
+            offer_url,
+            store_id="hiraoka",
+            tech_specs=extracted_meta["tech_specs"],
+            description=ld_desc,
+        ):
+            return None
 
-                if canonical_title and not validate_product_identity(
-                    canonical_title, h1_title, offer_url, store_id="hiraoka"
-                ):
-                    return None
-
-                return {
-                    "title": h1_title,
-                    "price": p,
-                    "original_price": orig if orig and orig > p else p,
-                    "image_url": valid_img,
-                    "offer_url": offer_url,
-                    "brand": extracted_meta["brand"],
-                    "tech_specs": extracted_meta["tech_specs"],
-                    "features": extracted_meta["features"],
-                }
-
-    # 3. Estrategia Meta tags Open Graph de la ficha de producto
-    meta_price = soup.find("meta", property="product:price:amount")
-    if meta_price and meta_price.get("content"):
-        p = clean_number(meta_price["content"])
-        if p:
-            og_img = soup.find("meta", property="og:image")
-            og_url = og_img.get("content") if og_img else None
-            valid_img = og_url if is_valid_product_image_url(og_url) else None
-            og_title_el = soup.find("meta", property="og:title")
-            effective_title = h1_title or (og_title_el.get("content") if og_title_el else "")
-
-            if canonical_title and not validate_product_identity(
-                canonical_title, str(effective_title), offer_url, store_id="hiraoka"
-            ):
-                return None
-
-            return {
-                "title": str(effective_title),
-                "price": p,
-                "original_price": p,
-                "image_url": valid_img,
-                "offer_url": offer_url,
-            }
+        return {
+            "title": effective_title,
+            "price": best,
+            "original_price": orig if orig and orig > best else best,
+            "image_url": candidate_img,
+            "offer_url": offer_url,
+            "brand": extracted_meta["brand"],
+            "tech_specs": extracted_meta["tech_specs"],
+            "features": extracted_meta["features"],
+            "description": ld_desc,
+            "in_stock": True,
+        }
 
     return None

@@ -44,7 +44,7 @@ AD_AND_TRACKING_PARAMS = {
 }
 
 # Parámetros legítimos de búsqueda que sí deben conservarse en URLs de buscador
-ALLOWED_SEARCH_PARAMS = {"q", "ft", "fq", "ntt", "query", "f.derived.variant.sellerid"}
+ALLOWED_SEARCH_PARAMS = {"q", "ft", "fq", "ntt", "query", "f.derived.variant.sellerid", "_from", "_to"}
 
 # Dominios canónicos por tienda
 CANONICAL_HOSTS: Dict[str, str] = {
@@ -65,7 +65,7 @@ STORE_PRODUCT_PATH_PATTERNS: Dict[str, re.Pattern] = {
     "ripley": re.compile(r"^/[a-z0-9\-]+-(?:\d+p|\d{7,15})/?$", re.IGNORECASE),
     "metro": re.compile(r"^/[a-z0-9\-]+/p/?$", re.IGNORECASE),
     "wong": re.compile(r"^/[a-z0-9\-]+/p/?$", re.IGNORECASE),
-    "efe": re.compile(r"^/[a-z0-9\-_]+\.html$", re.IGNORECASE),
+    "efe": re.compile(r"^/(?:[a-z0-9\-_]+\.html|catalog/product/view/.+)$", re.IGNORECASE),
     "curacao": re.compile(r"^/(?:[a-z0-9\-_]+\.html|catalog/product/view/.+)$", re.IGNORECASE),
     "hiraoka": re.compile(r"^/[a-z0-9\-_]+$", re.IGNORECASE),
 }
@@ -236,7 +236,7 @@ def build_store_search_url(store_id: str, compact_query: str) -> Optional[str]:
 
     host = CANONICAL_HOSTS[store_id]
     if store_id in {"metro", "wong"}:
-        return f"https://{host}/api/catalog_system/pub/products/search/{quote(q_clean)}?_from=0&_to=9"
+        return f"https://{host}/api/catalog_system/pub/products/search/?ft={quote(q_clean)}&_from=0&_to=14"
     if store_id in {"efe", "curacao", "hiraoka"}:
         return f"https://{host}/catalogsearch/result/?q={quote_plus(q_clean)}"
     if store_id == "falabella":

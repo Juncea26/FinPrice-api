@@ -11,7 +11,7 @@ from bs4 import BeautifulSoup
 from app.core.logging import get_logger
 from app.collectors.spec_extractor import extract_product_specs
 from app.collectors.url_utils import canonicalize_store_url, is_valid_product_image_url
-from app.collectors.validators import is_official_store_seller, validate_product_identity
+from app.collectors.validators import check_is_in_stock, is_official_store_seller, validate_product_identity
 
 logger = get_logger("parsers.falabella")
 
@@ -137,10 +137,18 @@ def parse_falabella(
                     item_seller = str(item.get("sellerName") or item.get("sellerId") or "").strip().lower()
                     if item_seller and eff_store not in item_seller:
                         continue
+                    item_brand = str(item.get("brand") or "").strip()
                     item_title = str(item.get("displayName") or item.get("name") or "").strip()
-                    item_url = str(item.get("url") or offer_url).strip()
+                    full_item_title = (
+                        f"{item_brand} {item_title}".strip()
+                        if item_brand and item_brand.lower() not in item_title.lower()
+                        else item_title
+                    )
+                    raw_item_url = str(item.get("url") or offer_url).strip()
+                    _, clean_item_url = canonicalize_store_url(raw_item_url)
+                    item_url = clean_item_url or raw_item_url
                     if not validate_product_identity(
-                        canonical_title, item_title, item_url, store_id=eff_store
+                        canonical_title, full_item_title, item_url, store_id=eff_store
                     ):
                         continue
                     prices = item.get("prices", [])
@@ -149,18 +157,35 @@ def parse_falabella(
                         media_urls = item.get("mediaUrls", [])
                         img_u = media_urls[0] if isinstance(media_urls, list) and media_urls else None
                         cand_dict = {
-                            "title": item_title,
+                            "title": full_item_title,
+                            "brand": item_brand,
                             "price": best_p,
                             "original_price": list_p if list_p > best_p else best_p,
                             "image_url": img_u,
                             "offer_url": item_url,
+                            "in_stock": True,
                         }
                         if best_search_candidate is None or best_p < best_search_candidate["price"]:
                             best_search_candidate = cand_dict
                 return best_search_candidate
 
             prod = props.get("productData", {}) or props.get("product", {})
+            prod_brand = str(prod.get("brandName") or prod.get("brand") or "").strip()
             prod_title = str(prod.get("name") or prod.get("displayName") or h1_title).strip()
+            if prod_brand and prod_title and prod_brand.lower() not in prod_title.lower():
+                prod_title = f"{prod_brand} {prod_title}".strip()
+
+            # Si offer_url era una URL de búsqueda que redirigió directamente a la ficha del producto, extraer la URL canónica real
+            if any(seg in offer_url.lower() for seg in ("/search", "/buscar", "ntt=")):
+                canon_link = soup.find("link", rel="canonical")
+                og_url_meta = soup.find("meta", property="og:url")
+                redirected_u = (
+                    (canon_link.get("href") if canon_link else None)
+                    or (og_url_meta.get("content") if og_url_meta else None)
+                )
+                if redirected_u and not any(seg in str(redirected_u).lower() for seg in ("/search", "/buscar", "ntt=")):
+                    _, clean_red = canonicalize_store_url(str(redirected_u))
+                    offer_url = clean_red or str(redirected_u)
             prod_desc = " ".join(
                 filter(
                     None,
@@ -265,8 +290,17 @@ def parse_falabella(
                     )
                     if m_url:
                         offer_url = f"{m_url.group(1)}/{variant_id}"
+                    elif any(seg in offer_url.lower() for seg in ("/search", "/buscar", "ntt=")):
+                        prod_id = str(prod.get("id") or variant_id).strip()
+                        slug = re.sub(r"[^a-z0-9]+", "-", prod_title.lower()).strip("-") or "producto"
+                        if eff_store == "tottus":
+                            offer_url = f"https://www.tottus.com.pe/tottus-pe/articulo/{prod_id}/{slug}/{variant_id}"
+                        else:
+                            offer_url = f"https://www.falabella.com.pe/falabella-pe/product/{prod_id}/{slug}/{variant_id}"
 
             if variant_best_p is not None:
+                if not check_is_in_stock(eff_store, html, status_code=200, has_valid_price=True):
+                    return None
                 full_desc = " ".join(filter(None, [prod_desc, variant_name])).strip()
                 extracted_meta = extract_product_specs(
                     html,
@@ -289,11 +323,12 @@ def parse_falabella(
                     "original_price": variant_list_p if variant_list_p > variant_best_p else variant_best_p,
                     "image_url": official_img,
                     "offer_url": offer_url,
-                    "brand": extracted_meta["brand"],
+                    "brand": extracted_meta["brand"] or prod_brand,
                     "tech_specs": extracted_meta["tech_specs"],
                     "features": extracted_meta["features"],
                     "description": full_desc,
                     "variant_sku_id": variant_id,
+                    "in_stock": True,
                 }
         except Exception as e:
             logger.debug(f"Error parseando __NEXT_DATA__ en Falabella: {e}")

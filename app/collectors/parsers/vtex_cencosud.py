@@ -24,22 +24,62 @@ from app.collectors.validators import validate_product_identity
 
 logger = get_logger("parsers.vtex_cencosud")
 
-# Precios promocionales verificados con Tarjeta Cencosud (tabla promocional tcenco renderizada en cliente)
-VERIFIED_CENCOSUD_CARD_PRICES: Dict[str, Tuple[float, float]] = {
-    "https://www.wong.pe/televisor-lg-oled-55-oled55b6psa-1067136/p": (2649.0, 3899.0),
-    "https://www.metro.pe/televisor-lg-oled-55-oled55b6psa-1067136/p": (2649.0, 3899.0),
-}
 
+def _extract_cencosud_card_price_from_offer(
+    offer: Dict[str, Any], online_price: float
+) -> Optional[float]:
+    """
+    Extrae en vivo el precio promocional con Tarjeta Cencosud (TCENCO) desde
+    PromotionTeasers / Teasers del commertialOffer de la API pública VTEX.
+    """
+    if not isinstance(offer, dict) or not online_price or online_price <= 0:
+        return None
 
-def _apply_cencosud_card_price(
-    clean_url: str, price: float, original_price: Optional[float]
-) -> Tuple[float, float]:
-    orig = original_price if (original_price and original_price > price) else price
-    if clean_url in VERIFIED_CENCOSUD_CARD_PRICES:
-        card_p, card_orig = VERIFIED_CENCOSUD_CARD_PRICES[clean_url]
-        best = min(price, card_p)
-        return best, max(orig, card_orig)
-    return price, orig
+    teasers = (offer.get("PromotionTeasers") or []) + (offer.get("Teasers") or []) + (offer.get("teasers") or [])
+    card_candidates: List[float] = []
+
+    for teaser in teasers:
+        if not isinstance(teaser, dict):
+            continue
+        t_name = str(teaser.get("Name") or teaser.get("name") or "").strip()
+        t_name_low = t_name.lower()
+        is_cencosud_teaser = any(
+            k in t_name_low for k in ("tcenco", "con tc", "cencosud", "tarjeta cencosud")
+        )
+        if not is_cencosud_teaser:
+            continue
+
+        # 1. Extraer de Effects.Parameters (MaximumUnitPriceDiscount en centavos en VTEX Cencosud)
+        effects = teaser.get("Effects") or teaser.get("effects") or {}
+        params = effects.get("Parameters") or effects.get("parameters") or []
+        if isinstance(params, list):
+            for p_obj in params:
+                if not isinstance(p_obj, dict):
+                    continue
+                p_name = str(p_obj.get("Name") or p_obj.get("name") or "")
+                p_val = p_obj.get("Value") or p_obj.get("value")
+                if "MaximumUnitPriceDiscount" in p_name and p_val is not None:
+                    try:
+                        raw_f = float(str(p_val).strip())
+                        # En VTEX Cencosud Perú el valor viene en centavos (ej. 304900 -> 3049.00)
+                        cand_p = round(raw_f / 100.0, 2) if raw_f > online_price * 5 else round(raw_f, 2)
+                        if 0 < cand_p <= online_price:
+                            card_candidates.append(cand_p)
+                    except ValueError:
+                        pass
+
+        # 2. Respaldo por expresión regular en el nombre oficial del teaser: "... a 3049 Con TC"
+        m_tc = re.search(
+            r"\ba\s+(?:s/?\s*)?(\d{2,5}(?:[.,]\d{1,2})?)\s+con\s+(?:tc|tarjeta)",
+            t_name_low,
+            flags=re.IGNORECASE,
+        )
+        if m_tc:
+            parsed_tc = clean_number(m_tc.group(1))
+            if parsed_tc and 0 < parsed_tc <= online_price:
+                card_candidates.append(parsed_tc)
+
+    return min(card_candidates) if card_candidates else None
 
 
 def clean_number(val: Any) -> Optional[float]:
@@ -77,6 +117,8 @@ def parse_vtex_api_item(item_dict: Dict[str, Any], default_url: str = "") -> Opt
     raw_link = str(item_dict.get("link") or default_url).strip()
     store_id, clean_url = canonicalize_store_url(raw_link)
     raw_brand = str(item_dict.get("brand") or "").strip()
+    if raw_brand and title and raw_brand.lower() not in title.lower():
+        title = f"{raw_brand} {title}".strip()
 
     items = item_dict.get("items") or []
     best_price: Optional[float] = None
@@ -109,10 +151,13 @@ def parse_vtex_api_item(item_dict: Dict[str, Any], default_url: str = "") -> Opt
             p = clean_number(offer.get("Price") or offer.get("spotPrice"))
             lp = clean_number(offer.get("ListPrice") or offer.get("PriceWithoutDiscount"))
             if p and p > 0:
+                card_p = _extract_cencosud_card_price_from_offer(offer, p)
+                effective_p = min(p, card_p) if card_p else p
+                effective_lp = lp if (lp and lp > effective_p) else max(p, effective_p)
                 is_in_stock = True
-                if best_price is None or p < best_price:
-                    best_price = p
-                    orig_price = lp if (lp and lp > p) else p
+                if best_price is None or effective_p < best_price:
+                    best_price = effective_p
+                    orig_price = effective_lp
 
     if not is_in_stock or not best_price:
         return None
@@ -139,12 +184,11 @@ def parse_vtex_api_item(item_dict: Dict[str, Any], default_url: str = "") -> Opt
 
     desc = str(item_dict.get("description") or item_dict.get("metaTagDescription") or "").strip()
     eff_url = clean_url or raw_link
-    best_price, orig_price = _apply_cencosud_card_price(eff_url, best_price, orig_price)
 
     return {
         "title": title,
         "price": best_price,
-        "original_price": orig_price or best_price,
+        "original_price": orig_price if (orig_price and orig_price > best_price) else best_price,
         "image_url": img_url,
         "offer_url": eff_url,
         "brand": brand,
@@ -220,6 +264,8 @@ def _parse_vtex_apollo_state(soup: BeautifulSoup, clean_url: str) -> Optional[Di
 
         title = str(prod_node.get("productName") or "").strip()
         raw_brand = str(prod_node.get("brand") or "").strip()
+        if raw_brand and title and raw_brand.lower() not in title.lower():
+            title = f"{raw_brand} {title}".strip()
 
         # Buscar precios y stock en commertialOffer o priceRange
         best_p: Optional[float] = None
@@ -278,7 +324,6 @@ def _parse_vtex_apollo_state(soup: BeautifulSoup, clean_url: str) -> Optional[Di
         if brand:
             tech_specs["Marca"] = brand
         features = generate_product_features(soup=soup, tech_specs=tech_specs, title=title)
-        best_p, orig_p = _apply_cencosud_card_price(clean_url, best_p, orig_p)
 
         return {
             "title": title,
@@ -289,6 +334,7 @@ def _parse_vtex_apollo_state(soup: BeautifulSoup, clean_url: str) -> Optional[Di
             "brand": brand,
             "tech_specs": tech_specs,
             "features": features,
+            "in_stock": True,
         }
 
     return None
@@ -393,7 +439,6 @@ def parse_vtex_cencosud(
                     if isinstance(ld_img, list) and ld_img:
                         ld_img = ld_img[0]
                     extracted_meta = extract_product_specs(html_or_json, title=ld_title, store_id=store_id)
-                    low_p, high_p = _apply_cencosud_card_price(clean_url, low_p, high_p)
                     return {
                         "title": ld_title,
                         "price": low_p,
@@ -403,6 +448,7 @@ def parse_vtex_cencosud(
                         "brand": extracted_meta["brand"],
                         "tech_specs": extracted_meta["tech_specs"],
                         "features": extracted_meta["features"],
+                        "in_stock": True,
                     }
         except Exception:
             pass

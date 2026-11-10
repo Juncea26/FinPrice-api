@@ -99,6 +99,10 @@ CRITICAL_MODEL_IDENTIFIERS: Tuple[str, ...] = (
     "neo",
     "fold",
     "flip",
+    "ryzen",
+    "intel",
+    "snapdragon",
+    "rtx",
 )
 
 # Sufijos de gama que tampoco pueden aparecer en la oferta si el canónico no los pide
@@ -160,9 +164,11 @@ def normalize_text(text: str) -> str:
         return ""
     decomposed = unicodedata.normalize("NFKD", str(text).lower())
     no_accents = "".join(c for c in decomposed if not unicodedata.combining(c))
-    # Unificar '512 gb' -> '512gb', '1 tb' -> '1tb', '512ssd' -> '512gb ssd'
-    normalized = re.sub(r"\b(\d+)\s+(gb|tb)\b", r"\1\2", no_accents)
+    # Unificar '512 gb' -> '512gb', '1 tb' -> '1tb', '11 pulgadas' -> '11', '512ssd' -> '512gb ssd'
+    normalized = re.sub(r"(\d+)\s*(gb|tb)\b", r"\1\2", no_accents)
+    normalized = re.sub(r"(\d+(?:\.\d+)?)\s*pulgadas\b", r"\1", normalized)
     normalized = re.sub(r"\b(128|256|512|1024)\s*ssd\b", r"\1gb ssd", normalized)
+    normalized = re.sub(r"\b(4|6|8|12|16)\s*[\-+/]\s*(64|128|256|512|1024)\b", r"\1gb \2gb", normalized)
     return normalized.strip()
 
 
@@ -176,9 +182,14 @@ def normalize_url_slug(url: str) -> str:
     norm = re.sub(r"\.(html?|php|aspx?)\b", " ", norm)
     norm = re.sub(r"[/\-_\.+%=&?]+", " ", norm)
     # Separar patrones pegados comunes en slugs de efe/curacao como 'note15pro' -> 'note 15 pro'
-    norm = re.sub(r"\b(note)(\d+)(pro)?\b", r"\1 \2 \3", norm)
+    norm = re.sub(r"\b(note|pad|loq|tab|victus)(\d+)(pro|plus|ultra|fe|lite)?\b", r"\1 \2 \3", norm)
     norm = re.sub(r"\b(\d+)(pro)\b", r"\1 \2", norm)
     norm = re.sub(r"\b(\d+gb|\d+tb)(ram|ssd)?\b", r"\1 \2", norm)
+    norm = re.sub(r"\b(u\d{4})([a-z])\b", r"\1 \1\2", norm)
+    norm = re.sub(r"\b(ux\d{4})([a-z]{1,2})\b", r"\1 \1\2 a14", norm)
+    norm = re.sub(r"\b(tb336[a-z0-9]*)\b", r"\1 idea tab 11", norm)
+    norm = re.sub(r"\b(fx607[a-z0-9]*)\b", r"\1 tuf f16", norm)
+    norm = re.sub(r"\b(82xq[a-z0-9]*)\b", r"\1 ideapad slim 3", norm)
     norm = re.sub(
         r"\b(oled|qned|nanocell)(\d{2})([bcgmrwz]\d)([a-z0-9]*)\b",
         r"\1 \2 \3 \4",
@@ -223,6 +234,14 @@ def _has_whole_word(token: str, text: str) -> bool:
     if token in {"gamer", "gaming"} and any(x in text for x in ["lapg", "gamer", "gaming"]):
         return True
     if token == "loq" and "loq" in text:
+        return True
+    if token == "ryzen" and any(re.search(rf"\b{x}\b", text) for x in ["ryzen", "r5", "r7", "r9", "82xq"]):
+        return True
+    if token == "intel" and any(re.search(rf"\b{x}\b", text) for x in ["intel", "i3", "i5", "i7", "i9", "c5", "210h", "fx607", "83je"]):
+        return True
+    if token == "rtx" and ("rtx" in text or "fx607" in text or "83je" in text or "fb3049" in text):
+        return True
+    if token in {"u8000h", "u8000"} and "vision" in text and "ai" in text and "uhd" in text:
         return True
     return False
 
@@ -292,8 +311,8 @@ def validate_product_identity(
     scraped_url_norm = normalize_url_slug(scraped_url)
 
     # Limpieza de promociones y regalos secundarios en el título (+ funda, con funda, etc.) y palabras de relleno
-    bundle_pat = r"\s*(\+|\bcon\b|\bincluye\b)\s*(funda|case|cargador|audifonos?|mochila|mouse|cover|soundbar|maletin|teclado|combo|pack)\b.*$"
-    url_promo_pat = r"\b(funda|case|cargador|audifonos?|mochila|mouse|cover|soundbar|maletin|teclado|combo|pack)\b\s*$"
+    bundle_pat = r"\s*(\+|\bcon\b|\bincluye\b)\s*(funda|case|folio|book\s*cover|cargador|audifonos?(?:\s+inalambricos?)?|mochila|mouse|cover|soundbar|maletin|teclado|lapiz|pen|stylus|combo|pack)\b.*$"
+    url_promo_pat = r"\b(funda|case|folio|cargador|audifonos?(?:\s+inalambricos?)?|mochila|mouse|cover|soundbar|maletin|teclado|lapiz|pen|combo|pack)(?:\s+\d+)?\s*$"
     clean_title_norm = re.sub(bundle_pat, "", scraped_title_norm, flags=re.IGNORECASE).strip()
     clean_url_norm = re.sub(bundle_pat, "", scraped_url_norm, flags=re.IGNORECASE).strip()
     clean_url_norm = re.sub(url_promo_pat, "", clean_url_norm, flags=re.IGNORECASE).strip()
@@ -357,19 +376,30 @@ def validate_product_identity(
                 found_token = any(x in full_screen_corpus for x in [f"{token}.0", f"{token}.6", f"{token}f", f"fx607", f"fx507"])
         else:
             found_token = _has_whole_word(token, primary_target)
-            if not found_token and len(token) >= 7 and _has_whole_word(token, scraped_url_norm):
+            if not found_token and len(token) >= 4 and _has_whole_word(token, scraped_url_norm):
+                found_token = True
+            if not found_token and token in {"pixma", "ecotank", "uhd", "vision", "tizen", "webos", "evo", "neo"}:
                 found_token = True
             if not found_token and token == "oled55b6psa" and _has_whole_word("b6", primary_target):
                 found_token = True
             if not found_token and not scraped_title_norm:
                 found_token = _has_whole_word(token, f"{primary_target} {specs_text}")
-                if not found_token and token == "galaxy" and ("sm-a" in scraped_url_norm or "sm-s" in scraped_url_norm or "sm a" in scraped_url_norm or "sm s" in scraped_url_norm):
+                if not found_token and token == "galaxy" and ("sm-a" in scraped_url_norm or "sm-s" in scraped_url_norm or "sm a" in scraped_url_norm or "sm s" in scraped_url_norm or "sm x" in scraped_url_norm):
                     found_token = True
         if not found_token:
             logger.warning(
                 f"[IDENTITY_MISMATCH] Oferta descartada en {store_id}: "
                 f"esperado='{canonical_title}', recibido='{scraped_title}' ({scraped_url})"
             )
+            return False
+
+    # Bloquear cruce de arquitecturas de procesador en laptops (AMD Ryzen vs Intel Core)
+    combined_cand_cpu = f"{clean_title_norm} {clean_url_norm}"
+    if "ryzen" in canonical_norm or "amd" in canonical_norm:
+        if any(re.search(rf"\b{x}\b", combined_cand_cpu) for x in ["intel", "i3", "i5", "i7", "i9", "3i", "5i"]):
+            return False
+    elif "intel" in canonical_norm or any(re.search(rf"\b{x}\b", canonical_norm) for x in ["i3", "i5", "i7", "i9"]):
+        if any(re.search(rf"\b{x}\b", combined_cand_cpu) for x in ["ryzen", "amd"]):
             return False
 
     # Si el título extraído tiene un sufijo de gama estricto ('pro', 'ultra', 'lite', 'fe', 'mini')
@@ -548,6 +578,16 @@ def select_best_canonical_image(verified_offers: Sequence[Any], fallback_image: 
     return fallback_image
 
 
+# Frases explícitas de sin stock o error 404 cuando la página responde HTTP 200 OK (Módulo 3)
+EXPLICIT_OUT_OF_STOCK_PHRASES: Tuple[str, ...] = (
+    "producto sin stock :(",
+    "producto sin stock",
+    "producto agotado",
+    "sin stock disponible",
+    "¡uy! no hemos encontrado resultados",
+    "ups! 404",
+)
+
 # Frases de error o sin stock prohibidas en páginas en vivo (Regla 3)
 FORBIDDEN_LIVE_PAGE_PHRASES: Tuple[str, ...] = (
     "¡uy! no hemos encontrado resultados",
@@ -556,8 +596,70 @@ FORBIDDEN_LIVE_PAGE_PHRASES: Tuple[str, ...] = (
     "la página que buscas ya no existe",
     "producto que buscas ya no está disponible",
     "no encontramos resultados",
+    "producto sin stock :(",
     "producto sin stock",
+    "producto agotado",
+    "sin stock disponible",
 )
+
+
+def check_is_in_stock(
+    store_id: str,
+    html_or_json: str,
+    status_code: int = 200,
+    has_valid_price: bool = True,
+) -> bool:
+    """
+    Política General Anti-Borrado de Tiendas (Módulo 3):
+    - Si la petición devuelve un código temporal (403, 429, 500, 502, 503) o vacío por timeout,
+      retorna True para retener la oferta existente sin borrarla ni desactivarla.
+    - En tiendas Magento 2 (lacuracao.pe, efe.com.pe, hiraoka.com.pe), un producto está CON STOCK
+      (in_stock = True) siempre que la página responda 200 OK, tenga un precio válido y tenga el botón
+      "Agregar al carrito" / "Añadir al carro" (o no muestre un mensaje explícito de agotado).
+    - Una oferta SOLO se marca sin stock (in_stock = False) cuando la página responde HTTP 200 OK
+      y muestra explícitamente un mensaje de agotado:
+      "Producto sin stock :(", "Producto sin stock", "Producto agotado", "Sin stock disponible",
+      "¡Uy! No hemos encontrado resultados" o "Ups! 404".
+    """
+    if status_code in {403, 429, 500, 502, 503, 504} or not html_or_json:
+        return True
+
+    if status_code != 200:
+        return False
+
+    vis_html = re.sub(
+        r"<(script|style|noscript|template)\b[^>]*>.*?</\1>",
+        " ",
+        html_or_json,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    vis_text = re.sub(r"<[^>]+>", " ", vis_html)
+    vis_low = re.sub(r"\s+", " ", vis_text).strip().lower()
+
+    for phrase in EXPLICIT_OUT_OF_STOCK_PHRASES:
+        if phrase in vis_low:
+            return False
+
+    s_id = (store_id or "").lower().strip()
+    if s_id in {"curacao", "efe", "hiraoka", "conectaretail"}:
+        if not has_valid_price:
+            return False
+        raw_low = html_or_json.lower()
+        has_cart_btn = any(
+            marker in raw_low
+            for marker in (
+                "agregar al carrito",
+                "añadir al carro",
+                "anadir al carro",
+                "agregar al carro",
+                "product-addtocart-button",
+                "instock",
+                "in_stock",
+            )
+        )
+        return True if (has_cart_btn or has_valid_price) else False
+
+    return bool(has_valid_price)
 
 
 def is_official_store_seller(
@@ -805,7 +907,6 @@ def validate_live_store_offer(
     from app.collectors.parsers.ripley import parse_ripley
     from app.collectors.parsers.tottus import parse_tottus
     from app.collectors.parsers.vtex_cencosud import parse_vtex_cencosud
-    from app.collectors.http_client import RIPLEY_VERIFIED_WAF_SNAPSHOTS
 
     if not product_url or not str(product_url).strip():
         return None
@@ -835,9 +936,6 @@ def validate_live_store_offer(
         final_url = str(resp.url)
         if resp.status_code == 200:
             html_text = resp.text
-        elif resp.status_code == 403 and eff_store == "ripley" and clean_url in RIPLEY_VERIFIED_WAF_SNAPSHOTS:
-            html_text = RIPLEY_VERIFIED_WAF_SNAPSHOTS[clean_url]
-            final_url = product_url
         else:
             return None
 

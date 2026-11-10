@@ -12,7 +12,7 @@ from typing import Dict, List
 
 from app.core.logging import get_logger
 from app.collectors.catalog_urls import get_verified_store_urls_for_product
-from app.collectors.query_builder import build_search_queries
+from app.collectors.query_builder import build_search_queries, build_short_search_query
 from app.collectors.url_utils import (
     build_external_dork_search_url,
     build_store_search_url,
@@ -38,7 +38,12 @@ class SearchInternetNode(BaseGraphNode):
 
     async def execute(self, state: GraphState) -> GraphState:
         target = state.target
-        queries = build_search_queries(target.title, target.tech_specs)
+        short_q = build_short_search_query(target, target.tech_specs)
+        cascade_queries = build_search_queries(target.title, target.tech_specs)
+        queries: List[str] = []
+        for q_item in [short_q] + cascade_queries:
+            if q_item and q_item.lower() not in {x.lower() for x in queries}:
+                queries.append(q_item)
         state.search_queries = queries
 
         # Recuperar URLs verificadas de semilla + caché persistente

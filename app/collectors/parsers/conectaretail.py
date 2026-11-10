@@ -12,7 +12,7 @@ from bs4 import BeautifulSoup, Tag
 from app.core.logging import get_logger
 from app.collectors.spec_extractor import extract_product_specs
 from app.collectors.url_utils import canonicalize_store_url, is_marketplace_url, is_valid_product_image_url
-from app.collectors.validators import is_official_store_seller, validate_product_identity
+from app.collectors.validators import check_is_in_stock, is_official_store_seller, validate_product_identity
 
 logger = get_logger("parsers.conectaretail")
 
@@ -20,6 +20,8 @@ CAROUSEL_AND_RELATED_SELECTORS = (
     ".block.upsell, .block.related, .block.crosssell, "
     ".products-upsell, .products-related, .products-crosssell, "
     "[data-content-type='products'], .widget.block-products-list, "
+    ".warranty, .garantia, .garantia-extendida, .asistencia-plus, "
+    "[class*='warranty'], [class*='garantia'], [id*='warranty'], [id*='garantia'], "
     "aside, footer, nav"
 )
 
@@ -74,13 +76,23 @@ def _parse_search_results(
     best_candidate: Optional[Dict[str, Any]] = None
     cards = soup.select(".product-item-info, li.product-item")
     for card in cards:
+        if card.select_one(".stock.unavailable"):
+            continue
         link_el = card.select_one("a.product-item-link")
         if not link_el:
             continue
-        item_title = link_el.get_text(strip=True)
+        raw_title = link_el.get_text(strip=True)
+        brand_el = card.select_one(".product-item-brand .brand-name, .brand-name")
+        card_brand = brand_el.get_text(strip=True) if brand_el else ""
+        item_title = (
+            f"{card_brand} {raw_title}".strip()
+            if card_brand and card_brand.lower() not in raw_title.lower()
+            else raw_title
+        )
         raw_href = link_el.get("href") or ""
         item_url = urljoin(search_url, raw_href) if raw_href else search_url
-        det_store, _ = canonicalize_store_url(item_url)
+        det_store, clean_card_url = canonicalize_store_url(item_url)
+        item_url = clean_card_url or item_url
         eff_card_store = "curacao" if det_store == "curacao" else "efe"
         if is_marketplace_url(eff_card_store, item_url):
             continue
@@ -123,10 +135,12 @@ def _parse_search_results(
 
         cand = {
             "title": item_title,
+            "brand": card_brand,
             "price": current_p,
             "original_price": old_p if (old_p and old_p > current_p) else current_p,
             "image_url": img_url,
             "offer_url": item_url,
+            "in_stock": True,
         }
         if best_candidate is None or current_p < best_candidate["price"]:
             best_candidate = cand
@@ -178,12 +192,33 @@ def parse_conectaretail(
     if main_info_box and main_info_box.select_one(".stock.unavailable"):
         return None
 
+    if is_search_url and main_info_box and not soup.select(".product-item-info, li.product-item"):
+        # La búsqueda redirigió directamente a la ficha de un único producto
+        canon_link = soup.find("link", rel="canonical")
+        og_url_meta = soup.find("meta", property="og:url")
+        redirected_u = (
+            (canon_link.get("href") if canon_link else None)
+            or (og_url_meta.get("content") if og_url_meta else None)
+        )
+        if redirected_u and "/catalogsearch/" not in str(redirected_u):
+            detected_store, clean_offer_url = canonicalize_store_url(str(redirected_u))
+            offer_url = clean_offer_url or str(redirected_u)
+            is_search_url = False
+            eff_store = "curacao" if detected_store == "curacao" else "efe"
+            if not is_official_store_seller(eff_store, html, offer_url):
+                return None
+
     if is_search_url or (not main_info_box and soup.select(".product-item-info, li.product-item")):
         return _parse_search_results(soup, offer_url, canonical_title)
 
-    # Eliminar todos los carruseles de productos relacionados, upsell y crosssell antes de extraer
+    # Eliminar todos los carruseles de productos relacionados, upsell, crosssell y garantías extendidas
     for unwanted in soup.select(CAROUSEL_AND_RELATED_SELECTORS):
         unwanted.decompose()
+    if main_info_box:
+        for opt_box in main_info_box.select(".product-options-wrapper, .fieldset, .warranty-box"):
+            opt_txt = opt_box.get_text(" ", strip=True).lower()
+            if "asistencia plus" in opt_txt or "garantía extendida" in opt_txt or "garantia extendida" in opt_txt:
+                opt_box.decompose()
 
     h1_title = _extract_main_h1_title(soup)
     extracted_meta = extract_product_specs(html, title=h1_title, store_id="conectaretail")
@@ -226,7 +261,30 @@ def parse_conectaretail(
     else:
         price_scope = None  # type: ignore[assignment]
 
-    # 1. Estrategia Magento 2 dentro de .product-info-main
+    eff_store_id = "curacao" if "lacuracao.pe" in offer_url.lower() else "efe"
+
+    # Extraer oldPrice del contenedor principal si existe para acompañar cualquier prioridad
+    dom_old_p: Optional[float] = None
+    if price_scope is not None:
+        old_span = price_scope.select_one(
+            '[data-price-type="oldPrice"][data-price-amount], '
+            ".old-price [data-price-amount]"
+        )
+        if old_span and old_span.get("data-price-amount"):
+            dom_old_p = clean_number(old_span.get("data-price-amount"))
+        if not dom_old_p:
+            old_text_elem = price_scope.select_one(
+                '[data-price-type="oldPrice"] .price, .old-price .price'
+            )
+            if old_text_elem:
+                dom_old_p = clean_number(old_text_elem.get_text())
+
+    # Prioridad 1: <meta property="product:price:amount" content="...">
+    meta_price_el = soup.find("meta", property="product:price:amount")
+    meta_p = clean_number(meta_price_el.get("content")) if (meta_price_el and meta_price_el.get("content")) else None
+
+    # Prioridad 2: .product-info-main [data-price-type="finalPrice"] -> atributo data-price-amount
+    final_p: Optional[float] = None
     if price_scope is not None:
         price_span = price_scope.select_one(
             '[data-price-type="finalPrice"][data-price-amount], '
@@ -235,37 +293,44 @@ def parse_conectaretail(
             "[data-price-amount]"
         )
         if price_span and price_span.get("data-price-amount"):
-            current_p = clean_number(price_span["data-price-amount"])
-            if current_p:
-                old_span = price_scope.select_one(
-                    '[data-price-type="oldPrice"][data-price-amount], '
-                    ".old-price [data-price-amount]"
-                )
-                old_p = clean_number(old_span.get("data-price-amount")) if old_span else None
+            final_p = clean_number(price_span["data-price-amount"])
 
-                if canonical_title and not validate_product_identity(
-                    canonical_title,
-                    h1_title,
-                    offer_url,
-                    store_id="conectaretail",
-                    tech_specs=extracted_meta["tech_specs"],
-                    description=page_desc,
-                ):
-                    return None
+    chosen_primary_p = meta_p or final_p
+    if final_p and meta_p and final_p < meta_p:
+        chosen_primary_p = final_p
 
-                return {
-                    "title": h1_title,
-                    "price": current_p,
-                    "original_price": old_p if (old_p and old_p > current_p) else current_p,
-                    "image_url": page_image,
-                    "offer_url": offer_url,
-                    "brand": extracted_meta["brand"],
-                    "tech_specs": extracted_meta["tech_specs"],
-                    "features": extracted_meta["features"],
-                    "description": page_desc,
-                }
+    if chosen_primary_p:
+        if not check_is_in_stock(eff_store_id, html, status_code=200, has_valid_price=True):
+            return None
+        full_title_for_val = (
+            f"{extracted_meta['brand']} {h1_title}".strip()
+            if extracted_meta.get("brand") and extracted_meta["brand"].lower() not in h1_title.lower()
+            else h1_title
+        )
+        if canonical_title and not validate_product_identity(
+            canonical_title,
+            full_title_for_val,
+            offer_url,
+            store_id="conectaretail",
+            tech_specs=extracted_meta["tech_specs"],
+            description=page_desc,
+        ):
+            return None
 
-    # 2. Estrategia JSON-LD del Producto Principal
+        return {
+            "title": h1_title,
+            "price": chosen_primary_p,
+            "original_price": dom_old_p if (dom_old_p and dom_old_p > chosen_primary_p) else chosen_primary_p,
+            "image_url": page_image,
+            "offer_url": offer_url,
+            "brand": extracted_meta["brand"],
+            "tech_specs": extracted_meta["tech_specs"],
+            "features": extracted_meta["features"],
+            "description": page_desc,
+            "in_stock": True,
+        }
+
+    # Prioridad 3: JSON-LD <script type="application/ld+json"> (@type == "Product") -> offers.price / offers[0].price
     for s in soup.find_all("script", type="application/ld+json"):
         if not s.string:
             continue
@@ -284,7 +349,7 @@ def parse_conectaretail(
                 offers = item.get("offers")
                 offers_list = offers if isinstance(offers, list) else ([offers] if isinstance(offers, dict) else [])
                 prices_found = []
-                high_price = None
+                high_price = dom_old_p
                 for off in offers_list:
                     if isinstance(off, dict):
                         p = clean_number(off.get("price"))
@@ -295,21 +360,28 @@ def parse_conectaretail(
                             high_price = hp
 
                 if prices_found:
+                    if not check_is_in_stock(eff_store_id, html, status_code=200, has_valid_price=True):
+                        return None
                     best_p = min(prices_found)
                     orig_p = high_price or max(prices_found)
                     ld_img = item.get("image")
                     if isinstance(ld_img, list) and ld_img:
                         ld_img = ld_img[0]
 
-                    if canonical_title and not validate_product_identity(
-                        canonical_title, effective_title, offer_url, store_id="conectaretail"
-                    ):
-                        return None
-
                     if not h1_title and effective_title:
                         extracted_meta = extract_product_specs(
                             html, title=effective_title, store_id="conectaretail"
                         )
+                    full_title_for_val = (
+                        f"{extracted_meta['brand']} {effective_title}".strip()
+                        if extracted_meta.get("brand") and extracted_meta["brand"].lower() not in effective_title.lower()
+                        else effective_title
+                    )
+                    if canonical_title and not validate_product_identity(
+                        canonical_title, full_title_for_val, offer_url, store_id="conectaretail"
+                    ):
+                        return None
+
                     return {
                         "title": effective_title,
                         "price": best_p,
@@ -319,11 +391,12 @@ def parse_conectaretail(
                         "brand": extracted_meta["brand"],
                         "tech_specs": extracted_meta["tech_specs"],
                         "features": extracted_meta["features"],
+                        "in_stock": True,
                     }
         except Exception:
             pass
 
-    # 3. Selectores CSS de respaldo estrictamente dentro de .product-info-main (price_scope)
+    # Prioridad 4: Selectores CSS de respaldo estrictamente dentro de .product-info-main (price_scope)
     if price_scope is not None:
         price_text_elem = price_scope.select_one(
             '[data-price-type="finalPrice"] .price, '
@@ -334,13 +407,17 @@ def parse_conectaretail(
         if price_text_elem:
             p = clean_number(price_text_elem.get_text())
             if p:
-                old_text_elem = price_scope.select_one(
-                    '[data-price-type="oldPrice"] .price, .old-price .price'
-                )
-                old_p = clean_number(old_text_elem.get_text()) if old_text_elem else None
+                if not check_is_in_stock(eff_store_id, html, status_code=200, has_valid_price=True):
+                    return None
+                old_p = dom_old_p
 
+                full_title_for_val = (
+                    f"{extracted_meta['brand']} {h1_title}".strip()
+                    if extracted_meta.get("brand") and extracted_meta["brand"].lower() not in h1_title.lower()
+                    else h1_title
+                )
                 if canonical_title and not validate_product_identity(
-                    canonical_title, h1_title, offer_url, store_id="conectaretail"
+                    canonical_title, full_title_for_val, offer_url, store_id="conectaretail"
                 ):
                     return None
 
@@ -353,6 +430,7 @@ def parse_conectaretail(
                     "brand": extracted_meta["brand"],
                     "tech_specs": extracted_meta["tech_specs"],
                     "features": extracted_meta["features"],
+                    "in_stock": True,
                 }
 
     return None

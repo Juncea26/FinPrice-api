@@ -19,6 +19,7 @@ import re
 from typing import Any, Dict, List, Optional
 from app.core.logging import get_logger
 from app.collectors.color_stripper import strip_color_tokens
+from app.collectors.universal_matcher import normalize_product_signature, match_product_universal
 from app.collectors.url_utils import canonicalize_store_url
 from app.collectors.validators import normalize_text, extract_critical_model_tokens
 from app.collectors.graph.state import (
@@ -32,8 +33,8 @@ logger = get_logger("collectors.graph.canonical_matcher_node")
 
 # Frases de relleno y accesorios
 FILLER_PATTERNS = [
-    re.compile(r"\s*(\+|\bcon\b|\bincluye\b)\s*(funda|case|cargador|audifonos?|mochila|mouse|cover|soundbar|maletin|teclado|combo|pack)\b.*$", re.IGNORECASE),
-    re.compile(r"\b(funda|case|cargador|audifonos?|mochila|mouse|cover|soundbar|maletin|teclado|combo|pack)\b\s*$", re.IGNORECASE),
+    re.compile(r"\s*(\+|\bcon\b|\bincluye\b|\-)\s*(funda|folio|book\s*cover|case|cargador|audifonos?|mochila|mouse|cover|soundbar|maletin|teclado|combo|pack|lapiz|pen|stylus)\b.*$", re.IGNORECASE),
+    re.compile(r"\b(funda|folio|book\s*cover|case|cargador|audifonos?|mochila|mouse|cover|soundbar|maletin|teclado|combo|pack)\b\s*$", re.IGNORECASE),
     re.compile(r"\b(celular\s+libre|smartphone|disco\s+solido\s+de|unidad\s+de\s+estado\s+solido|liberado|dual\s+sim|copilot\+\s*pc)\b", re.IGNORECASE),
 ]
 
@@ -100,8 +101,13 @@ class CanonicalMatcherNode(BaseGraphNode):
             _, clean_url = canonicalize_store_url(offer.offer_url)
             offer.offer_url = clean_url or offer.offer_url
 
-            # Normalizar título de la oferta sin colores
-            offer.title = clean_canonical_title(offer.title) or offer.title
+            # Normalizar siempre concatenando brand + title antes de comparar
+            full_raw_title = (
+                f"{offer.brand} {offer.title}".strip()
+                if offer.brand and offer.brand.lower() not in (offer.title or "").lower()
+                else offer.title
+            )
+            offer.title = clean_canonical_title(full_raw_title) or offer.title
 
             existing = best_by_store.get(offer.store_id)
             if existing is None or offer.price < existing.price:

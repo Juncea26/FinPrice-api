@@ -147,14 +147,55 @@ def _normalize_corpus_text(text: str) -> str:
         r"\1 \2 \3 \4",
         cleaned,
     )
-    # Expandir 'note15pro5g' / 'a7pro' / 'magic8lite'
-    cleaned = re.sub(r"\b(note|magic)(\d+)(pro|lite|ultra|plus)?(5g)?\b", r"\1 \2 \3 \4", cleaned)
+    # Expandir 'note15pro5g' / 'a7pro' / 'magic8lite' / 'pad2' / 'loq15' / 'u8000h' / 'ux3407qa'
+    cleaned = re.sub(r"\b(note|magic|pad|loq|tab|victus)(\d+)(pro|lite|ultra|plus|fe)?(5g)?\b", r"\1 \2 \3 \4", cleaned)
     cleaned = re.sub(r"\b([a-z]\d+)(pro|plus|ultra|max|fe|lite)\b", r"\1 \2", cleaned)
     cleaned = re.sub(r"\b(\d+)(pro|plus|ultra|max|fe|lite)(5g)?\b", r"\1 \2 \3", cleaned)
-    cleaned = re.sub(r"\b(\d{1,4})\s+(gb|tb)\b", r"\1\2", cleaned)
+    cleaned = re.sub(r"\b(u\d{4})([a-z])\b", r"\1 \1\2", cleaned)
+    cleaned = re.sub(r"\b(ux\d{4})([a-z]{1,2})\b", r"\1 \1\2 a14", cleaned)
+    cleaned = re.sub(r"\b(tb336[a-z0-9]*)\b", r"\1 idea tab 11", cleaned)
+    cleaned = re.sub(r"\b(fx607[a-z0-9]*)\b", r"\1 tuf f16 intel", cleaned)
+    cleaned = re.sub(r"\b(82xq[a-z0-9]*)\b", r"\1 ideapad slim 3 ryzen 5", cleaned)
+    cleaned = re.sub(r"\b(83je[a-z0-9]*)\b", r"\1 loq 15 intel i7", cleaned)
+    cleaned = re.sub(r"\b(rtx)(\d{4})\b", r"\1 \2", cleaned)
+    cleaned = re.sub(r"\b(r)([579])\b", r"ryzen \2", cleaned)
+    cleaned = re.sub(r"\bc5\s+210h\b", "intel core 5 210h", cleaned)
+    cleaned = re.sub(r"\b(i[3579])\b", r"intel \1", cleaned)
+    cleaned = re.sub(r"\b(4|6|8|12|16)\s*[\-+/]\s*(64|128|256|512|1024)\b", r"\1gb \2gb", cleaned)
+    cleaned = re.sub(r"(\d+)\s*(gb|tb)\b", r"\1\2", cleaned)
+    cleaned = re.sub(r"(\d+(?:\.\d+)?)\s*pulgadas\b", r"\1", cleaned)
     cleaned = re.sub(r"\b(128|256|512|1024)\s*ssd\b", r"\1gb ssd", cleaned)
     cleaned = re.sub(r"\bteclado\s+en\s+(?:espanol|ingles)\b", " ", cleaned)
     return re.sub(r"\s+", " ", cleaned).strip()
+
+
+def normalize_product_signature(
+    brand: str = "",
+    title: str = "",
+    extra_text: str = "",
+) -> str:
+    """
+    Normalizador Universal de Textos y Capacidades:
+    a) Concatena siempre f"{brand} {title}" (porque tiendas como Tottus o Falabella
+       ponen la marca en `brand` y solo el modelo en `title`).
+    b) Estandariza unidades eliminando espacios intermedios:
+       r'(\\d+)\\s*(gb|tb|pulgadas|")' -> r'\\1\\2' en minúsculas
+       ("256 GB" == "256gb", "128 GB" == "128gb", "64 GB" == "64gb", "8 GB" == "8gb", "4 GB" == "4gb").
+    c) Elimina colores en español e inglés.
+    """
+    combined_raw = f"{brand or ''} {title or ''} {extra_text or ''}".strip()
+    if not combined_raw:
+        return ""
+    # Estandarizar unidades antes y después de limpiar colores
+    unit_std = re.sub(
+        r'(\d+)\s*(gb|tb|pulgadas|")',
+        lambda m: f"{m.group(1)}{m.group(2).lower()}",
+        combined_raw,
+        flags=re.IGNORECASE,
+    )
+    unit_std = re.sub(r"\b(128|256|512|1024)\s*ssd\b", r"\1gb ssd", unit_std, flags=re.IGNORECASE)
+    color_free = strip_color_tokens(unit_std)
+    return _normalize_corpus_text(color_free)
 
 
 def _has_word(token: str, normalized_text: str) -> bool:
@@ -311,13 +352,26 @@ def _extract_target_profile(target_product: Any) -> Dict[str, Any]:
     if brand_low and brand_low in model_tokens and len(model_tokens) > 1:
         model_tokens = [t for t in model_tokens if t != brand_low]
 
-    # Asegurar que cualquier tier estricto presente en el título objetivo (ej. pro, ultra, plus, air) esté en model_tokens
+    # Asegurar que cualquier tier estricto o arquitectura de CPU/GPU presente en el título objetivo
+    # (ej. pro, ultra, plus, air, ryzen, i5, i7, snapdragon, m5, rtx, 3050, 4050, 5050) esté en model_tokens
     target_norm_words = set(re.findall(r"\b[a-z0-9]+\b", norm_title))
-    for tier in STRICT_SUBMODEL_TIERS:
-        if tier in target_norm_words and tier not in model_tokens:
-            model_tokens.append(tier)
+    hardware_key_tokens = (
+        set(STRICT_SUBMODEL_TIERS)
+        | {"ryzen", "intel", "i3", "i5", "i7", "i9", "snapdragon", "m1", "m2", "m3", "m4", "m5", "rtx", "3050", "4050", "4060", "5050"}
+    )
+    for hw_tok in hardware_key_tokens:
+        if hw_tok in target_norm_words and hw_tok not in model_tokens:
+            model_tokens.append(hw_tok)
 
     forbidden_tokens = [str(t).lower() for t in (fp_dict.get("forbidden_tokens") or [])]
+    if "ryzen" in target_norm_words or "amd" in target_norm_words:
+        for intel_tok in ("intel", "i3", "i5", "i7", "i9", "3i", "5i"):
+            if intel_tok not in forbidden_tokens:
+                forbidden_tokens.append(intel_tok)
+    elif "intel" in target_norm_words or any(t in target_norm_words for t in ("i3", "i5", "i7", "i9")):
+        for amd_tok in ("ryzen", "amd"):
+            if amd_tok not in forbidden_tokens:
+                forbidden_tokens.append(amd_tok)
 
     return {
         "title": title,
@@ -444,12 +498,14 @@ def match_product_universal(target_product: Any, candidate_page_data: Any) -> bo
     profile = _extract_target_profile(target_product)
 
     if isinstance(candidate_page_data, dict):
-        cand_title = str(candidate_page_data.get("title") or "")
+        raw_cand_title = str(candidate_page_data.get("title") or "")
+        cand_brand = str(candidate_page_data.get("brand") or "")
         cand_url = str(candidate_page_data.get("offer_url") or candidate_page_data.get("url") or "")
         cand_specs = candidate_page_data.get("tech_specs") or {}
         cand_desc = str(candidate_page_data.get("description") or "")
     else:
-        cand_title = str(getattr(candidate_page_data, "title", "") or "")
+        raw_cand_title = str(getattr(candidate_page_data, "title", "") or "")
+        cand_brand = str(getattr(candidate_page_data, "brand", "") or "")
         cand_url = str(getattr(candidate_page_data, "offer_url", "") or getattr(candidate_page_data, "url", "") or "")
         cand_specs = getattr(candidate_page_data, "tech_specs", None) or {}
         cand_desc = str(getattr(candidate_page_data, "description", "") or "")
@@ -457,23 +513,33 @@ def match_product_universal(target_product: Any, candidate_page_data: Any) -> bo
     if not isinstance(cand_specs, dict):
         cand_specs = {}
 
+    if not cand_brand and isinstance(cand_specs, dict):
+        cand_brand = str(cand_specs.get("Marca") or cand_specs.get("marca") or "")
+
+    # Regla 2a: Concatenar siempre brand + title si la marca no está ya en el título
+    if cand_brand and cand_brand.lower() not in raw_cand_title.lower():
+        cand_title = f"{cand_brand} {raw_cand_title}".strip()
+    else:
+        cand_title = raw_cand_title
+
     full_corpus_raw = (
         f"{cand_title} {cand_url} {json.dumps(cand_specs, ensure_ascii=False)} {cand_desc}"
     ).lower()
 
-    bundle_pat = r"\s*(\+|\bcon\b|\bincluye\b)\s*(funda|case|cargador|audifonos?|mochila|mouse|cover|soundbar|maletin|teclado|combo|pack)\b.*$"
-    url_promo_pat = r"\b(funda|case|cargador|audifonos?|mochila|mouse|cover|soundbar|maletin|teclado|combo|pack)\b\s*$"
+    bundle_pat = r"\s*(\+|\bcon\b|\bincluye\b)\s*(funda|case|folio|book\s*cover|cargador|audifonos?(?:\s+inalambricos?)?|mochila|mouse|cover|soundbar|maletin|teclado|lapiz|pen|stylus|combo|pack)\b.*$"
+    url_promo_pat = r"[\-\s]*(funda|case|folio|cargador|audifonos?(?:[\-\s]+inalambricos?)?|mochila|mouse|cover|soundbar|maletin|teclado|lapiz|pen|combo|pack)(?:[\-\s]+\d+)?\s*$"
     filler_pat = r"\b(celular\s+libre|smartphone|disco\s+solido\s+de|unidad\s+de\s+estado\s+solido|liberado|dual\s+sim)\b"
 
     cand_title_cleaned = re.sub(bundle_pat, "", cand_title, flags=re.IGNORECASE).strip()
     cand_title_cleaned = re.sub(filler_pat, "", cand_title_cleaned, flags=re.IGNORECASE).strip()
 
-    title_norm = _normalize_corpus_text(cand_title_cleaned)
-    url_norm = _normalize_corpus_text(cand_url)
+    title_norm = normalize_product_signature("", cand_title_cleaned)
+    url_cleaned = re.sub(url_promo_pat, "", cand_url, flags=re.IGNORECASE).strip()
+    url_norm = _normalize_corpus_text(url_cleaned)
     url_norm = re.sub(url_promo_pat, "", url_norm, flags=re.IGNORECASE).strip()
-    specs_norm = _normalize_corpus_text(json.dumps(cand_specs, ensure_ascii=False))
+    specs_norm = normalize_product_signature("", json.dumps(cand_specs, ensure_ascii=False))
     desc_norm = _normalize_corpus_text(cand_desc)
-    full_corpus = _normalize_corpus_text(full_corpus_raw)
+    full_corpus = normalize_product_signature(cand_brand, raw_cand_title, f"{url_cleaned} {json.dumps(cand_specs, ensure_ascii=False)} {cand_desc}")
 
     clean_title_norm = title_norm
     clean_url_norm = url_norm
@@ -524,10 +590,24 @@ def match_product_universal(target_product: Any, candidate_page_data: Any) -> bo
 
     # Todos los tokens de línea/modelo/chip (ej. ['ipad', 'a16'], ['oled', 'c6'], ['redmi', 'note', '15', 'pro'])
     # deben estar presentes en title + tech_specs (o en la URL cuando es un Part Number como oled55b6psa)
+    optional_subline_words = {"pixma", "ecotank", "uhd", "crystal", "vision", "tizen", "webos", "evo", "neo"}
+    has_alnum_model = any(
+        bool(re.search(r"[a-z]", t) and re.search(r"\d", t)) and _has_word(t, f"{identity_zone} {clean_url_norm}")
+        for t in profile["model_tokens"]
+    )
     for m_tok in profile["model_tokens"]:
         if _has_word(m_tok, identity_zone):
             continue
-        if len(m_tok) >= 7 and _has_word(m_tok, clean_url_norm):
+        if not clean_title_norm and _has_word(m_tok, clean_url_norm):
+            continue
+        if (
+            len(m_tok) >= 5
+            and re.search(r"[a-z]", m_tok)
+            and re.search(r"\d", m_tok)
+            and _has_word(m_tok, clean_url_norm)
+        ):
+            continue
+        if m_tok in optional_subline_words and has_alnum_model:
             continue
         if m_tok == "oled55b6psa" and _has_word("b6", identity_zone):
             continue
@@ -539,6 +619,8 @@ def match_product_universal(target_product: Any, candidate_page_data: Any) -> bo
     target_model_set = set(profile["model_tokens"])
     for tier_tok in STRICT_SUBMODEL_TIERS:
         if tier_tok not in target_model_set:
+            if tier_tok == "plus" and "pro" in target_model_set and "note" in target_model_set:
+                continue
             if _has_word(tier_tok, title_norm) or _has_word(tier_tok, url_norm):
                 return False
         else:

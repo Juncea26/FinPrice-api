@@ -172,10 +172,21 @@ def _normalize_for_fingerprint(text: str) -> str:
         r"\1 \2 \3 \4",
         cleaned,
     )
-    # Expandir 'note15pro5g' / 'note15pro' / 'a7pro'
-    cleaned = re.sub(r"\b(note)(\d+)(pro)?(5g)?\b", r"\1 \2 \3 \4", cleaned)
+    # Expandir 'note15pro5g' / 'note15pro' / 'a7pro' / 'pad2' / 'loq15' / 'u8000h' / 'ux3407qa'
+    cleaned = re.sub(r"\b(note|magic|pad|loq|tab|victus)(\d+)(pro|lite|ultra|plus|fe)?(5g)?\b", r"\1 \2 \3 \4", cleaned)
     cleaned = re.sub(r"\b([a-z]\d+)(pro|plus|ultra|max|fe|lite)\b", r"\1 \2", cleaned)
     cleaned = re.sub(r"\b(\d+)(pro|plus|ultra|max|fe|lite)(5g)?\b", r"\1 \2 \3", cleaned)
+    cleaned = re.sub(r"\b(u\d{4})([a-z])\b", r"\1 \1\2", cleaned)
+    cleaned = re.sub(r"\b(ux\d{4})([a-z]{1,2})\b", r"\1 \1\2 a14", cleaned)
+    cleaned = re.sub(r"\b(tb336[a-z0-9]*)\b", r"\1 idea tab 11", cleaned)
+    cleaned = re.sub(r"\b(fx607[a-z0-9]*)\b", r"\1 tuf f16 intel", cleaned)
+    cleaned = re.sub(r"\b(82xq[a-z0-9]*)\b", r"\1 ideapad slim 3 ryzen 5", cleaned)
+    cleaned = re.sub(r"\b(83je[a-z0-9]*)\b", r"\1 loq 15 intel i7", cleaned)
+    cleaned = re.sub(r"\b(rtx)(\d{4})\b", r"\1 \2", cleaned)
+    cleaned = re.sub(r"\b(r)([579])\b", r"ryzen \2", cleaned)
+    cleaned = re.sub(r"\bc5\s+210h\b", "intel core 5 210h", cleaned)
+    cleaned = re.sub(r"\b(i[3579])\b", r"intel \1", cleaned)
+    cleaned = re.sub(r"\b(128|256|512|1024)\s*ssd\b", r"\1gb ssd", cleaned)
 
     if extra_tokens:
         cleaned = f"{cleaned} {' '.join(extra_tokens)}"
@@ -243,8 +254,15 @@ def matches_fingerprint(
     5. Mismo almacenamiento exacto (storage_gb) y RAM exacta (ram_gb) cuando apliquen.
     6. Misma red móvil (network='5g') cuando el producto canónico es 5G.
     """
-    title_norm = _normalize_for_fingerprint(candidate_title)
-    url_norm = _normalize_for_fingerprint(candidate_url)
+    bundle_pat = r"\s*(\+|\bcon\b|\bincluye\b)\s*(funda|case|folio|book\s*cover|cargador|audifonos?(?:\s+inalambricos?)?|mochila|mouse|cover|soundbar|maletin|teclado|lapiz|pen|stylus|combo|pack)\b.*$"
+    url_promo_pat = r"[\-\s]*(funda|case|folio|cargador|audifonos?(?:[\-\s]+inalambricos?)?|mochila|mouse|cover|soundbar|maletin|teclado|lapiz|pen|combo|pack)(?:[\-\s]+\d+)?\s*$"
+
+    cleaned_cand_title = re.sub(bundle_pat, "", candidate_title or "", flags=re.IGNORECASE).strip()
+    cleaned_cand_url = re.sub(url_promo_pat, "", candidate_url or "", flags=re.IGNORECASE).strip()
+
+    title_norm = _normalize_for_fingerprint(cleaned_cand_title)
+    url_norm = _normalize_for_fingerprint(cleaned_cand_url)
+    url_norm = re.sub(url_promo_pat, "", url_norm, flags=re.IGNORECASE).strip()
     specs_text = ""
     if candidate_specs and isinstance(candidate_specs, dict):
         specs_text = _normalize_for_fingerprint(
@@ -263,6 +281,11 @@ def matches_fingerprint(
 
     for forbidden in fingerprint.forbidden_tokens:
         f_clean = forbidden.lower().strip()
+        if f_clean in {"case", "funda"} and any(
+            _has_word(dev, combined_text)
+            for dev in ("laptop", "zenbook", "ideapad", "victus", "loq", "tuf", "macbook", "tablet", "ipad", "tab", "pad", "celular", "smartphone", "iphone", "galaxy", "redmi")
+        ) and not (title_norm.startswith("funda") or title_norm.startswith("case") or "para " in title_norm):
+            continue
         if _has_word(f_clean, title_norm) or _has_word(f_clean, url_norm):
             return False
 
@@ -273,9 +296,17 @@ def matches_fingerprint(
         return False
 
     # 3. Verificación de todos los family_tokens
+    optional_subline_words = {"pixma", "ecotank", "uhd", "crystal", "vision", "tizen", "webos", "evo", "neo"}
+    has_alnum_model = any(
+        bool(re.search(r"[a-z]", t.lower()) and re.search(r"\d", t.lower()))
+        and (_has_word(t.lower(), primary_text) or _has_word(t.lower(), specs_text) or _has_word(t.lower(), url_norm))
+        for t in fingerprint.family_tokens
+    )
     for f_tok in fingerprint.family_tokens:
         tok_low = f_tok.lower().strip()
-        if not (_has_word(tok_low, primary_text) or _has_word(tok_low, specs_text)):
+        if tok_low in optional_subline_words and has_alnum_model:
+            continue
+        if not (_has_word(tok_low, primary_text) or _has_word(tok_low, specs_text) or _has_word(tok_low, url_norm)):
             return False
 
     # Bloquear sufijos de otra gama cuando no están en family_tokens
@@ -367,37 +398,59 @@ def matches_fingerprint(
 
 def build_fingerprint_from_catalog_item(item: Dict[str, Any]) -> ProductFingerprint:
     """Construye o recupera el ProductFingerprint oficial de un producto del catálogo."""
-    if "fingerprint" in item and isinstance(item["fingerprint"], dict):
-        return ProductFingerprint(**item["fingerprint"])
-    if "fingerprint" in item and isinstance(item["fingerprint"], ProductFingerprint):
-        return item["fingerprint"]
-
     title = str(item.get("title") or "")
     brand = str(item.get("brand") or "").lower().strip()
     norm = _normalize_for_fingerprint(title)
 
-    # Inferir almacenamiento y RAM
-    storage_gb: Optional[int] = None
-    ram_gb: Optional[int] = None
+    # Inferir almacenamiento y RAM desde el título
+    inferred_storage_gb: Optional[int] = None
+    inferred_ram_gb: Optional[int] = None
     for num_s, unit_s in re.findall(r"\b(\d+)\s*(gb|tb)\b", norm):
         val = int(num_s) * (1024 if unit_s == "tb" else 1)
-        if val >= 64 and storage_gb is None:
-            storage_gb = val
-        elif val < 64 and ram_gb is None:
-            ram_gb = val
+        if val >= 64 and inferred_storage_gb is None:
+            inferred_storage_gb = val
+        elif val < 64 and inferred_ram_gb is None:
+            inferred_ram_gb = val
 
-    network = "5g" if _has_word("5g", norm) else None
+    inferred_network = "5g" if _has_word("5g", norm) else None
 
-    # Inferir pulgadas si es TV, Laptop o Tablet
-    screen_inches: Optional[int] = None
+    inferred_screen_inches: Optional[int] = None
     inch_m = re.search(r"\b(\d{2})(?:\.\d)?\s*(?:pulgadas|\")\b", title, flags=re.IGNORECASE)
     if inch_m:
-        screen_inches = int(inch_m.group(1))
+        inferred_screen_inches = int(inch_m.group(1))
     elif item.get("category") == "TVs":
         for sz in TV_SCREEN_SIZES:
             if _has_word(str(sz), norm):
-                screen_inches = sz
+                inferred_screen_inches = sz
                 break
+
+    if "fingerprint" in item and isinstance(item["fingerprint"], (dict, ProductFingerprint)):
+        fp = (
+            ProductFingerprint(**item["fingerprint"])
+            if isinstance(item["fingerprint"], dict)
+            else item["fingerprint"].model_copy(deep=True)
+        )
+        if fp.storage_gb is None and inferred_storage_gb is not None:
+            fp.storage_gb = inferred_storage_gb
+        if fp.screen_inches is None and inferred_screen_inches is not None and item.get("category") == "TVs":
+            fp.screen_inches = inferred_screen_inches
+        if fp.network is None and inferred_network is not None:
+            fp.network = inferred_network
+        title_words = set(re.findall(r"\b[a-z0-9]+\b", norm))
+        if "ryzen" in title_words or "amd" in title_words:
+            for itok in ("intel", "i3", "i5", "i7", "i9", "3i", "5i"):
+                if itok not in fp.forbidden_tokens:
+                    fp.forbidden_tokens.append(itok)
+        elif "intel" in title_words or any(t in title_words for t in ("i3", "i5", "i7", "i9")):
+            for atok in ("ryzen", "amd"):
+                if atok not in fp.forbidden_tokens:
+                    fp.forbidden_tokens.append(atok)
+        return fp
+
+    storage_gb = inferred_storage_gb
+    ram_gb = inferred_ram_gb
+    network = inferred_network
+    screen_inches = inferred_screen_inches
 
     # Extraer family_tokens excluyendo stopwords de marketing, marca, capacidades y pulgadas
     words = re.findall(r"\b[a-z0-9]+\b", norm)

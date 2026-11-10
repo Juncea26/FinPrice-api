@@ -47,5 +47,6 @@ def parse_tottus(
         except Exception:
             pass
 
-    res["offer_url"] = clean_url or offer_url
+    _, final_clean_url = canonicalize_store_url(str(res.get("offer_url") or clean_url or offer_url))
+    res["offer_url"] = final_clean_url or res.get("offer_url") or clean_url or offer_url
     return res

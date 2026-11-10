@@ -13,7 +13,7 @@ Descubre URLs y grillas de candidatos en las 8 tiendas oficiales del retail peru
 from typing import Dict, List, Optional
 from app.core.logging import get_logger
 from app.collectors.catalog_urls import get_verified_store_urls_for_product
-from app.collectors.query_builder import build_search_queries
+from app.collectors.query_builder import build_search_queries, build_short_search_query
 from app.collectors.url_utils import build_store_search_url, canonicalize_store_url
 from app.collectors.graph.state import (
     BaseGraphNode,
@@ -35,7 +35,14 @@ class DiscoverySearchNode(BaseGraphNode):
 
     async def execute(self, state: GraphState) -> GraphState:
         target = state.target
-        queries = build_search_queries(target.title, target.tech_specs)
+        short_q = build_short_search_query(target, target.tech_specs)
+        cascade_qs = build_search_queries(target.title, target.tech_specs)
+        queries: List[str] = []
+        if short_q:
+            queries.append(short_q)
+        for cq in cascade_qs:
+            if cq and cq not in queries:
+                queries.append(cq)
         state.search_queries = queries
 
         seed_and_cached: Dict[str, str] = get_verified_store_urls_for_product(

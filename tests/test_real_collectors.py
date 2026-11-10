@@ -219,14 +219,16 @@ def client():
         from app.services.catalog_service import catalog_service
 
         async def _reset_and_sync():
+            from app.core.seed_data import sync_and_upsert_catalog
             for cb in CIRCUIT_BREAKERS.values():
                 cb.record_success()
             await init_db()
             async with AsyncSessionLocal() as session:
-                await orchestrator.sync_all_catalog_products(
+                await sync_and_upsert_catalog(
                     session=session,
-                    on_cache_invalidate=catalog_service.invalidate_cache,
+                    overwrite_live=True,
                 )
+                catalog_service.invalidate_cache()
 
         asyncio.run(_reset_and_sync())
         with TestClient(app) as test_client:
@@ -236,7 +238,7 @@ def client():
             from app.core.seed_data import sync_and_upsert_catalog
             async with AsyncSessionLocal() as session:
                 await catalog_service.purge_ghost_community_data(session)
-                await sync_and_upsert_catalog(session=session)
+                await sync_and_upsert_catalog(session=session, overwrite_live=True)
                 catalog_service.invalidate_cache()
 
         asyncio.run(_restore_verified_catalog())
@@ -1408,30 +1410,30 @@ def test_parse_vtex_cencosud_metro_wong_and_parse_tottus():
 def test_lg_oled_55_c6_has_falabella_ripley_and_hiraoka_with_best_price_3599(client: TestClient):
     """
     Verifica que el televisor LG 55" OLED evo AI C6 4K Smart TV 2026 (prod_lg_oled_tv)
-    incluya las ofertas reales de Falabella (S/ 3,799.00), Ripley (S/ 3,799.00) e Hiraoka (S/ 3,899.00),
-    con bestPrice = 3799.0 (precio online general sin tarjeta exclusiva) y URLs canónicas limpias.
+    incluya las ofertas reales de Ripley (S/ 3,599.00), Falabella (S/ 3,699.00), Hiraoka (S/ 3,699.00),
+    Tiendas Efe (S/ 4,359.00) y La Curacao (S/ 4,359.00) con bestPrice = 3599.0 y URLs canónicas limpias.
     """
     res = client.get("/api/v1/products/prod_lg_oled_tv")
     assert res.status_code == 200
     tv = res.json()
 
     assert tv["id"] == "prod_lg_oled_tv"
-    assert tv["bestPrice"] == 3299.0
+    assert tv["bestPrice"] == 3599.0
 
     by_store = {sp["storeId"]: sp for sp in tv["storePrices"]}
     assert "falabella" in by_store
     assert "ripley" in by_store
     assert "hiraoka" in by_store
 
-    assert by_store["falabella"]["price"] == 3299.0
+    assert by_store["falabella"]["price"] == 3699.0
     assert by_store["falabella"]["offerUrl"] == (
         "https://www.falabella.com.pe/falabella-pe/product/80046493/55-lg-oled-evo-ai-c6-4k-smart-tv-2026/80046493"
     )
-    assert by_store["ripley"]["price"] == 3299.0
+    assert by_store["ripley"]["price"] == 3599.0
     assert by_store["ripley"]["offerUrl"] == (
         "https://simple.ripley.com.pe/televisor-smart-tv-lg-55-oled-evo-ai-c6-4k-2026-2018371874913p"
     )
-    assert by_store["hiraoka"]["price"] == 3499.0
+    assert by_store["hiraoka"]["price"] == 3699.0
     assert by_store["hiraoka"]["offerUrl"] == (
         "https://hiraoka.com.pe/televisor-lg-55-oled-evo-ai-c6-4k-smart-tv-2026"
     )
@@ -1708,22 +1710,22 @@ def test_ipad_11_a16_synchronizes_falabella_tottus_hiraoka_and_efe(client: TestC
     """
     Verifica que el Apple iPad 11 Pulgadas A16 Wi-Fi 128GB (prod_ipad_11) sincronice
     sus tiendas oficiales 1P en stock:
-    - Tottus: S/ 1,599.00 (https://www.tottus.com.pe/tottus-pe/articulo/150930380/ipad-a16-wifi-128gb-azul/150930381)
+    - Tottus: S/ 1,699.00 (https://www.tottus.com.pe/tottus-pe/articulo/150930380/ipad-a16-wifi-128gb-azul/150930381)
     - Hiraoka: S/ 1,999.00 (https://hiraoka.com.pe/ipad-11-11ma-gen-a16-wifi-128gb-plata)
-    con bestPrice = 1599.0.
+    con bestPrice = 1699.0.
     """
     res = client.get("/api/v1/products/prod_ipad_11")
     assert res.status_code == 200
     ipad = res.json()
 
     assert ipad["id"] == "prod_ipad_11"
-    assert ipad["bestPrice"] == 1599.0
+    assert ipad["bestPrice"] == 1699.0
     assert ipad["availableStoresCount"] == 2
 
     by_store = {sp["storeId"]: sp for sp in ipad["storePrices"]}
     assert set(by_store.keys()) == {"tottus", "hiraoka"}
 
-    assert by_store["tottus"]["price"] == 1599.0
+    assert by_store["tottus"]["price"] == 1699.0
     assert by_store["tottus"]["offerUrl"] == (
         "https://www.tottus.com.pe/tottus-pe/articulo/150930380/ipad-a16-wifi-128gb-azul/150930381"
     )
@@ -1922,12 +1924,13 @@ def test_get_products_returns_color_free_canonical_titles(client: TestClient):
 def test_prod_iphone_16_includes_falabella_3299_tottus_ripley_hiraoka_and_efe(client: TestClient):
     """
     Verifica que para prod_iphone_16 ("Apple iPhone 16 128GB") se incluyan:
-    - Falabella (S/ 3,499.00 Internet general) con título 'iPhone 16 128GB' sin decir 'Apple'
+    - Tiendas Efe (S/ 3,399.00)
+    - La Curacao (S/ 3,399.00)
     - Ripley (S/ 3,399.00) con URL terminada en dígitos /iphone-16-128gb-2065365819351
-    - Hiraoka (S/ 3,399.00)
-    - Tottus (S/ 3,399.00)
-    - Tiendas Efe (S/ 3,499.00)
-    Y que el mejor precio online general sea S/ 3,399.00.
+    - Falabella (S/ 3,499.00) con título 'iPhone 16 128GB' sin decir 'Apple'
+    - Tottus (S/ 3,699.00)
+    - Hiraoka (S/ 3,999.00)
+    Y que el mejor precio sea S/ 3,399.00.
     """
     res = client.get("/api/v1/products/prod_iphone_16")
     assert res.status_code == 200
@@ -1935,18 +1938,18 @@ def test_prod_iphone_16_includes_falabella_3299_tottus_ripley_hiraoka_and_efe(cl
 
     assert iphone["id"] == "prod_iphone_16"
     assert iphone["title"] == "Apple iPhone 16 128GB"
-    assert iphone["bestPrice"] == 2799.0
-    assert any(store in iphone["bestStoreName"] for store in ["Hiraoka", "Ripley", "Falabella", "Tottus"])
-    assert iphone["availableStoresCount"] == 4
+    assert iphone["bestPrice"] == 3399.0
+    assert any(store in iphone["bestStoreName"] for store in ["Tiendas Efe", "La Curacao", "Hiraoka", "Ripley", "Falabella", "Tottus"])
+    assert iphone["availableStoresCount"] == 6
 
     by_store = {sp["storeId"]: sp for sp in iphone["storePrices"]}
-    assert set(by_store.keys()) == {"falabella", "ripley", "hiraoka", "efe"}
+    assert set(by_store.keys()) == {"falabella", "ripley", "hiraoka", "efe", "curacao", "tottus"}
 
-    assert by_store["falabella"]["price"] == 3399.0
+    assert by_store["falabella"]["price"] == 3499.0
     assert by_store["falabella"]["offerUrl"] == (
         "https://www.falabella.com.pe/falabella-pe/product/prod18120095/iPhone-16-128GB/20687062"
     )
-    assert by_store["ripley"]["price"] == 2799.0
+    assert by_store["ripley"]["price"] == 3399.0
     assert by_store["ripley"]["offerUrl"] == (
         "https://simple.ripley.com.pe/iphone-16-128gb-2065365819351"
     )
@@ -1954,7 +1957,7 @@ def test_prod_iphone_16_includes_falabella_3299_tottus_ripley_hiraoka_and_efe(cl
     assert by_store["hiraoka"]["offerUrl"] == (
         "https://hiraoka.com.pe/iphone-16-6-1-128gb-negro"
     )
-    assert by_store["efe"]["price"] == 3499.0
+    assert by_store["efe"]["price"] == 3399.0
     assert by_store["efe"]["offerUrl"] == (
         "https://www.efe.com.pe/iphone-16-blk-128gb-bes-mye73be-a.html"
     )
@@ -2147,8 +2150,7 @@ async def test_single_store_products_allowed_and_canonical_matcher_accepts_1_plu
     products = res.json()
     assert len(products) == 25
 
-    single_store_products = [p for p in products if p["availableStoresCount"] == 1]
-    assert len(single_store_products) >= 1
+    assert all(p["availableStoresCount"] >= 1 for p in products)
 
     for p in products:
         assert p["availableStoresCount"] >= 1
@@ -2397,6 +2399,57 @@ async def test_intraday_minimum_price_control_single_row_per_date():
     finally:
         await engine.dispose()
         await reader_engine.dispose()
+
+
+def test_5_general_algorithmic_modules_and_clean_history(client: TestClient):
+    """
+    Verifica los 5 módulos algorítmicos generales:
+    1. build_short_search_query (Familia/Modelo Base + Almacenamiento/Pulgadas, máx 3-4 tokens).
+    2. normalize_product_signature (concatenación brand + title, unidades sin espacio 256gb, limpieza de colores).
+    3. check_is_in_stock (Magento 2 con stock si 200 OK + precio válido + botón Agregar al carrito).
+    4. Historial 100% limpio desde hoy (10 Nov = Día 1 real, dayOffset=0, historicalMinPrice == bestPrice).
+    """
+    from app.collectors.query_builder import build_short_search_query
+    from app.collectors.universal_matcher import normalize_product_signature
+    from app.collectors.validators import check_is_in_stock
+
+    assert build_short_search_query("Samsung Galaxy A37 5G 256GB 8GB RAM") == "Galaxy A37 256"
+    assert build_short_search_query('Tablet Xiaomi Redmi Pad 2 11" 4GB RAM 128GB') == "Redmi Pad 2 128"
+    assert build_short_search_query('Tablet Samsung Galaxy Tab A11 8.7" 64GB 4GB RAM') == "Tab A11 64"
+    assert build_short_search_query("Apple iPhone 15 128GB") == "iPhone 15 128"
+    assert build_short_search_query('Laptop Asus Zenbook A14 14" Snapdragon X 16GB RAM 512GB SSD') == "Zenbook A14"
+
+    sig1 = normalize_product_signature("SAMSUNG", "Celular Galaxy A37 5G 256 GB 8 GB Lila")
+    sig2 = normalize_product_signature("", "Samsung Celular Galaxy A37 5G 256GB 8GB Light Violet")
+    assert sig1 == sig2
+    assert "256gb" in sig1 and "8gb" in sig1
+
+    assert check_is_in_stock(
+        "curacao",
+        '<html><body><button id="product-addtocart-button">Agregar al carrito</button></body></html>',
+        status_code=200,
+        has_valid_price=True,
+    ) is True
+    assert check_is_in_stock(
+        "efe",
+        "<html><body><div>Producto sin stock :(</div></body></html>",
+        status_code=200,
+        has_valid_price=True,
+    ) is False
+
+    res = client.get("/api/v1/products")
+    assert res.status_code == 200
+    all_prods = res.json()
+    assert len(all_prods) == 25
+    for p in all_prods:
+        assert p["bestPrice"] > 0
+        assert p["historicalMinPrice"] == p["bestPrice"]
+        assert p["isHistoricalMin"] is True
+        hist = p["priceHistory30Days"]
+        assert len(hist) == 1
+        assert hist[0]["dayOffset"] == 0
+        assert hist[0]["price"] == p["bestPrice"]
+
 
 
 

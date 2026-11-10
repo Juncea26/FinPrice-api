@@ -258,7 +258,8 @@ def _extract_storage_and_inches(
         if m_st:
             v_num = int(m_st.group(1))
             v_unit = m_st.group(2).upper()
-            storage_token = "1TB" if (v_unit == "GB" and v_num == 1024) else f"{v_num}{v_unit}"
+            if v_unit == "TB" or (v_num >= 64 and v_num in VALID_STORAGE_GB):
+                storage_token = "1TB" if (v_unit == "GB" and v_num == 1024) else f"{v_num}{v_unit}"
 
     # 2. Pulgadas de pantalla desde el título y tech_specs
     screen_inches_token: Optional[str] = None
@@ -381,3 +382,124 @@ def build_search_queries(
         queries.append(broad_model_query)
 
     return queries
+
+
+def build_short_search_query(
+    product: Any,
+    tech_specs: Optional[Dict[str, Any]] = None,
+) -> str:
+    """
+    Generador Automático de Consulta Corta (máximo 3 a 4 tokens):
+    Extrae automáticamente del producto únicamente:
+    Familia/Modelo Base + Almacenamiento (o Pulgadas en TVs).
+    Ejemplos:
+      - "Samsung Galaxy A37 5G 256GB 8GB RAM" -> "Galaxy A37 256"
+      - "Tablet Xiaomi Redmi Pad 2 11\" 4GB RAM 128GB" -> "Redmi Pad 2 128"
+      - "Tablet Samsung Galaxy Tab A11 8.7\" 64GB 4GB RAM" -> "Tab A11 64"
+      - "Apple iPhone 15 128GB" -> "iPhone 15 128"
+      - "Laptop Asus Zenbook A14 14\" Snapdragon X 16GB RAM 512GB SSD" -> "Zenbook A14"
+    """
+    if isinstance(product, str):
+        raw_title = product
+        specs = tech_specs or {}
+        category = ""
+    elif isinstance(product, dict):
+        raw_title = str(product.get("title") or "")
+        specs = tech_specs or product.get("tech_specs") or product.get("raw_tech_specs") or {}
+        category = str(product.get("category") or "")
+    else:
+        raw_title = str(getattr(product, "title", "") or "")
+        specs = (
+            tech_specs
+            or getattr(product, "tech_specs", None)
+            or getattr(product, "raw_tech_specs", None)
+            or {}
+        )
+        category = str(getattr(product, "category", "") or "")
+
+    clean_title = strip_color_tokens(raw_title)
+    if not clean_title:
+        return ""
+
+    t_low = _strip_accents(clean_title).lower()
+    is_tv = category.lower() == "tvs" or any(
+        w in t_low for w in ("oled", "qled", "qned", "nanocell", "smart tv", "televisor", "u8000", "qn85")
+    )
+    is_laptop = category.lower() == "laptops" or any(
+        w in t_low for w in ("laptop", "macbook", "zenbook", "ideapad", "victus", "tuf gaming", "loq", "thinkpad", "vivobook")
+    )
+    is_printer = category.lower() == "impresoras" or any(
+        w in t_low for w in ("impresora", "multifuncional", "ecotank", "pixma", "smart tank", "maxify")
+    )
+
+    storage_token, screen_inches_token, _ = _extract_storage_and_inches(clean_title, specs)
+    storage_num = re.sub(r"(?:gb|tb)$", "", storage_token, flags=re.IGNORECASE) if storage_token else None
+
+    if is_tv:
+        qs = build_search_queries(clean_title, {})
+        if qs:
+            toks = [t for t in qs[0].split() if t.lower() not in {"tizen", "neo"}]
+            if screen_inches_token and screen_inches_token not in toks:
+                if len(toks) >= 2 and toks[1].upper() in {"OLED", "QLED", "QNED"}:
+                    toks.insert(2, screen_inches_token)
+                elif len(toks) >= 1:
+                    toks.insert(1, screen_inches_token)
+                else:
+                    toks.append(screen_inches_token)
+            return " ".join(toks[:4])
+
+    if is_printer:
+        if "smart tank" in t_low:
+            m_num = re.search(r"\b(\d{3,4})\b", t_low)
+            return f"Smart Tank {m_num.group(1)}" if m_num else "Smart Tank"
+        qs = build_search_queries(clean_title, specs)
+        if qs:
+            toks = [t for t in qs[0].split() if t.lower() not in {"pixma", "ecotank"}]
+            return " ".join(toks[:3]) if toks else " ".join(qs[0].split()[:3])
+
+    if is_laptop:
+        cleaned_lap = re.sub(r"\b\d{1,4}\s*(?:gb|tb|ssd|mah|hz)\b", " ", _strip_accents(clean_title), flags=re.IGNORECASE)
+        raw_tokens = re.findall(r"\b[a-zA-Z0-9\.]+\b", cleaned_lap)
+        l_tokens: List[str] = []
+        redundant_brands = set()
+        if any(w in t_low for w in ("zenbook", "tuf", "vivobook", "rog")):
+            redundant_brands.add("asus")
+        if "macbook" in t_low:
+            redundant_brands.add("apple")
+        if any(w in t_low for w in ("ideapad", "thinkpad")):
+            redundant_brands.add("lenovo")
+        for tok in raw_tokens:
+            low = tok.lower().strip(".")
+            if not low or low in FORBIDDEN_QUERY_COLORS or low in FORBIDDEN_QUERY_MARKETING_WORDS or low in redundant_brands:
+                continue
+            if low in {"gamer", "amd", "ryzen", "intel", "core", "snapdragon", "rtx", "geforce", "4050", "3050", "5050", "210h", "7520u", "x"}:
+                continue
+            if low == "15.6" and any(x.lower() in {"victus", "loq"} for x in l_tokens):
+                l_tokens.append("15")
+                continue
+            if re.match(r"^\d{2}(?:\.\d)?$", low) and float(low) in {13.0, 13.3, 13.6, 14.0, 15.6, 16.0}:
+                continue
+            if low in {"5", "7", "i5", "i7", "i9"} and len(l_tokens) >= 2:
+                continue
+            fmt = _format_token(low) if low != "ideapad" else "IdeaPad"
+            if fmt.lower() not in [x.lower() for x in l_tokens]:
+                l_tokens.append(fmt)
+        return " ".join(l_tokens[:3])
+
+    # Smartphones / Tablets / Otros: Familia/Modelo Base + Almacenamiento (sin GB), máx 3 a 4 tokens
+    qs = build_search_queries(clean_title, specs)
+    base_str = qs[1] if len(qs) >= 2 else (qs[0] if qs else clean_title)
+    base_tokens = base_str.split()
+    # Si tiene 'Galaxy' y 'Tab' juntos (ej. 'Galaxy Tab A11'), acortar a 'Tab A11'
+    if len(base_tokens) >= 3 and base_tokens[0].lower() == "galaxy" and base_tokens[1].lower() == "tab":
+        base_tokens = base_tokens[1:]
+    # En 'Lenovo Idea Tab', si tiene '11"' en el título, conservar 'Idea Tab 11'
+    if "idea" in t_low and "tab" in t_low:
+        base_tokens = [t for t in base_tokens if t.lower() != "lenovo"]
+        if "11" in t_low and "11" not in base_tokens:
+            base_tokens.append("11")
+
+    base_tokens = base_tokens[:3]
+    if storage_num and storage_num not in [t.lower() for t in base_tokens]:
+        base_tokens.append(storage_num)
+    return " ".join(base_tokens[:4])

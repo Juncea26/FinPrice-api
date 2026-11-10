@@ -17,55 +17,6 @@ from app.collectors.url_utils import canonicalize_store_url
 
 logger = get_logger("collectors.http_client")
 
-# Instantáneas reales verificadas de fichas de Ripley para resiliencia ante bloqueo WAF Cloudflare (HTTP 403)
-RIPLEY_VERIFIED_WAF_SNAPSHOTS: Dict[str, str] = {
-    "https://simple.ripley.com.pe/televisor-smart-tv-lg-55-oled-evo-ai-c6-4k-2026-2018371874913p": """
-    <html><head><title>Televisor Smart TV LG 55" OLED evo AI C6 4K 2026</title></head><body>
-    <h1 class="product-header__title">Televisor Smart TV LG 55" OLED evo AI C6 4K 2026</h1>
-    <script id="__NEXT_DATA__" type="application/json">
-    {"props":{"pageProps":{"detailProps":{"data":{"product":{"name":"Televisor Smart TV LG 55\\" OLED evo AI C6 4K 2026","brand":"LG","images":["https://rimage.ripley.com.pe/home.ripley/Attachment/MKP/2018371874913/full_image-2018371874913.jpg"],"attributes":[{"name":"Marca","value":"LG"},{"name":"Tamaño de pantalla","value":"55\\""},{"name":"Tipo de pantalla","value":"OLED evo"},{"name":"Resolución de pantalla","value":"4K UHD (3840 x 2160)"},{"name":"Procesador","value":"Alpha 9 AI Processor 4K"},{"name":"Tasa de refresco","value":"120Hz"},{"name":"Sistema operativo","value":"webOS 26"}],"parentpricestock":{"price":{"ripley":{"valueNumber":3599},"sale":{"valueNumber":3599},"master":{"valueNumber":4999}}}}}}}}}
-    </script></body></html>
-    """,
-    "https://simple.ripley.com.pe/iphone-16-128gb-2065365819351": """
-    <html><head><title>Apple iPhone 16 128GB Negro</title></head><body>
-    <h1 class="product-header__title">Apple iPhone 16 128GB Negro</h1>
-    <script id="__NEXT_DATA__" type="application/json">
-    {"props":{"pageProps":{"detailProps":{"data":{"product":{"name":"Apple iPhone 16 128GB Negro","brand":"Apple","images":["https://rimage.ripley.com.pe/home.ripley/Attachment/WOP/1/2065365819351/full_image-2065365819351.jpg"],"attributes":[{"name":"Marca","value":"Apple"},{"name":"Memoria interna","value":"128GB"},{"name":"Memoria RAM","value":"8GB"},{"name":"Tamaño de pantalla","value":"6.1\\""},{"name":"Procesador","value":"Apple A18"},{"name":"Red móvil","value":"5G"}],"parentpricestock":{"price":{"ripley":{"valueNumber":3399},"sale":{"valueNumber":3599},"master":{"valueNumber":4299}}}}}}}}}
-    </script></body></html>
-    """,
-    "https://www.falabella.com.pe/falabella-pe/product/prod18120095/iPhone-16-128GB/20687062": """
-    <html><head><title>iPhone 16 128GB</title></head><body>
-    <script id="__NEXT_DATA__" type="application/json">
-    {"props":{"pageProps":{"productData":{"id":"prod18120095","name":"iPhone 16 128GB","brandName":"APPLE","attributes":{"specifications":[{"name":"Capacidad de almacenamiento","value":"128GB"},{"name":"Tamaño de la pantalla","value":"6.1"},{"name":"Memoria RAM","value":"8GB"}]},"variants":[{"id":"20687062","name":"iPhone 16 128GB Negro","prices":[{"type":"cmrPrice","price":["3,299.00"],"crossed":false},{"type":"internetPrice","price":["3,499.00"],"crossed":false},{"type":"normalPrice","price":["4,499.00"],"crossed":true}],"medias":[{"url":"https://media.falabella.com/falabellaPE/20687062_1/public"}]}]}}}}
-    </script></body></html>
-    """,
-    "https://www.tottus.com.pe/tottus-pe/articulo/149214502/iphone-16-128gb-negro/149214504": """
-    <html><head><title>iPhone 16 128GB Negro</title></head><body>
-    <script id="__NEXT_DATA__" type="application/json">
-    {"props":{"pageProps":{"productData":{"id":"149214502","name":"iPhone 16 128GB Negro","attributes":{"specifications":[{"name":"Capacidad de almacenamiento","value":"128GB"},{"name":"marca","value":"APPLE"}]},"variants":[{"id":"149214504","name":"iPhone 16 128GB Negro","prices":[{"type":"cmrPrice","price":["3,399.00"],"crossed":false},{"type":"normalPrice","price":["4,499.00"],"crossed":true}],"medias":[{"url":"https://media.falabella.com/tottusPE/149214504_1/public"}]}]}}}}
-    </script></body></html>
-    """,
-    "https://simple.ripley.com.pe/tablet-samsung-galaxy-tab-a11-87-64gb-2004367413754p": """
-    <html><head><title>TABLET SAMSUNG GALAXY TAB A11 8.7" 64GB</title></head><body>
-    <h1 class="product-header__title">TABLET SAMSUNG GALAXY TAB A11 8.7" 64GB</h1>
-    <script id="__NEXT_DATA__" type="application/json">
-    {"props":{"pageProps":{"detailProps":{"data":{"product":{"name":"TABLET SAMSUNG GALAXY TAB A11 8.7\\" 64GB","brand":"SAMSUNG","partNumber":"2004367413754P","isMarketplaceProduct":false,"isOutOfStock":false,"images":["https://rimage.ripley.com.pe/home.ripley/Attachment/WOP/1/2004367413754/full_image-2004367413754.jpg"],"attributes":[{"name":"Marca","value":"SAMSUNG"},{"name":"Modelo","value":"SM-X133NZAAPEO"},{"name":"Capacidad de almacenamiento","value":"64GB"},{"name":"Memoria RAM","value":"4GB"},{"name":"Tamaño de pantalla","value":"8.7\\""}],"parentpricestock":{"price":{"ripley":{"valueNumber":439},"sale":{"valueNumber":439},"master":{"valueNumber":649}}}}}}}}}
-    </script></body></html>
-    """,
-    "https://www.falabella.com.pe/falabella-pe/product/21239694/galaxy-tab-a11/21239694": """
-    <html><head><title>Galaxy Tab A11 64GB</title></head><body>
-    <script id="__NEXT_DATA__" type="application/json">
-    {"props":{"pageProps":{"productData":{"id":"21239694","name":"Galaxy Tab A11 8.7\\" 64GB 4GB RAM","brandName":"SAMSUNG","sellerName":"Falabella","attributes":{"specifications":[{"name":"Capacidad de almacenamiento","value":"64GB"},{"name":"Memoria RAM","value":"4GB"},{"name":"Tamaño de la pantalla","value":"8.7 pulgadas"},{"name":"Modelo","value":"SM-X133NZAAPEO"}]},"variants":[{"id":"21239694","name":"Galaxy Tab A11 64GB","isPurchaseable":true,"prices":[{"type":"cmrPrice","price":["449.00"],"crossed":false},{"type":"internetPrice","price":["449.00"],"crossed":false},{"type":"normalPrice","price":["899.00"],"crossed":true}],"medias":[{"url":"https://media.falabella.com/falabellaPE/21239694_1/public"}]}]}}}}
-    </script></body></html>
-    """,
-    "https://www.tottus.com.pe/tottus-pe/articulo/147828269/tablet-samsung-galaxy-tab-a11-64gb-gray/147828270": """
-    <html><head><title>Tablet Samsung Galaxy Tab A11 64GB Gray</title></head><body>
-    <script id="__NEXT_DATA__" type="application/json">
-    {"props":{"pageProps":{"productData":{"id":"147828269","name":"Tablet Samsung Galaxy Tab A11 64GB Gray","brandName":"SAMSUNG","sellerName":"Tottus","attributes":{"specifications":[{"name":"Capacidad de almacenamiento","value":"64GB"},{"name":"Memoria RAM","value":"4GB"},{"name":"Tamaño de la pantalla","value":"8.7 pulgadas"},{"name":"Modelo","value":"SM-X133NZAAPEO"}]},"variants":[{"id":"147828270","name":"Tablet Samsung Galaxy Tab A11 64GB Gray","isPurchaseable":true,"prices":[{"type":"cmrPrice","price":["459.00"],"crossed":false},{"type":"internetPrice","price":["479.00"],"crossed":false},{"type":"normalPrice","price":["549.00"],"crossed":true}],"medias":[{"url":"https://media.falabella.com/tottusPE/147828270_1/public"}]}]}}}}
-    </script></body></html>
-    """,
-}
-
 try:
     import h2  # noqa: F401
     HAS_HTTP2 = True
@@ -83,6 +34,19 @@ USER_AGENTS = [
 # Semáforo global limitado a 2 tiendas concurrentes para estricto control de memoria
 _loop_semaphores: Dict[int, asyncio.Semaphore] = {}
 _shared_clients: Dict[int, httpx.AsyncClient] = {}
+LAST_FETCH_STATUS: Dict[str, str] = {}
+
+
+def is_transient_fetch_failure(url: str) -> bool:
+    """
+    Indica si la última petición a `url` falló por un error temporal de red o WAF
+    (TimeoutException, NetworkError, HTTP 403, 429, 500, 502, 503, 504),
+    en cuyo caso la Regla de Retención Tolerante a Fallos (Módulo 3) exige conservar
+    la oferta previa en store_offers con su último precio válido.
+    """
+    _, clean_u = canonicalize_store_url(url)
+    st = LAST_FETCH_STATUS.get(url) or LAST_FETCH_STATUS.get(clean_u or "")
+    return st == "transient_error"
 
 
 def _get_collector_semaphore() -> asyncio.Semaphore:
@@ -160,7 +124,8 @@ async def fetch_page(
                 response = await effective_client.get(url, headers=headers)
                 status_code = response.status_code
 
-                if status_code in {429, 502, 503, 504}:
+                if status_code in {429, 500, 502, 503, 504}:
+                    LAST_FETCH_STATUS[url] = "transient_error"
                     del response
                     if attempt < max_retries:
                         backoff = (2 ** attempt) + random.uniform(0.2, 0.7)
@@ -169,25 +134,26 @@ async def fetch_page(
                         )
                         await asyncio.sleep(backoff)
                         continue
+                    logger.warning(
+                        f"HTTP {status_code} persistente en {url}. Se retendrá la última oferta válida."
+                    )
+                    return None
 
                 if status_code in {200, 206}:
+                    LAST_FETCH_STATUS[url] = "ok"
                     text = response.text
                     del response
                     return text
 
                 if status_code == 403:
+                    LAST_FETCH_STATUS[url] = "transient_error"
                     del response
-                    _, clean_url = canonicalize_store_url(url)
-                    if clean_url in RIPLEY_VERIFIED_WAF_SNAPSHOTS:
-                        logger.info(
-                            f"Usando instantánea verificada ante bloqueo WAF 403 en {clean_url}"
-                        )
-                        return RIPLEY_VERIFIED_WAF_SNAPSHOTS[clean_url]
                     logger.warning(
-                        f"Respuesta no exitosa ({status_code}) para {url}"
+                        f"Respuesta temporal WAF (403) para {url}. Se retendrá la última oferta válida."
                     )
                     return None
 
+                LAST_FETCH_STATUS[url] = "not_found" if status_code in {404, 410} else f"http_{status_code}"
                 del response
                 logger.warning(
                     f"Respuesta no exitosa ({status_code}) para {url}"
@@ -195,6 +161,7 @@ async def fetch_page(
                 return None
 
             except (httpx.TimeoutException, httpx.NetworkError) as err:
+                LAST_FETCH_STATUS[url] = "transient_error"
                 if attempt < max_retries:
                     backoff = (2 ** attempt) + random.uniform(0.2, 0.7)
                     logger.warning(
@@ -202,7 +169,9 @@ async def fetch_page(
                     )
                     await asyncio.sleep(backoff)
                 else:
-                    logger.warning(f"Error definitivo tras {max_retries} reintentos en {url}: {err}")
+                    logger.warning(
+                        f"Error temporal de red tras {max_retries} reintentos en {url}: {err}. Se retendrá la última oferta válida."
+                    )
                     return None
             finally:
                 # Recolección rápida si es necesario

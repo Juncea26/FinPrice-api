@@ -18,6 +18,7 @@ from app.collectors.universal_matcher import (
     match_product_universal,
 )
 from app.collectors.url_utils import (
+    build_vtex_api_url_for_product,
     canonicalize_store_url,
     extract_store_urls_from_dork_html,
 )
@@ -189,7 +190,15 @@ class FetchNode(BaseGraphNode):
 
             # Modo B: Descarga HTTP/2 real de documento HTML o JSON API
             try:
-                raw_content = await self._call_fetch(fetch_callable, target_url)
+                raw_content = None
+                if store_id in {"metro", "wong"} and not entry.is_search_endpoint and "/api/catalog_system/" not in target_url:
+                    vtex_api_url = build_vtex_api_url_for_product(target_url)
+                    if vtex_api_url:
+                        api_resp = await self._call_fetch(fetch_callable, vtex_api_url)
+                        if api_resp and api_resp.lstrip().startswith(("[", "{")) and len(api_resp.strip()) > 5:
+                            raw_content = api_resp
+                if not raw_content:
+                    raw_content = await self._call_fetch(fetch_callable, target_url)
             except Exception as e:
                 if cb:
                     cb.record_failure(e)

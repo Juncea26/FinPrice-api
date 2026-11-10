@@ -93,21 +93,26 @@ def parse_ripley(
                 props.get("detailProps", {}).get("data", {}).get("product", {})
                 or props.get("product", {})
             )
+            prod_brand = str(prod.get("brand") or "").strip()
             prod_title = str(prod.get("name") or h1_title).strip()
+            if prod_brand and prod_title and prod_brand.lower() not in prod_title.lower():
+                prod_title = f"{prod_brand} {prod_title}".strip()
             price_stock = prod.get("parentpricestock", {})
             price_dict = price_stock.get("price", {}) if isinstance(price_stock, dict) else {}
 
-            extracted_prices = []
             orig_price = None
 
-            # 1. Precio con tarjeta Ripley
-            ripley_p = clean_number(price_dict.get("ripley", {}).get("valueNumber"))
+            # 1. Precio con tarjeta Ripley (ripley / card / cardPrice)
+            rip_node = price_dict.get("ripley") or price_dict.get("card") or price_dict.get("cardPrice") or {}
+            ripley_p = clean_number(rip_node.get("valueNumber") if isinstance(rip_node, dict) else rip_node)
 
-            # 2. Precio de venta / oferta internet general para todo público
-            sale_p = clean_number(price_dict.get("sale", {}).get("valueNumber"))
+            # 2. Precio de venta / oferta internet general (sale / offerPrice)
+            sale_node = price_dict.get("sale") or price_dict.get("offerPrice") or {}
+            sale_p = clean_number(sale_node.get("valueNumber") if isinstance(sale_node, dict) else sale_node)
 
-            # 3. Precio de lista / normal
-            master_p = clean_number(price_dict.get("master", {}).get("valueNumber"))
+            # 3. Precio de lista / normal (master / listPrice / normalPrice)
+            master_node = price_dict.get("master") or price_dict.get("listPrice") or price_dict.get("normalPrice") or {}
+            master_p = clean_number(master_node.get("valueNumber") if isinstance(master_node, dict) else master_node)
             if master_p:
                 orig_price = master_p
 
@@ -149,10 +154,11 @@ def parse_ripley(
                     "original_price": list_p if list_p > best_p else best_p,
                     "image_url": official_img,
                     "offer_url": offer_url,
-                    "brand": extracted_meta["brand"],
+                    "brand": extracted_meta["brand"] or prod_brand,
                     "tech_specs": extracted_meta["tech_specs"],
                     "features": extracted_meta["features"],
                     "description": prod_desc,
+                    "in_stock": True,
                 }
         except Exception as e:
             logger.debug(f"Error parseando __NEXT_DATA__ en Ripley: {e}")
@@ -167,7 +173,10 @@ def parse_ripley(
         try:
             state = json.loads(preloaded_match.group(1))
             prod = state.get("product", {}).get("product", {}) or state.get("product", {})
+            prod_brand = str(prod.get("brand") or "").strip()
             prod_title = str(prod.get("name") or h1_title).strip()
+            if prod_brand and prod_title and prod_brand.lower() not in prod_title.lower():
+                prod_title = f"{prod_brand} {prod_title}".strip()
             prod_desc = str(prod.get("description") or prod.get("shortDescription") or "").strip()
             prices_node = prod.get("prices", {}) or prod.get("parentpricestock", {}).get("price", {})
             sale_num = None
@@ -211,10 +220,11 @@ def parse_ripley(
                     "original_price": list_p if list_p > best_p else best_p,
                     "image_url": img_u,
                     "offer_url": offer_url,
-                    "brand": extracted_meta["brand"],
+                    "brand": extracted_meta["brand"] or prod_brand,
                     "tech_specs": extracted_meta["tech_specs"],
                     "features": extracted_meta["features"],
                     "description": prod_desc,
+                    "in_stock": True,
                 }
         except Exception as e:
             logger.debug(f"Error parseando __PRELOADED_STATE__ en Ripley: {e}")

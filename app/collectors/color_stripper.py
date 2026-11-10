@@ -49,6 +49,15 @@ COMPOUND_COLOR_PHRASES: Tuple[str, ...] = (
     "sky blue",
     "rose gold",
     "zabriskie beige",
+    "light violet",
+    "dark blue",
+    "light blue",
+    "graphite gray",
+    "graphite grey",
+    "awesome graphite",
+    "awesome lilac",
+    "awesome navy",
+    "awesome iceblue",
 )
 
 # Diccionario completo de tokens de color individuales (Español + Inglés, con y sin tilde)
@@ -101,6 +110,10 @@ SINGLE_COLOR_TOKENS: Set[str] = {
     "arándano",
     "arena",
     "lavanda",
+    "lila",
+    "lilac",
+    "navy",
+    "iceblue",
     "menta",
     "coral",
     "perla",
