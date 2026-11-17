@@ -12,7 +12,11 @@ import json
 from typing import Any, Callable, List, Optional
 
 from app.core.logging import get_logger
-from app.collectors.http_client import fetch_page as default_fetch_page
+from app.collectors.http_client import (
+    LAST_FETCH_STATUS,
+    fetch_page as default_fetch_page,
+    is_transient_fetch_failure,
+)
 from app.collectors.universal_matcher import (
     extract_search_candidate_links,
     match_product_universal,
@@ -146,6 +150,8 @@ class FetchNode(BaseGraphNode):
         fetch_callable = self._get_effective_fetch_fn()
         broad_q = state.search_queries[-1] if state.search_queries else state.target.title
         target_dict = state.target.to_target_dict()
+        had_transient_failure = False
+        last_transport_error: Optional[str] = None
 
         for entry in entries:
             target_url = entry.url
@@ -158,8 +164,8 @@ class FetchNode(BaseGraphNode):
                 try:
                     scraped_dict = await self._call_scrape_fn(store_id, target_url, state)
                 except Exception as e:
-                    if cb:
-                        cb.record_failure(e)
+                    had_transient_failure = True
+                    last_transport_error = str(e)
                     continue
 
                 if scraped_dict and scraped_dict.get("price") and float(scraped_dict["price"]) > 0:
@@ -184,11 +190,13 @@ class FetchNode(BaseGraphNode):
                                 is_search_page=False,
                             )
                         )
+                        if cb:
+                            cb.record_success()
                         # Cortar cascada en cuanto encontramos oferta válida para esta tienda
                         return docs
                 continue
 
-            # Modo B: Descarga HTTP/2 real de documento HTML o JSON API
+            # Modo B: Descarga HTTP real de documento HTML o JSON API
             try:
                 raw_content = None
                 if store_id in {"metro", "wong"} and not entry.is_search_endpoint and "/api/catalog_system/" not in target_url:
@@ -200,14 +208,22 @@ class FetchNode(BaseGraphNode):
                 if not raw_content:
                     raw_content = await self._call_fetch(fetch_callable, target_url)
             except Exception as e:
-                if cb:
-                    cb.record_failure(e)
+                had_transient_failure = True
+                last_transport_error = str(e)
                 logger.warning(f"[FetchNode] Error descargando {target_url} ({store_id}): {e}")
                 continue
 
             if not raw_content:
-                if not entry.is_search_endpoint and cb:
-                    cb.record_failure("Respuesta vacía o error HTTP")
+                _, clean_t = canonicalize_store_url(target_url)
+                st_val = LAST_FETCH_STATUS.get(target_url) or LAST_FETCH_STATUS.get(clean_t or "")
+                if st_val not in {"ok", "not_found"} and (
+                    is_transient_fetch_failure(target_url) or not entry.is_search_endpoint
+                ):
+                    had_transient_failure = True
+                    last_transport_error = (
+                        last_transport_error
+                        or f"Error de transporte HTTP ({st_val or 'respuesta vacía'})"
+                    )
                 continue
 
             # Si es Canal 3 (dork externo), extraer URLs reales de producto de la tienda y descargarlas
@@ -230,6 +246,8 @@ class FetchNode(BaseGraphNode):
                             )
                         )
                 if docs:
+                    if cb:
+                        cb.record_success()
                     return docs
                 continue
 
@@ -280,7 +298,15 @@ class FetchNode(BaseGraphNode):
             # Si ya descargamos exitosamente la URL directa de Canal 1 (y no se pidió forzar búsqueda),
             # o si obtuvimos fichas de producto válidas, avanzamos a ParseNode
             if entry.channel == "channel_1_seed_cache" and docs:
+                if cb:
+                    cb.record_success()
                 return docs
+
+        if docs:
+            if cb:
+                cb.record_success()
+        elif had_transient_failure and cb:
+            cb.record_failure(last_transport_error or "Error de transporte HTTP")
 
         return docs
 

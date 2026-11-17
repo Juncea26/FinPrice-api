@@ -186,13 +186,6 @@ class FinPriceMultiStoreGraph:
         state = await extractor_node.execute(state)
 
         if not state.extracted_offers:
-            try:
-                from app.collectors.orchestrator import CIRCUIT_BREAKERS
-                cb = CIRCUIT_BREAKERS.get(store_id)
-                if cb:
-                    cb.record_failure("No se pudo extraer precio válido")
-            except Exception:
-                pass
             return None
 
         if canonical_title or target_spec.title:

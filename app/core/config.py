@@ -44,8 +44,8 @@ class Settings(BaseSettings):
     COLLECTOR_TIMEOUT_CONNECT: float = 6.0
     COLLECTOR_TIMEOUT_READ: float = 12.0
     COLLECTOR_MAX_CONCURRENCY: int = 2
-    CIRCUIT_BREAKER_FAILURE_THRESHOLD: int = 3
-    CIRCUIT_BREAKER_RECOVERY_SECONDS: int = 120
+    CIRCUIT_BREAKER_FAILURE_THRESHOLD: int = 4
+    CIRCUIT_BREAKER_RECOVERY_SECONDS: int = 15
 
     @field_validator("ALLOWED_ORIGINS", mode="before")
     @classmethod

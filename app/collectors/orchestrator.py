@@ -96,19 +96,42 @@ class CircuitState(str, Enum):
 
 
 class StoreCircuitBreaker:
-    def __init__(self, store_id: str):
+    def __init__(
+        self,
+        store_id: str,
+        failure_threshold: Optional[int] = None,
+        recovery_seconds: Optional[float] = None,
+    ):
         self.store_id = store_id
         self.state = CircuitState.CLOSED
         self.failure_count = 0
         self.last_failure_time: Optional[float] = None
+        self.failure_threshold = failure_threshold
+        self.recovery_seconds = recovery_seconds
+
+    @property
+    def _effective_failure_threshold(self) -> int:
+        if self.failure_threshold is not None:
+            return max(1, int(self.failure_threshold))
+        return max(3, int(settings.CIRCUIT_BREAKER_FAILURE_THRESHOLD))
+
+    @property
+    def _effective_recovery_seconds(self) -> float:
+        if self.recovery_seconds is not None:
+            return max(1.0, float(self.recovery_seconds))
+        return max(1.0, float(settings.CIRCUIT_BREAKER_RECOVERY_SECONDS))
 
     def can_execute(self) -> bool:
         if self.state == CircuitState.CLOSED:
             return True
         now = time.time()
         if self.state == CircuitState.OPEN:
-            if self.last_failure_time and (now - self.last_failure_time >= settings.CIRCUIT_BREAKER_RECOVERY_SECONDS):
+            if self.last_failure_time and (now - self.last_failure_time >= self._effective_recovery_seconds):
                 self.state = CircuitState.HALF_OPEN
+                logger.info(
+                    f"Circuit Breaker para '{self.store_id}' pasó a HALF_OPEN tras cooldown "
+                    f"({self._effective_recovery_seconds:.0f}s)."
+                )
                 return True
             return False
         return True
@@ -118,11 +141,15 @@ class StoreCircuitBreaker:
         self.state = CircuitState.CLOSED
 
     def record_failure(self, err: Any):
+        was_half_open = self.state == CircuitState.HALF_OPEN
         self.failure_count += 1
         self.last_failure_time = time.time()
-        if self.failure_count >= settings.CIRCUIT_BREAKER_FAILURE_THRESHOLD:
+        if was_half_open or self.failure_count >= self._effective_failure_threshold:
             self.state = CircuitState.OPEN
-            logger.warning(f"Circuit Breaker para '{self.store_id}' activado (OPEN). Error: {err}")
+            logger.warning(
+                f"Circuit Breaker para '{self.store_id}' activado (OPEN) "
+                f"tras {self.failure_count} fallos consecutivos. Error: {err}"
+            )
 
 
 # Mapa de Circuit Breakers por tienda
@@ -352,8 +379,10 @@ class CollectorOrchestrator:
             if not html:
                 html = await fetch_page(target_url)
             if not html:
-                if cb:
-                    cb.record_failure("Respuesta vacía o error HTTP")
+                _, clean_t_url = canonicalize_store_url(target_url)
+                last_st = LAST_FETCH_STATUS.get(target_url) or LAST_FETCH_STATUS.get(clean_t_url or "")
+                if cb and last_st not in {"ok", "not_found"}:
+                    cb.record_failure(f"Respuesta vacía o error HTTP ({last_st or 'unknown'})")
                 return None
 
             if is_search:
@@ -395,11 +424,16 @@ class CollectorOrchestrator:
             if not data or not data.get("price") or data["price"] <= 0:
                 _, clean_t_url = canonicalize_store_url(target_url)
                 last_st = LAST_FETCH_STATUS.get(target_url) or LAST_FETCH_STATUS.get(clean_t_url or "")
-                if cb and last_st != "ok":
-                    cb.record_failure("No se pudo extraer precio válido")
+                if cb:
+                    if last_st == "ok":
+                        cb.record_success()
+                    elif last_st is not None and last_st != "not_found":
+                        cb.record_failure(f"Error de transporte HTTP ({last_st})")
                 return None
 
             if data.get("in_stock") is False:
+                if cb:
+                    cb.record_success()
                 return None
 
             # Registrar éxito de red/extracción en el Circuit Breaker
