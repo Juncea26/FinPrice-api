@@ -151,16 +151,25 @@ def _normalize_for_fingerprint(text: str) -> str:
     decomposed = unicodedata.normalize("NFKD", str(text).lower())
     no_accents = "".join(c for c in decomposed if not unicodedata.combining(c))
     cleaned = re.sub(r"\.(html?|php|aspx?)\b", " ", no_accents)
-    cleaned = re.sub(r"[/\-_\.+%=&?,:;()\[\]\"']+", " ", cleaned)
 
-    # Expandir patrones '12+512gb' o '8/256gb' cuando estaban juntos en el texto original
-    combo_matches = re.findall(
-        r"\b(\d{1,2})\s*(?:gb|g)?\s*[+/]\s*(\d{2,4})\s*(?:gb|g)?\b", no_accents
+    # Expandir patrones '12+512gb', '8/256gb', '8+256' antes de convertir '+' en ' plus '
+    cleaned = re.sub(
+        r"\b(2|3|4|6|8|12|16|24|32)\s*(?:gb|g)?\s*[+/]\s*(32|64|128|256|512|1024|2048)\s*(gb|g|tb)?\b",
+        lambda m: f" {m.group(1)}gb {m.group(2)}{'tb' if (m.group(3) and 'tb' in m.group(3).lower()) else 'gb'} ",
+        cleaned,
     )
-    extra_tokens: List[str] = []
-    for r_val, s_val in combo_matches:
-        extra_tokens.append(f"{r_val}gb")
-        extra_tokens.append(f"{s_val}gb")
+    # Quitar '+' de siglas de resolución, Copilot+ y conectores de bundle ('+ Funda') para evitar falsos tokens 'plus'
+    cleaned = re.sub(r"(?i)\b(fhd|qhd|uhd|hd|wxga|wqhd|hdr10|hdr|dolby|copilot)\s*\+", r"\1", cleaned)
+    cleaned = re.sub(
+        r"(?i)\+\s*(?=(?:funda|case|folio|cargador|audifonos?|mochila|mouse|cover|soundbar|maletin|teclado|lapiz|pen|stylus|combo|pack|tags?|regalo|hph|watch|buds)\b)",
+        " ",
+        cleaned,
+    )
+    # Convertir explícitamente '+' asociado a modelos/variantes en ' plus ' antes de limpiar signos
+    cleaned = re.sub(r"(?i)\b(pro|note|tab|s\d+|a\d+)\s*\+", r"\1 plus ", cleaned)
+    cleaned = re.sub(r"\+", " plus ", cleaned)
+
+    cleaned = re.sub(r"[/\-_\.+%=&?,:;()\[\]\"']+", " ", cleaned)
 
     # Expandir '8g ram 256g rom' -> '8gb ram 256gb rom'
     cleaned = re.sub(r"\b(\d{1,4})\s*g\b(?=\s*(?:ram|rom|blue|black|green|white|gray))", r"\1gb", cleaned)
@@ -172,8 +181,9 @@ def _normalize_for_fingerprint(text: str) -> str:
         r"\1 \2 \3 \4",
         cleaned,
     )
-    # Expandir 'note15pro5g' / 'note15pro' / 'a7pro' / 'pad2' / 'loq15' / 'u8000h' / 'ux3407qa'
-    cleaned = re.sub(r"\b(note|magic|pad|loq|tab|victus)(\d+)(pro|lite|ultra|plus|fe)?(5g)?\b", r"\1 \2 \3 \4", cleaned)
+    # Expandir 'note15pro5g' / 'note15proplus5g' / 'note15pro' / 'a7pro' / 'pad2' / 'loq15' / 'u8000h' / 'ux3407qa'
+    cleaned = re.sub(r"\b(pro)(plus)\b", r"\1 \2", cleaned)
+    cleaned = re.sub(r"\b(note|magic|pad|loq|tab|victus)(\d+)(pro|lite|ultra|plus|fe)?(plus)?(5g)?\b", r"\1 \2 \3 \4 \5", cleaned)
     cleaned = re.sub(r"\b([a-z]\d+)(pro|plus|ultra|max|fe|lite)\b", r"\1 \2", cleaned)
     cleaned = re.sub(r"\b(\d+)(pro|plus|ultra|max|fe|lite)(5g)?\b", r"\1 \2 \3", cleaned)
     cleaned = re.sub(r"\b(u\d{4})([a-z])\b", r"\1 \1\2", cleaned)
@@ -187,9 +197,6 @@ def _normalize_for_fingerprint(text: str) -> str:
     cleaned = re.sub(r"\bc5\s+210h\b", "intel core 5 210h", cleaned)
     cleaned = re.sub(r"\b(i[3579])\b", r"intel \1", cleaned)
     cleaned = re.sub(r"\b(128|256|512|1024)\s*ssd\b", r"\1gb ssd", cleaned)
-
-    if extra_tokens:
-        cleaned = f"{cleaned} {' '.join(extra_tokens)}"
 
     return re.sub(r"\s+", " ", cleaned).strip()
 
@@ -254,8 +261,8 @@ def matches_fingerprint(
     5. Mismo almacenamiento exacto (storage_gb) y RAM exacta (ram_gb) cuando apliquen.
     6. Misma red móvil (network='5g') cuando el producto canónico es 5G.
     """
-    bundle_pat = r"\s*(\+|\bcon\b|\bincluye\b)\s*(funda|case|folio|book\s*cover|cargador|audifonos?(?:\s+inalambricos?)?|mochila|mouse|cover|soundbar|maletin|teclado|lapiz|pen|stylus|combo|pack)\b.*$"
-    url_promo_pat = r"[\-\s]*(funda|case|folio|cargador|audifonos?(?:[\-\s]+inalambricos?)?|mochila|mouse|cover|soundbar|maletin|teclado|lapiz|pen|combo|pack)(?:[\-\s]+\d+)?\s*$"
+    bundle_pat = r"\s*(\+|\bcon\b|\bincluye\b)\s*(funda|case|folio|book\s*cover|cargador|audifonos?(?:\s+inalambricos?)?|mochila|mouse|cover|soundbar|maletin|teclado|lapiz|pen|stylus|combo|pack|tags?|regalo|hph|watch|buds)\b.*$"
+    url_promo_pat = r"[\-\s]*(funda|case|folio|cargador|audifonos?(?:[\-\s]+inalambricos?)?|mochila|mouse|cover|soundbar|maletin|teclado|lapiz|pen|combo|pack|tags?|regalo|hph|watch|buds)(?:[\-\s]+\d+)?\s*$"
 
     cleaned_cand_title = re.sub(bundle_pat, "", candidate_title or "", flags=re.IGNORECASE).strip()
     cleaned_cand_url = re.sub(url_promo_pat, "", candidate_url or "", flags=re.IGNORECASE).strip()
@@ -306,12 +313,14 @@ def matches_fingerprint(
         tok_low = f_tok.lower().strip()
         if tok_low in optional_subline_words and has_alnum_model:
             continue
+        if tok_low == "plus" and not title_norm and _has_word("pro", url_norm):
+            continue
         if not (_has_word(tok_low, primary_text) or _has_word(tok_low, specs_text) or _has_word(tok_low, url_norm)):
             return False
 
     # Bloquear sufijos de otra gama cuando no están en family_tokens
     family_set = {t.lower().strip() for t in fingerprint.family_tokens}
-    for strict_suffix in ("pro", "ultra", "fe", "lite", "mini", "fold", "flip"):
+    for strict_suffix in ("pro", "plus", "ultra", "fe", "lite", "mini", "fold", "flip"):
         if strict_suffix not in family_set and _has_word(strict_suffix, title_norm):
             return False
 

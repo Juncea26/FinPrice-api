@@ -8,13 +8,14 @@ Orquestador concurrente de recolección real de precios multitienda con Triple C
 import asyncio
 import gc
 import json
+import re
 import time
 from datetime import date, datetime, timedelta, timezone
 from enum import Enum
 from typing import Any, Callable, Dict, List, Optional
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import delete, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -39,6 +40,7 @@ from app.collectors.fingerprint_matcher import (
     matches_fingerprint,
 )
 from app.collectors.http_client import (
+    LAST_FETCH_STATUS,
     fetch_page,
     fetch_page as default_fetch_page,
     is_transient_fetch_failure,
@@ -391,8 +393,13 @@ class CollectorOrchestrator:
                 data = parser(html, target_url)
 
             if not data or not data.get("price") or data["price"] <= 0:
-                if cb:
+                _, clean_t_url = canonicalize_store_url(target_url)
+                last_st = LAST_FETCH_STATUS.get(target_url) or LAST_FETCH_STATUS.get(clean_t_url or "")
+                if cb and last_st != "ok":
                     cb.record_failure("No se pudo extraer precio válido")
+                return None
+
+            if data.get("in_stock") is False:
                 return None
 
             # Registrar éxito de red/extracción en el Circuit Breaker
@@ -499,12 +506,13 @@ class CollectorOrchestrator:
                     tech_specs=tech_specs,
                 )
                 if is_valid_id:
-                    identity_valid_offers.append(off)
+                    if off.price and float(off.price) > 0:
+                        identity_valid_offers.append(off)
                 else:
                     await session.delete(off)
                     removed_offers_count += 1
 
-            # 2. Filtrar por Candado 3: Anti-Outliers de Precio Inter-Tienda
+            # 2. Filtrar por Candado 3: Anti-Outliers de Precio Inter-Tienda (solo ofertas en stock con price > 0)
             clean_offers = validate_cross_store_prices(identity_valid_offers)
             clean_ids = {id(o) for o in clean_offers}
             for off in identity_valid_offers:
@@ -645,7 +653,9 @@ class CollectorOrchestrator:
 
         for product in all_products:
             active_offers = [
-                o for o in product.store_offers if o.price and float(o.price) > 0
+                o
+                for o in product.store_offers
+                if o.price and float(o.price) > 0 and getattr(o, "in_stock", True) is not False
             ]
             if active_offers:
                 active_offers.sort(key=lambda o: float(o.price))
@@ -751,6 +761,73 @@ class CollectorOrchestrator:
             discover_missing_stores=True,
         )
 
+    @staticmethod
+    def _is_explicit_out_of_stock_document(store_id: str, content: str) -> bool:
+        """
+        Determina si una respuesta HTTP 200 OK contiene evidencia explícita de producto agotado
+        (sin confundirlo con errores de red, WAF 403/429/5xx o carcasas HTML vacías).
+        """
+        if not content or not content.strip():
+            return False
+
+        s_id = (store_id or "").lower().strip()
+        raw_low = content.lower()
+
+        if not check_is_in_stock(s_id, content, status_code=200, has_valid_price=True):
+            return True
+
+        if s_id in {"efe", "curacao", "hiraoka"}:
+            has_cart = any(
+                m in raw_low
+                for m in ("agregar al carrito", "añadir al carro", "anadir al carro", "product-addtocart-button")
+            )
+            if not has_cart and (
+                "stock unavailable" in raw_low
+                or "no está disponible" in raw_low
+                or "no esta disponible" in raw_low
+            ):
+                return True
+
+        if s_id == "ripley":
+            if (
+                '"isoutofstock":true' in raw_low.replace(" ", "")
+                or '"buyable":false' in raw_low.replace(" ", "")
+                or "schema.org/outofstock" in raw_low
+                or "schema.org/soldout" in raw_low
+                or ("out-of-stock" in raw_low and "add-to-cart" not in raw_low)
+            ):
+                return True
+
+        if s_id in {"metro", "wong"} and content.lstrip().startswith("["):
+            try:
+                items = json.loads(content)
+                if isinstance(items, list):
+                    if len(items) == 0:
+                        return True
+                    any_avail = False
+                    for item in items:
+                        if not isinstance(item, dict):
+                            continue
+                        for sku in item.get("items") or []:
+                            if not isinstance(sku, dict):
+                                continue
+                            for seller in sku.get("sellers") or []:
+                                if not isinstance(seller, dict):
+                                    continue
+                                if str(seller.get("sellerId") or "1").strip() != "1":
+                                    continue
+                                co = seller.get("commertialOffer") or {}
+                                qty = int(co.get("AvailableQuantity") or 0)
+                                is_av = co.get("IsAvailable", qty > 0)
+                                if qty > 0 and is_av:
+                                    any_avail = True
+                    if not any_avail:
+                        return True
+            except Exception:
+                pass
+
+        return False
+
     async def sync_all_catalog_products(
         self,
         session: AsyncSession,
@@ -761,7 +838,7 @@ class CollectorOrchestrator:
         Ejecuta la recolección en vivo de precios reales aplicando:
         1. Algoritmo general de descubrimiento y emparejamiento multi-tienda (Módulo 1).
         2. Extractor en vivo de precios reales por motor de tienda (Módulo 2).
-        3. Política general anti-borrado de tiendas ante fallos de red/WAF (Módulo 3).
+        3. Política general anti-borrado de tiendas ante fallos de red/WAF mediante UPSERT granular por (product_id, store_id).
         4. Bucle independiente de historial y precio mínimo sobre los 25 productos (Módulo 4).
         """
         if self._is_syncing:
@@ -769,274 +846,486 @@ class CollectorOrchestrator:
 
         self._is_syncing = True
         start_time = time.time()
-        is_real_live_network = (fetch_page is default_fetch_page)
-        enable_discovery = discover_missing_stores or is_real_live_network
-        logger.info(
-            f"Iniciando recolección REAL en vivo (discover_missing_stores={enable_discovery})..."
-        )
+        store_stats: Dict[str, Dict[str, int]] = {
+            s_id: {"ok_200": 0, "retained_error": 0, "out_of_stock": 0}
+            for s_id in ALL_8_PERU_STORES
+        }
+        try:
+            for cb in CIRCUIT_BREAKERS.values():
+                cb.record_success()
 
-        # Primero sanear cualquier oferta inválida existente en BD y poblar caché de URLs verificadas
-        await self.sanitize_database_offers(session=session)
-        await load_persisted_urls_from_db(session=session)
+            is_real_live_network = (fetch_page is default_fetch_page)
+            enable_discovery = discover_missing_stores or is_real_live_network
+            logger.info(
+                f"Iniciando recolección REAL en vivo (discover_missing_stores={enable_discovery})..."
+            )
 
-        total_offers_updated = 0
+            # Primero sanear cualquier oferta inválida existente en BD y poblar caché de URLs verificadas
+            await self.sanitize_database_offers(session=session)
+            await load_persisted_urls_from_db(session=session)
 
-        for item in CATALOG_PRODUCTS:
-            prod_id = item["id"]
-            canonical_title = strip_color_tokens(item["title"])
-            tech_specs = item.get("tech_specs", {})
-            store_urls: Dict[str, str] = dict(item.get("store_urls", {}))
+            seed_urls_by_prod: Dict[str, Dict[str, str]] = {}
+            if is_real_live_network:
+                try:
+                    from app.core.seed_data import SEED_STORE_OFFERS
+                    for so in SEED_STORE_OFFERS:
+                        pid_s = so.get("product_id")
+                        sid_s = so.get("store_id")
+                        url_s = so.get("offer_url")
+                        if pid_s and sid_s and url_s:
+                            _, clean_s = canonicalize_store_url(url_s)
+                            seed_urls_by_prod.setdefault(pid_s, {})[sid_s] = clean_s or url_s
+                except Exception:
+                    pass
 
-            # Cargar producto y ofertas previas de BD para aplicar Retención Tolerante a Fallos (Módulo 3.1)
-            existing_q = await session.execute(
-                select(ProductEntity)
-                .options(
-                    selectinload(ProductEntity.store_offers),
-                    selectinload(ProductEntity.price_history),
+            total_offers_updated = 0
+
+            for item in CATALOG_PRODUCTS:
+                prod_id = item["id"]
+                canonical_title = strip_color_tokens(item["title"])
+                tech_specs = item.get("tech_specs", {})
+                store_urls: Dict[str, str] = dict(item.get("store_urls", {}))
+                for s_seed, u_seed in seed_urls_by_prod.get(prod_id, {}).items():
+                    if s_seed not in store_urls:
+                        store_urls[s_seed] = u_seed
+
+                # Cargar producto y ofertas previas de BD para aplicar UPSERT granular y Retención Tolerante a Fallos
+                existing_q = await session.execute(
+                    select(ProductEntity)
+                    .options(
+                        selectinload(ProductEntity.store_offers),
+                        selectinload(ProductEntity.price_history),
+                    )
+                    .where(ProductEntity.id == prod_id)
+                    .execution_options(populate_existing=True)
                 )
-                .where(ProductEntity.id == prod_id)
-            )
-            existing_prod = existing_q.scalar_one_or_none()
-            existing_offers_by_store: Dict[str, StoreOfferEntity] = {}
-            if existing_prod and existing_prod.store_offers:
-                for db_off in existing_prod.store_offers:
-                    existing_offers_by_store[db_off.store_id] = db_off
-                    if db_off.store_id not in store_urls and db_off.offer_url:
-                        store_urls[db_off.store_id] = db_off.offer_url
+                existing_prod = existing_q.scalar_one_or_none()
+                existing_offers_by_store: Dict[str, StoreOfferEntity] = {}
+                if existing_prod and existing_prod.store_offers:
+                    for db_off in existing_prod.store_offers:
+                        existing_offers_by_store[db_off.store_id] = db_off
+                        if db_off.store_id not in store_urls and db_off.offer_url:
+                            store_urls[db_off.store_id] = db_off.offer_url
 
-            target_item = dict(item)
-            target_item["store_urls"] = store_urls
+                target_item = dict(item)
+                target_item["store_urls"] = store_urls
 
-            stores_to_query = (
-                list(ALL_8_PERU_STORES)
-                if enable_discovery
-                else list(store_urls.keys())
-            )
+                stores_to_query = (
+                    list(ALL_8_PERU_STORES)
+                    if enable_discovery
+                    else list(store_urls.keys())
+                )
 
-            verified_offers = await self.graph.run(
-                target_product=target_item,
-                stores_to_check=stores_to_query,
-                enable_cascade_search=enable_discovery,
-                fetch_fn=fetch_page,
-            )
+                state = await self.graph.execute_state(
+                    target_product=target_item,
+                    stores_to_check=stores_to_query,
+                    enable_cascade_search=enable_discovery,
+                    fetch_fn=fetch_page,
+                )
 
-            # Filtrar estrictamente ofertas con stock activo en vivo (in_stock != False)
-            verified_offers = [
-                off for off in (verified_offers or [])
-                if off.get("in_stock", True) is not False and float(off.get("price", 0) or 0) > 0
-            ]
+                for doc in state.fetched_documents:
+                    if doc.content and doc.store_id in CIRCUIT_BREAKERS:
+                        CIRCUIT_BREAKERS[doc.store_id].record_success()
 
-            # Cuando se descubren ofertas desde una grilla de búsqueda HTML, verificar su ficha de producto en vivo
-            if enable_discovery and verified_offers:
-                confirmed_offers: List[Dict[str, Any]] = []
+                verified_offers = [
+                    off.to_offer_dict()
+                    for off in state.verified_offers
+                    if off.in_stock and float(off.price or 0) > 0
+                ]
+
+                fetched_detail_urls = {
+                    d.canonical_url
+                    for d in state.fetched_documents
+                    if not d.is_search_page
+                }
+
+                # Confirmar ficha en vivo solo para tiendas descubiertas directamente desde resultados de búsqueda sin ficha descargada
+                if enable_discovery and verified_offers:
+                    confirmed_offers: List[Dict[str, Any]] = []
+                    for off in verified_offers:
+                        s_id = off["store_id"]
+                        off_url = off["offer_url"]
+                        if (
+                            s_id not in existing_offers_by_store
+                            and s_id not in item.get("store_urls", {})
+                            and s_id not in {"metro", "wong"}
+                            and off_url not in fetched_detail_urls
+                        ):
+                            live_detail = await self.scrape_store_url(
+                                store_id=s_id,
+                                url=off_url,
+                                canonical_title=canonical_title,
+                                tech_specs=tech_specs,
+                                target_product=target_item,
+                            )
+                            if live_detail and live_detail.get("price") and float(live_detail["price"]) > 0:
+                                off["price"] = round(float(live_detail["price"]), 2)
+                                off["original_price"] = round(
+                                    float(live_detail.get("original_price") or live_detail["price"]), 2
+                                )
+                                off["offer_url"] = live_detail.get("offer_url") or off_url
+                                if live_detail.get("image_url"):
+                                    off["image_url"] = live_detail["image_url"]
+                                confirmed_offers.append(off)
+                            elif is_transient_fetch_failure(off_url):
+                                confirmed_offers.append(off)
+                        else:
+                            confirmed_offers.append(off)
+                    verified_offers = confirmed_offers
+
+                verified_store_ids = {off["store_id"] for off in verified_offers}
+                fetched_docs_by_store: Dict[str, List[Any]] = {}
+                for doc in state.fetched_documents:
+                    if not doc.is_search_page:
+                        fetched_docs_by_store.setdefault(doc.store_id, []).append(doc)
+
+                parsed_nodes_by_store: Dict[str, List[Any]] = {}
+                for p_node in state.parsed_nodes:
+                    if not p_node.is_search_page:
+                        parsed_nodes_by_store.setdefault(p_node.store_id, []).append(p_node)
+
+                extracted_by_store: Dict[str, List[Any]] = {}
+                for ext_off in state.extracted_offers:
+                    extracted_by_store.setdefault(ext_off.store_id, []).append(ext_off)
+
+                # Si alguna tienda con URL directa devolvió 200 OK agotado en ese color, buscar otra variante en stock
+                if enable_discovery:
+                    fallback_search_stores: List[str] = []
+                    for s_id in stores_to_query:
+                        if s_id in verified_store_ids:
+                            continue
+                        docs_s = fetched_docs_by_store.get(s_id, [])
+                        if docs_s and any(
+                            self._is_explicit_out_of_stock_document(s_id, d.content)
+                            for d in docs_s
+                        ):
+                            fallback_search_stores.append(s_id)
+                        elif s_id in store_urls:
+                            _, clean_su = canonicalize_store_url(store_urls[s_id])
+                            st_val = LAST_FETCH_STATUS.get(store_urls[s_id]) or LAST_FETCH_STATUS.get(clean_su or "")
+                            if st_val == "not_found":
+                                fallback_search_stores.append(s_id)
+
+                    if fallback_search_stores:
+                        search_target = dict(item)
+                        search_target["id"] = ""
+                        search_target["store_urls"] = {}
+                        fallback_state = await self.graph.execute_state(
+                            target_product=search_target,
+                            stores_to_check=fallback_search_stores,
+                            enable_cascade_search=True,
+                            fetch_fn=fetch_page,
+                        )
+                        for fb_off in fallback_state.verified_offers:
+                            if fb_off.in_stock and float(fb_off.price or 0) > 0:
+                                fb_dict = fb_off.to_offer_dict()
+                                if fb_dict["store_id"] not in verified_store_ids:
+                                    verified_offers.append(fb_dict)
+                                    verified_store_ids.add(fb_dict["store_id"])
+
+                # Contabilizar tiendas exitosas 200 OK
                 for off in verified_offers:
                     s_id = off["store_id"]
-                    off_url = off["offer_url"]
-                    # Si es una tienda nueva descubierta por búsqueda HTML, confirmar su ficha de producto en vivo
-                    if s_id not in existing_offers_by_store and s_id not in item.get("store_urls", {}) and s_id not in {"metro", "wong"}:
-                        live_detail = await self.scrape_store_url(
-                            store_id=s_id,
-                            url=off_url,
-                            canonical_title=canonical_title,
-                            tech_specs=tech_specs,
-                            target_product=target_item,
-                        )
-                        if live_detail and live_detail.get("price") and float(live_detail["price"]) > 0:
-                            off["price"] = round(float(live_detail["price"]), 2)
-                            off["original_price"] = round(
-                                float(live_detail.get("original_price") or live_detail["price"]), 2
+                    if s_id in store_stats:
+                        store_stats[s_id]["ok_200"] += 1
+
+                # MÓDULO 3.1: POLÍTICA ANTI-BORRADO Y UPSERT GRANULAR POR (product_id, store_id)
+                out_of_stock_stores: List[str] = []
+                contaminated_stores_to_delete: List[str] = []
+                retained_offers: List[Dict[str, Any]] = []
+
+                for s_id, prev_off in existing_offers_by_store.items():
+                    if s_id in verified_store_ids:
+                        continue
+
+                    prev_url = prev_off.offer_url
+                    docs_s = fetched_docs_by_store.get(s_id, [])
+                    ext_s = extracted_by_store.get(s_id, [])
+                    parsed_s = parsed_nodes_by_store.get(s_id, [])
+
+                    # 1. Error temporal explícito (timeout, 403, 429, 500, 502, 503, 504) o sin respuesta HTTP 200 OK
+                    if is_transient_fetch_failure(prev_url) or not docs_s:
+                        if prev_off.price and float(prev_off.price) > 0:
+                            logger.warning(
+                                f"[RETENCIÓN TOLERANTE A FALLOS] Conservando oferta de '{prev_off.store_name}' "
+                                f"(S/ {prev_off.price:.2f}) para '{prod_id}' ante fallo temporal en {prev_url}."
                             )
-                            off["offer_url"] = live_detail.get("offer_url") or off_url
-                            if live_detail.get("image_url"):
-                                off["image_url"] = live_detail["image_url"]
-                            confirmed_offers.append(off)
-                    else:
-                        confirmed_offers.append(off)
-                verified_offers = confirmed_offers
+                            retained_offers.append(
+                                {
+                                    "store_id": prev_off.store_id,
+                                    "store_name": prev_off.store_name,
+                                    "title": canonical_title,
+                                    "price": float(prev_off.price),
+                                    "original_price": float(prev_off.original_price or prev_off.price),
+                                    "offer_url": prev_url,
+                                    "image_url": existing_prod.image_url if existing_prod else None,
+                                    "in_stock": True,
+                                    "tech_specs": tech_specs,
+                                    "features": item.get("features") or [],
+                                    "_retained": True,
+                                }
+                            )
+                            if s_id in store_stats:
+                                store_stats[s_id]["retained_error"] += 1
+                        continue
 
-            # MÓDULO 3.1: REGLA DE RETENCIÓN TOLERANTE A FALLOS
-            # Si una tienda que ya existía en store_offers falló por timeout / error de red / HTTP 403, 429, 500, 502, 503,
-            # PROHIBIDO borrar o desactivar esa oferta de store_offers: mantener intacta la oferta con su último precio válido.
-            verified_store_ids = {off["store_id"] for off in verified_offers}
-            for s_id, prev_off in existing_offers_by_store.items():
-                if s_id in verified_store_ids:
+                    # 2. HTTP 200 OK recibido: distinguir entre agotado explícito, producto intruso o WAF/challenge 200
+                    is_explicit_oos = any(e.in_stock is False for e in ext_s) or any(
+                        self._is_explicit_out_of_stock_document(s_id, d.content)
+                        for d in docs_s
+                    )
+                    if is_explicit_oos:
+                        logger.info(
+                            f"[SIN_STOCK_200] '{prev_off.store_name}' respondió 200 OK agotado para '{prod_id}' ({prev_url}). "
+                            "Marcando in_stock=False sin eliminar fila."
+                        )
+                        out_of_stock_stores.append(s_id)
+                        if s_id in store_stats:
+                            store_stats[s_id]["out_of_stock"] += 1
+                        continue
+
+                    # Si se extrajo un producto distinto (falló Candado 1 o Candado 3) o H1 válido no coincide, limpiar intruso
+                    has_wrong_product = bool(ext_s) or any(
+                        bool(pn.h1_title)
+                        and not any(
+                            waf_kw in pn.h1_title.lower()
+                            for waf_kw in ("access denied", "just a moment", "forbidden", "robot", "attention required")
+                        )
+                        and not validate_product_identity(
+                            canonical_title=canonical_title,
+                            scraped_title=pn.h1_title,
+                            scraped_url=prev_url,
+                            store_id=s_id,
+                            tech_specs=pn.tech_specs or tech_specs,
+                            description=pn.description,
+                        )
+                        for pn in parsed_s
+                    )
+                    if has_wrong_product:
+                        logger.warning(
+                            f"[IDENTITY_CLEANUP] Eliminando oferta no coincidente de '{prev_off.store_name}' en '{prod_id}' ({prev_url})."
+                        )
+                        contaminated_stores_to_delete.append(s_id)
+                        continue
+
+                    # Respuesta 200 OK ambigua (WAF/challenge/shell sin H1 ni texto de agotado): conservar oferta previa
+                    if prev_off.price and float(prev_off.price) > 0:
+                        logger.warning(
+                            f"[RETENCIÓN 200 AMBIGUO] Conservando oferta de '{prev_off.store_name}' "
+                            f"(S/ {prev_off.price:.2f}) para '{prod_id}' ante respuesta sin ficha completa."
+                        )
+                        retained_offers.append(
+                            {
+                                "store_id": prev_off.store_id,
+                                "store_name": prev_off.store_name,
+                                "title": canonical_title,
+                                "price": float(prev_off.price),
+                                "original_price": float(prev_off.original_price or prev_off.price),
+                                "offer_url": prev_url,
+                                "image_url": existing_prod.image_url if existing_prod else None,
+                                "in_stock": True,
+                                "tech_specs": tech_specs,
+                                "features": item.get("features") or [],
+                                "_retained": True,
+                            }
+                        )
+                        if s_id in store_stats:
+                            store_stats[s_id]["retained_error"] += 1
+
+                # Combinar ofertas 200 OK en stock con ofertas conservadas por fallo temporal
+                active_offers_combined = verified_offers + retained_offers
+
+                # Aplicar filtro anti-outliers inter-tienda y ordenar de menor a mayor precio
+                active_offers = validate_cross_store_prices(
+                    filter_offers_by_price_sanity(active_offers_combined)
+                )
+
+                # Aplicar baja de stock / limpieza intrusa antes de continuar si no quedaron ofertas activas
+                for s_id in out_of_stock_stores:
+                    existing_row = existing_offers_by_store.get(s_id)
+                    if existing_row is not None:
+                        existing_row.price = 0.0
+                        existing_row.is_best_price = False
+                        existing_row.in_stock = False
+                        existing_row.last_scraped_at = utc_now()
+
+                for s_id in contaminated_stores_to_delete:
+                    existing_row = existing_offers_by_store.get(s_id)
+                    if existing_row is not None:
+                        await session.delete(existing_row)
+
+                if not active_offers:
+                    if existing_prod and existing_prod.store_offers:
+                        logger.warning(
+                            f"Sin ofertas activas nuevas para '{prod_id}'; preservando historial y estado sin borrar tiendas por error temporal."
+                        )
                     continue
-                prev_url = prev_off.offer_url
-                if is_transient_fetch_failure(prev_url):
-                    logger.warning(
-                        f"[RETENCIÓN TOLERANTE A FALLOS] Conservando oferta de '{prev_off.store_name}' "
-                        f"(S/ {prev_off.price:.2f}) para '{prod_id}' ante fallo temporal en {prev_url}."
-                    )
-                    verified_offers.append(
-                        {
-                            "store_id": prev_off.store_id,
-                            "store_name": prev_off.store_name,
-                            "title": canonical_title,
-                            "price": float(prev_off.price),
-                            "original_price": float(prev_off.original_price or prev_off.price),
-                            "offer_url": prev_url,
-                            "image_url": existing_prod.image_url if existing_prod else None,
-                            "in_stock": True,
-                            "tech_specs": tech_specs,
-                            "features": item.get("features") or [],
-                        }
-                    )
 
-            # Si no hubo ninguna respuesta en absoluto, conservar instantánea previa
-            if not verified_offers:
-                if existing_prod and existing_prod.store_offers:
-                    logger.warning(
-                        f"Conservando instantánea previa validada para '{prod_id}' "
-                        f"({len(existing_prod.store_offers)} tiendas) ante error temporal de scraping."
-                    )
-                continue
+                active_offers.sort(key=lambda x: float(x["price"]))
+                best_offer = active_offers[0]
+                best_price = round(float(best_offer["price"]), 2)
+                best_store = best_offer["store_name"]
+                orig_price = round(float(best_offer.get("original_price") or best_price), 2)
+                if orig_price < best_price:
+                    orig_price = best_price
 
-            # Aplicar filtro anti-outliers inter-tienda y ordenar de menor a mayor precio
-            verified_offers = validate_cross_store_prices(
-                filter_offers_by_price_sanity(verified_offers)
-            )
-            if not verified_offers:
-                continue
+                discount = (
+                    round(((orig_price - best_price) / orig_price) * 100)
+                    if orig_price > best_price
+                    else 0
+                )
+                available_count = len(active_offers)
 
-            verified_offers.sort(key=lambda x: float(x["price"]))
-            best_offer = verified_offers[0]
-            best_price = round(float(best_offer["price"]), 2)
-            best_store = best_offer["store_name"]
-            orig_price = round(float(best_offer.get("original_price") or best_price), 2)
-            if orig_price < best_price:
-                orig_price = best_price
+                real_image = select_best_canonical_image(active_offers)
 
-            discount = (
-                round(((orig_price - best_price) / orig_price) * 100)
-                if orig_price > best_price
-                else 0
-            )
-            available_count = len(verified_offers)
-
-            real_image = select_best_canonical_image(verified_offers)
-
-            merged_specs = merge_product_specs(
-                specs_list=[o.get("tech_specs", {}) for o in verified_offers],
-                base_specs=tech_specs,
-                title=canonical_title,
-            )
-            merged_brand = (
-                merged_specs.get("Marca")
-                or normalize_brand(item.get("brand"), canonical_title)
-            )
-            scraped_feats: List[str] = []
-            for o in verified_offers:
-                scraped_feats.extend(o.get("features") or [])
-            scraped_feats.extend(item.get("features") or [])
-            merged_features = generate_product_features(
-                soup=None,
-                tech_specs=merged_specs,
-                title=canonical_title,
-                existing_features=scraped_feats,
-            )
-
-            prod_entity = existing_prod
-            best_url = best_offer["offer_url"]
-
-            if not prod_entity:
-                prod_entity = ProductEntity(
-                    id=prod_id,
+                merged_specs = merge_product_specs(
+                    specs_list=[o.get("tech_specs", {}) for o in active_offers],
+                    base_specs=tech_specs,
                     title=canonical_title,
-                    category=item["category"],
-                    brand=merged_brand,
-                    best_price=best_price,
-                    original_price=orig_price,
-                    best_store_name=best_store,
-                    best_store_url=best_url,
-                    discount_percentage=discount,
-                    available_stores_count=available_count,
-                    image_url=real_image,
-                    description=item["description"],
-                    features_json=json.dumps(merged_features, ensure_ascii=False),
-                    tech_specs_json=json.dumps(merged_specs, ensure_ascii=False),
-                    is_favorite=False,
                 )
-                session.add(prod_entity)
-            else:
-                prod_entity.title = canonical_title
-                prod_entity.brand = merged_brand
-                prod_entity.best_price = best_price
-                prod_entity.original_price = orig_price
-                prod_entity.best_store_name = best_store
-                prod_entity.best_store_url = best_url
-                prod_entity.discount_percentage = discount
-                prod_entity.available_stores_count = available_count
-                prod_entity.features_json = json.dumps(merged_features, ensure_ascii=False)
-                prod_entity.tech_specs_json = json.dumps(merged_specs, ensure_ascii=False)
-                if real_image:
-                    prod_entity.image_url = real_image
-                prod_entity.updated_at = utc_now()
+                merged_brand = (
+                    merged_specs.get("Marca")
+                    or normalize_brand(item.get("brand"), canonical_title)
+                )
+                scraped_feats: List[str] = []
+                for o in active_offers:
+                    scraped_feats.extend(o.get("features") or [])
+                scraped_feats.extend(item.get("features") or [])
+                merged_features = generate_product_features(
+                    soup=None,
+                    tech_specs=merged_specs,
+                    title=canonical_title,
+                    existing_features=scraped_feats,
+                )
 
-            # Actualizar store_offers con las ofertas activas verificadas
-            await session.execute(
-                delete(StoreOfferEntity).where(StoreOfferEntity.product_id == prod_id)
+                prod_entity = existing_prod
+                best_url = best_offer["offer_url"]
+
+                if not prod_entity:
+                    prod_entity = ProductEntity(
+                        id=prod_id,
+                        title=canonical_title,
+                        category=item["category"],
+                        brand=merged_brand,
+                        best_price=best_price,
+                        original_price=orig_price,
+                        best_store_name=best_store,
+                        best_store_url=best_url,
+                        discount_percentage=discount,
+                        available_stores_count=available_count,
+                        image_url=real_image,
+                        description=item["description"],
+                        features_json=json.dumps(merged_features, ensure_ascii=False),
+                        tech_specs_json=json.dumps(merged_specs, ensure_ascii=False),
+                        is_favorite=False,
+                    )
+                    session.add(prod_entity)
+                else:
+                    prod_entity.title = canonical_title
+                    prod_entity.brand = merged_brand
+                    prod_entity.best_price = best_price
+                    prod_entity.original_price = orig_price
+                    prod_entity.best_store_name = best_store
+                    prod_entity.best_store_url = best_url
+                    prod_entity.discount_percentage = discount
+                    prod_entity.available_stores_count = available_count
+                    prod_entity.features_json = json.dumps(merged_features, ensure_ascii=False)
+                    prod_entity.tech_specs_json = json.dumps(merged_specs, ensure_ascii=False)
+                    if real_image:
+                        prod_entity.image_url = real_image
+                    prod_entity.updated_at = utc_now()
+
+                # UPSERT granular en store_offers por (product_id, store_id)
+                for idx, off in enumerate(active_offers):
+                    s_id = off["store_id"]
+                    register_verified_store_url(
+                        product_id=prod_id,
+                        store_id=s_id,
+                        offer_url=off["offer_url"],
+                    )
+                    is_best = idx == 0
+                    new_price = round(float(off["price"]), 2)
+                    new_orig = round(float(off.get("original_price") or new_price), 2)
+                    if new_orig < new_price:
+                        new_orig = new_price
+
+                    existing_row = existing_offers_by_store.get(s_id)
+                    if existing_row is not None:
+                        if not off.get("_retained"):
+                            existing_row.store_name = off["store_name"]
+                            existing_row.price = new_price
+                            existing_row.original_price = new_orig
+                            existing_row.offer_url = off["offer_url"]
+                            existing_row.last_scraped_at = utc_now()
+                            total_offers_updated += 1
+                        existing_row.is_best_price = is_best
+                        existing_row.in_stock = True
+                    else:
+                        store_entity = StoreOfferEntity(
+                            product_id=prod_id,
+                            store_id=s_id,
+                            store_name=off["store_name"],
+                            price=new_price,
+                            original_price=new_orig,
+                            offer_url=off["offer_url"],
+                            is_best_price=is_best,
+                            last_scraped_at=utc_now(),
+                        )
+                        store_entity.in_stock = True
+                        session.add(store_entity)
+                        total_offers_updated += 1
+
+                del verified_offers
+                del active_offers
+                gc.collect()
+
+            await session.flush()
+
+            # MÓDULO 4.3: Ejecutar SIEMPRE al final un bucle independiente sobre TODOS los 25 productos
+            # de la tabla `products` para hacer UPSERT en price_history de today_peru y actualizar historical_min_price.
+            await self._sync_all_products_history_and_min_price(session=session)
+            await session.commit()
+
+            if on_cache_invalidate:
+                on_cache_invalidate()
+
+            total_duration = time.time() - start_time
+            self.last_sync_timestamp = datetime.now(timezone.utc).isoformat()
+            self.last_sync_date = get_today_peru()
+
+            # Calcular resumen de productos actualizados, bajadas de precio y días de historial
+            prods_summary_q = await session.execute(select(ProductEntity))
+            all_prods_after = prods_summary_q.scalars().all()
+            updated_products_count = len(all_prods_after)
+            price_drops_count = sum(
+                1 for p in all_prods_after if (getattr(p, "price_drop_amount", 0.0) or 0.0) > 0 or p.best_price < p.original_price
             )
-            for idx, off in enumerate(verified_offers):
-                register_verified_store_url(
-                    product_id=prod_id,
-                    store_id=off["store_id"],
-                    offer_url=off["offer_url"],
+            max_days_tracked = max((getattr(p, "days_tracked", 1) or 1 for p in all_prods_after), default=1)
+
+            for s_id, st in store_stats.items():
+                logger.info(
+                    f"[SYNC_STORE_SUMMARY] tienda={s_id} | 200_OK={st['ok_200']} | "
+                    f"conservadas_error_temporal={st['retained_error']} | sin_stock(in_stock=False)={st['out_of_stock']}"
                 )
-                store_entity = StoreOfferEntity(
-                    product_id=prod_id,
-                    store_id=off["store_id"],
-                    store_name=off["store_name"],
-                    price=round(float(off["price"]), 2),
-                    original_price=round(float(off.get("original_price") or off["price"]), 2),
-                    offer_url=off["offer_url"],
-                    is_best_price=(idx == 0),
-                    last_scraped_at=utc_now(),
-                )
-                session.add(store_entity)
-                total_offers_updated += 1
 
-            del verified_offers
-            gc.collect()
+            logger.info(
+                f"Sincronización en vivo finalizada en {total_duration:.2f}s. Ofertas reales verificadas: {total_offers_updated}"
+            )
 
-        await session.flush()
-
-        # MÓDULO 4.3: Ejecutar SIEMPRE al final un bucle independiente sobre TODOS los 25 productos
-        # de la tabla `products` para hacer UPSERT en price_history de today_peru y actualizar historical_min_price.
-        await self._sync_all_products_history_and_min_price(session=session)
-        await session.commit()
-
-        if on_cache_invalidate:
-            on_cache_invalidate()
-
-        total_duration = time.time() - start_time
-        self.last_sync_timestamp = datetime.now(timezone.utc).isoformat()
-        self.last_sync_date = get_today_peru()
-        self._is_syncing = False
-
-        # Calcular resumen de productos actualizados, bajadas de precio y días de historial
-        prods_summary_q = await session.execute(select(ProductEntity))
-        all_prods_after = prods_summary_q.scalars().all()
-        updated_products_count = len(all_prods_after)
-        price_drops_count = sum(
-            1 for p in all_prods_after if (getattr(p, "price_drop_amount", 0.0) or 0.0) > 0 or p.best_price < p.original_price
-        )
-        max_days_tracked = max((getattr(p, "days_tracked", 1) or 1 for p in all_prods_after), default=1)
-
-        logger.info(
-            f"Sincronización en vivo finalizada en {total_duration:.2f}s. Ofertas reales verificadas: {total_offers_updated}"
-        )
-
-        return {
-            "status": "success",
-            "updated_products": updated_products_count,
-            "updated_offers": total_offers_updated,
-            "price_drops_count": price_drops_count,
-            "days_tracked": max_days_tracked,
-            "peru_date": self.last_sync_date.isoformat(),
-            "schedule_windows": SCHEDULE_WINDOWS_LABELS,
-            "duration_seconds": round(total_duration, 2),
-            "timestamp": self.last_sync_timestamp,
-        }
+            return {
+                "status": "success",
+                "updated_products": updated_products_count,
+                "updated_offers": total_offers_updated,
+                "price_drops_count": price_drops_count,
+                "days_tracked": max_days_tracked,
+                "peru_date": self.last_sync_date.isoformat(),
+                "schedule_windows": SCHEDULE_WINDOWS_LABELS,
+                "duration_seconds": round(total_duration, 2),
+                "timestamp": self.last_sync_timestamp,
+                "store_stats": store_stats,
+            }
+        finally:
+            self._is_syncing = False
 
     async def record_intraday_price_observation(
         self,

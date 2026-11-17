@@ -177,7 +177,7 @@ SEED_PRODUCTS: List[Dict[str, Any]] = [   {   'available_stores_count': 6,
         'best_store_url': 'https://hiraoka.com.pe/celular-xiaomi-redmi-note-15-pro-5g-6-8-512gb-12gb-ram-cafe-moca',
         'brand': 'Xiaomi',
         'category': 'Smartphones',
-        'description': 'Ficha técnica oficial de Xiaomi Redmi Note 15 Pro 5G 512GB 12GB RAM. Comparativa multi-tienda '
+        'description': 'Ficha técnica oficial de Xiaomi Redmi Note 15 Pro+ 5G 512GB 12GB RAM. Comparativa multi-tienda '
                        'con precios verificados en tiempo real.',
         'discount_percentage': 5,
         'features_json': '["Procesador: Snapdragon 7s Gen4", "Memoria RAM: 12 GB", "Almacenamiento: 512 GB", '
@@ -192,7 +192,7 @@ SEED_PRODUCTS: List[Dict[str, Any]] = [   {   'available_stores_count': 6,
                            '"Memoria RAM": "12 GB", "Almacenamiento": "512 GB", "Cámara Principal": "200 MP + 8 MP", '
                            '"Conectividad": "5G", "Batería": "6500 mAh", "Pantalla": "6.8\\" AMOLED", "Resolución": '
                            '"1.5K"}',
-        'title': 'Xiaomi Redmi Note 15 Pro 5G 512GB 12GB RAM'},
+        'title': 'Xiaomi Redmi Note 15 Pro+ 5G 512GB 12GB RAM'},
     {   'available_stores_count': 2,
         'best_price': 4199.0,
         'best_store_name': 'Hiraoka',

@@ -211,6 +211,37 @@ def _strip_accents(text: str) -> str:
     return "".join(c for c in decomposed if not unicodedata.combining(c))
 
 
+def _normalize_plus_variant(text: str) -> str:
+    """
+    Convierte '+' asociado a modelos/variantes (ej. 'Pro+', 'S24+', 'Note 15 Pro+') en ' plus '
+    antes de limpiar signos o tokenizar, preservando combos RAM+Storage (ej. '12+512GB') y resoluciones ('FHD+').
+    """
+    if not text:
+        return ""
+    # 1. Expandir combinaciones RAM+Storage antes de sustituir '+'
+    normalized = re.sub(
+        r"\b(\d{1,2})\s*(?:gb|g)?\s*[+/]\s*(\d{2,4})\s*(gb|g|tb)\b",
+        lambda m: f"{m.group(1)}gb {m.group(2)}{'tb' if 'tb' in m.group(3).lower() else 'gb'}",
+        str(text),
+        flags=re.IGNORECASE,
+    )
+    # 2. Quitar '+' de siglas de resolución, Copilot+ y conectores de bundle ('+ Funda') para evitar falsos tokens 'plus'
+    normalized = re.sub(
+        r"(?i)\b(fhd|qhd|uhd|hd|wxga|wqhd|hdr10|hdr|dolby|copilot)\s*\+",
+        r"\1",
+        normalized,
+    )
+    normalized = re.sub(
+        r"(?i)\+\s*(?=(?:funda|case|folio|cargador|audifonos?|mochila|mouse|cover|soundbar|maletin|teclado|lapiz|pen|stylus|combo|pack|tags?|regalo|hph|watch|buds)\b)",
+        " ",
+        normalized,
+    )
+    # 3. Convertir '+' de modelo/variante a ' plus '
+    normalized = re.sub(r"(?i)\b(pro|note|tab|s\d+|a\d+)\s*\+", r"\1 plus ", normalized)
+    normalized = re.sub(r"\+", " plus ", normalized)
+    return re.sub(r"\s+", " ", normalized).strip()
+
+
 def _format_token(tok: str) -> str:
     low = tok.lower()
     if low in CANONICAL_TOKEN_CASE:
@@ -309,8 +340,8 @@ def build_search_queries(
         product_title, specs
     )
 
-    # Normalizar título eliminando colores, decimales de pulgadas (ej. '13.6 Pulgadas') y unidades pegadas ('512GB', '12GB')
-    cleaned = _strip_accents(strip_color_tokens(product_title))
+    # Normalizar título eliminando colores, convirtiendo '+' de variante en ' plus ', decimales de pulgadas y unidades pegadas
+    cleaned = _strip_accents(_normalize_plus_variant(strip_color_tokens(product_title)))
     cleaned = re.sub(r"\b\d{1,2}\.\d+\s*(?:\"|''|(?:pulgadas|pulg)\b)?", " ", cleaned, flags=re.IGNORECASE)
     cleaned = re.sub(r"\b\d{1,4}\s*(?:gb|tb|mah|mp|hz|w)\b", " ", cleaned, flags=re.IGNORECASE)
     cleaned = re.sub(r"\b(?:10ma|11ma|10a|11a)\s*(?:gen|generacion)?\b", " ", cleaned, flags=re.IGNORECASE)
@@ -417,7 +448,7 @@ def build_short_search_query(
         )
         category = str(getattr(product, "category", "") or "")
 
-    clean_title = strip_color_tokens(raw_title)
+    clean_title = _normalize_plus_variant(strip_color_tokens(raw_title))
     if not clean_title:
         return ""
 
@@ -499,7 +530,9 @@ def build_short_search_query(
         if "11" in t_low and "11" not in base_tokens:
             base_tokens.append("11")
 
-    base_tokens = base_tokens[:3]
+    has_plus = any(t.lower() == "plus" for t in base_tokens)
+    max_base = 5 if (has_plus and len(base_tokens) >= 4) else 3
+    base_tokens = base_tokens[:max_base]
     if storage_num and storage_num not in [t.lower() for t in base_tokens]:
         base_tokens.append(storage_num)
-    return " ".join(base_tokens[:4])
+    return " ".join(base_tokens[: (6 if has_plus else 4)])

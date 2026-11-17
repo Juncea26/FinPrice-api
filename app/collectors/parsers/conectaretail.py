@@ -54,11 +54,33 @@ def _extract_main_h1_title(soup: BeautifulSoup) -> str:
         'h1.page-title span[data-ui-id="page-title-wrapper"], '
         "h1.page-title span.base, "
         ".product-info-main h1.page-title, "
-        "h1.page-title"
+        ".product-info-main h1, "
+        "h1.page-title, "
+        "main h1, "
+        "h1"
     )
     if h1_span:
-        return h1_span.get_text(strip=True)
+        txt = h1_span.get_text(strip=True)
+        if txt:
+            return txt
+    og_title = soup.find("meta", property="og:title")
+    if og_title and og_title.get("content"):
+        return str(og_title["content"]).split("|", 1)[0].strip()
+    if soup.title and soup.title.string:
+        raw_t = str(soup.title.string).split("|", 1)[0].strip()
+        if raw_t and "resultados de búsqueda" not in raw_t.lower():
+            return raw_t
     return ""
+
+
+def _has_active_add_to_cart(html: str, soup: BeautifulSoup) -> bool:
+    if soup.select_one("#product-addtocart-button, button.tocart, button[title*='Agregar al carrito' i]"):
+        return True
+    low = (html or "").lower()
+    return any(
+        marker in low
+        for marker in ("agregar al carrito", "añadir al carro", "anadir al carro", "product-addtocart-button")
+    )
 
 
 def _parse_search_results(
@@ -187,10 +209,18 @@ def parse_conectaretail(
             return None
 
     soup = BeautifulSoup(html, "lxml")
-    main_info_box: Optional[Tag] = soup.select_one(".product-info-main")
+    main_info_box: Optional[Tag] = soup.select_one(
+        ".product-info-main, .product-main-info, .product-view .product-info, .column.main .product-info-main"
+    )
+    has_cart_btn = _has_active_add_to_cart(html, soup)
 
-    if main_info_box and main_info_box.select_one(".stock.unavailable"):
+    if main_info_box and main_info_box.select_one(".stock.unavailable") and not has_cart_btn:
         return None
+    if not main_info_box and soup.select_one(".stock.unavailable") and not has_cart_btn:
+        # En plantillas Magento sin .product-info-main, descartar si marca explícitamente .stock.unavailable sin carrito
+        main_scope_check = soup.select_one("#maincontent, main, .page-wrapper")
+        if main_scope_check and main_scope_check.select_one(".stock.unavailable"):
+            return None
 
     if is_search_url and main_info_box and not soup.select(".product-item-info, li.product-item"):
         # La búsqueda redirigió directamente a la ficha de un único producto
@@ -208,7 +238,15 @@ def parse_conectaretail(
             if not is_official_store_seller(eff_store, html, offer_url):
                 return None
 
-    if is_search_url or (not main_info_box and soup.select(".product-item-info, li.product-item")):
+    has_product_metadata = bool(
+        soup.find("meta", property="product:price:amount")
+        or any(
+            s.string and '"Product"' in s.string
+            for s in soup.find_all("script", type="application/ld+json")
+        )
+    )
+
+    if is_search_url or (not main_info_box and not has_product_metadata and soup.select(".product-item-info, li.product-item")):
         return _parse_search_results(soup, offer_url, canonical_title)
 
     # Eliminar todos los carruseles de productos relacionados, upsell, crosssell y garantías extendidas
@@ -336,28 +374,45 @@ def parse_conectaretail(
             continue
         try:
             j = json.loads(s.string)
-            items = j if isinstance(j, list) else [j]
+            items = []
+            if isinstance(j, dict) and isinstance(j.get("@graph"), list):
+                items.extend(j["@graph"])
+            elif isinstance(j, list):
+                items.extend(j)
+            else:
+                items.append(j)
             for item in items:
                 if not isinstance(item, dict) or item.get("@type") != "Product":
                     continue
                 ld_name = str(item.get("name") or "").strip()
                 # Si tenemos H1, verificar que el JSON-LD corresponda al mismo producto principal
                 effective_title = h1_title or ld_name
-                if h1_title and ld_name and h1_title.lower()[:12] not in ld_name.lower() and ld_name.lower()[:12] not in h1_title.lower():
-                    continue
+                if h1_title and ld_name:
+                    h1_words = {w for w in re.findall(r"[a-z0-9]+", h1_title.lower()) if len(w) > 2}
+                    ld_words = {w for w in re.findall(r"[a-z0-9]+", ld_name.lower()) if len(w) > 2}
+                    if h1_words and ld_words and not (h1_words & ld_words):
+                        continue
 
                 offers = item.get("offers")
                 offers_list = offers if isinstance(offers, list) else ([offers] if isinstance(offers, dict) else [])
                 prices_found = []
                 high_price = dom_old_p
+                explicit_out_of_stock = False
                 for off in offers_list:
                     if isinstance(off, dict):
-                        p = clean_number(off.get("price"))
+                        avail = str(off.get("availability") or "").lower()
+                        if any(tok in avail for tok in ("outofstock", "soldout", "discontinued")):
+                            explicit_out_of_stock = True
+                            continue
+                        p = clean_number(off.get("price") or off.get("lowPrice"))
                         if p:
                             prices_found.append(p)
                         hp = clean_number(off.get("highPrice"))
                         if hp:
                             high_price = hp
+
+                if explicit_out_of_stock and not prices_found and not has_cart_btn:
+                    return None
 
                 if prices_found:
                     if not check_is_in_stock(eff_store_id, html, status_code=200, has_valid_price=True):

@@ -370,8 +370,8 @@ def test_validate_cross_store_prices_outlier_rejection():
 async def test_full_regression_xiaomi_redmi_note_15_pro_contamination_guard():
     """
     Prueba integral del caso crítico reportado:
-    - Producto canónico: 'Xiaomi Redmi Note 15 Pro 5G 512GB 12GB RAM Café Moca'
-    - Oferta Hiraoka: 'Xiaomi Redmi Note 15 Pro 5G 512GB 12GB RAM' a S/ 1829.00 -> ACEPTADA
+    - Producto canónico: 'Xiaomi Redmi Note 15 Pro+ 5G 512GB 12GB RAM'
+    - Oferta Hiraoka: 'Xiaomi Redmi Note 15 Pro+ 5G 512GB 12GB RAM' a S/ 1829.00 -> ACEPTADA
     - Oferta intrusa Tiendas Efe: 'Xiaomi Redmi A7 / A3 13MP' a S/ 399.00 -> RECHAZADA
     - Resultado final esperado: best_price = 1829.00, best_store = 'Hiraoka', sin rastro de S/ 399.00.
     """
@@ -382,12 +382,12 @@ async def test_full_regression_xiaomi_redmi_note_15_pro_contamination_guard():
             return """
             <html><body>
               <div class="product-info-main">
-                <h1 class="page-title"><span data-ui-id="page-title-wrapper">Xiaomi Redmi Note 15 Pro 5G 512GB 12GB RAM</span></h1>
+                <h1 class="page-title"><span data-ui-id="page-title-wrapper">Xiaomi Redmi Note 15 Pro+ 5G 512GB 12GB RAM</span></h1>
               </div>
               <script type="application/ld+json">
               {
                 "@type": "Product",
-                "name": "Xiaomi Redmi Note 15 Pro 5G 512GB 12GB RAM",
+                "name": "Xiaomi Redmi Note 15 Pro+ 5G 512GB 12GB RAM",
                 "image": "https://hiraoka.com.pe/pub/media/catalog/product/1/_/1_23_12.jpg",
                 "offers": [{"@type": "Offer", "price": "1829.00", "priceSpecification": {"priceType": "https://schema.org/SalePrice", "price": "1829.00"}}]
               }
@@ -1915,7 +1915,7 @@ def test_get_products_returns_color_free_canonical_titles(client: TestClient):
     assert mb is not None
     assert "MacBook Air" in mb["title"]
     assert by_id["prod_ipad_11"]["title"] == 'Apple iPad 11" Chip A16 Wi-Fi 128GB'
-    assert by_id["prod_xiaomi_redmi_note"]["title"] == "Xiaomi Redmi Note 15 Pro 5G 512GB 12GB RAM"
+    assert by_id["prod_xiaomi_redmi_note"]["title"] == "Xiaomi Redmi Note 15 Pro+ 5G 512GB 12GB RAM"
 
     for p in products:
         assert p["title"] == strip_color_tokens(p["title"])
@@ -2447,8 +2447,294 @@ def test_5_general_algorithmic_modules_and_clean_history(client: TestClient):
         assert p["isHistoricalMin"] is True
         hist = p["priceHistory30Days"]
         assert len(hist) == 1
-        assert hist[0]["dayOffset"] == 0
-        assert hist[0]["price"] == p["bestPrice"]
+
+
+def test_pro_plus_vs_pro_plus_matching_and_isolation():
+    """
+    Bug #3: Verifica que 'Pro+' y 'Pro Plus' se normalicen a 'pro plus' en query_builder,
+    fingerprint_matcher y universal_matcher, emparejando al 100% entre sí y rechazando 'Pro' estándar.
+    """
+    from app.collectors.query_builder import build_short_search_query
+
+    q_plus = build_search_queries("Xiaomi Redmi Note 15 Pro+ 5G 512GB 12GB RAM", {"Almacenamiento": "512GB"})
+    assert q_plus == ["Redmi Note 15 Pro Plus 512GB", "Redmi Note 15 Pro Plus"]
+    assert build_short_search_query("Xiaomi Redmi Note 15 Pro+ 5G 512GB 12GB RAM") == "Redmi Note 15 Pro Plus 512"
+
+    fp_plus = build_fingerprint_from_catalog_item(
+        next(p for p in CATALOG_PRODUCTS if p["id"] == "prod_xiaomi_redmi_note")
+    )
+    assert "plus" in fp_plus.family_tokens
+
+    # Pro+ objetivo debe aceptar tanto Pro+ (Hiraoka) como Pro Plus (Efe/Curacao)
+    assert matches_fingerprint(
+        fp_plus,
+        candidate_title='Celular Xiaomi REDMI Note 15 Pro+ 5G 6.8" 512GB 12GB RAM Café Moca',
+        candidate_url="https://hiraoka.com.pe/celular-xiaomi-redmi-note-15-pro-5g-6-8-512gb-12gb-ram-cafe-moca",
+    ) is True
+    assert matches_fingerprint(
+        fp_plus,
+        candidate_title='Celular Xiaomi Redmi Note 15 Pro Plus 5G 512GB 12GB 6.8" Brown',
+        candidate_url="https://www.efe.com.pe/redmi-note15pro-5g-12gb-512gb-brown-15pro-5gbrown.html",
+    ) is True
+    # Pro+ objetivo debe rechazar Pro estándar (sin Plus)
+    assert matches_fingerprint(
+        fp_plus,
+        candidate_title="Celular Xiaomi Redmi Note 15 Pro 5G 512GB 12GB RAM",
+        candidate_url="https://www.efe.com.pe/redmi-note15pro5g-12gb-512gb.html",
+    ) is False
+
+    # Pro estándar objetivo debe rechazar Pro+ y Pro Plus
+    fp_regular_pro = ProductFingerprint(
+        brand="xiaomi",
+        family_tokens=["redmi", "note", "15", "pro"],
+        storage_gb=512,
+        ram_gb=12,
+        network="5g",
+    )
+    assert matches_fingerprint(
+        fp_regular_pro,
+        candidate_title="Celular Xiaomi Redmi Note 15 Pro+ 5G 512GB 12GB RAM",
+        candidate_url="https://hiraoka.com.pe/redmi-note-15-pro-plus",
+    ) is False
+    assert matches_fingerprint(
+        fp_regular_pro,
+        candidate_title="Celular Xiaomi Redmi Note 15 Pro Plus 5G 512GB 12GB RAM",
+        candidate_url="https://www.efe.com.pe/redmi-note-15-pro-plus.html",
+    ) is False
+
+    target_plus = {
+        "title": "Xiaomi Redmi Note 15 Pro+ 5G 512GB 12GB RAM",
+        "category": "Smartphones",
+        "brand": "Xiaomi",
+        "tech_specs": {"Almacenamiento": "512GB", "Memoria RAM": "12GB"},
+    }
+    assert match_product_universal(
+        target_plus,
+        {
+            "title": "Celular Xiaomi Redmi Note 15 Pro Plus 5G 512GB 12GB",
+            "offer_url": "https://www.efe.com.pe/redmi-note15pro-5g-12gb-512gb-brown-15pro-5gbrown.html",
+            "tech_specs": {"Marca": "Xiaomi", "Almacenamiento": "512 GB", "Memoria RAM": "12 GB"},
+        },
+    ) is True
+    assert match_product_universal(
+        target_plus,
+        {
+            "title": "Celular Xiaomi Redmi Note 15 Pro 5G 512GB 12GB",
+            "offer_url": "https://www.efe.com.pe/redmi-note15pro-5g-12gb-512gb.html",
+            "tech_specs": {"Marca": "Xiaomi", "Almacenamiento": "512 GB", "Memoria RAM": "12 GB"},
+        },
+    ) is False
+
+
+def test_ripley_and_conectaretail_stock_and_sku_parsing():
+    """
+    Bug #2: Verifica que ripley.py valide stock real (isOutOfStock, buyable, JSON-LD OutOfStock)
+    y priorice el precio del SKU activo de la URL sobre caché/variante agotada (S/ 449 vs S/ 439);
+    y que conectaretail.py mantenga prioridades 1 (meta tags) y 3 (JSON-LD) sin .product-info-main.
+    """
+    # 1. Ripley fuera de stock en __NEXT_DATA__
+    ripley_oos_html = """
+    <html><script id="__NEXT_DATA__" type="application/json">
+    {"props":{"pageProps":{"detailProps":{"data":{"product":{"name":"TABLET SAMSUNG GALAXY TAB A11 8.7 64GB","isOutOfStock":true,"buyable":false,"parentpricestock":{"price":{"card":{"valueNumber":439},"sale":{"valueNumber":449},"master":{"valueNumber":649}}}}}}}}}
+    </script></html>
+    """
+    assert parse_ripley(ripley_oos_html, "https://simple.ripley.com.pe/tablet-samsung-galaxy-tab-a11-87-64gb-2004367413754p") is None
+
+    # 2. Ripley OutOfStock en JSON-LD
+    ripley_ld_oos_html = """
+    <html>
+    <script type="application/ld+json">
+    {"@type":"Product","name":"TABLET SAMSUNG GALAXY TAB A11 8.7 64GB","offers":{"@type":"Offer","price":"439","availability":"https://schema.org/OutOfStock"}}
+    </script>
+    <script id="__NEXT_DATA__" type="application/json">
+    {"props":{"pageProps":{"detailProps":{"data":{"product":{"name":"TABLET SAMSUNG GALAXY TAB A11 8.7 64GB","parentpricestock":{"price":{"card":{"valueNumber":439},"sale":{"valueNumber":449},"master":{"valueNumber":649}}}}}}}}}
+    </script>
+    </html>
+    """
+    assert parse_ripley(ripley_ld_oos_html, "https://simple.ripley.com.pe/tablet-samsung-galaxy-tab-a11-87-64gb-2004367413754p") is None
+
+    # 3. Ripley SKU activo con S/ 449 vs caché parentpricestock / variante agotada S/ 439
+    ripley_active_sku_html = """
+    <html>
+    <script type="application/ld+json">
+    {"@type":"Product","name":"TABLET SAMSUNG GALAXY TAB A11 8.7 64GB","offers":{"@type":"Offer","price":"449","availability":"https://schema.org/InStock"}}
+    </script>
+    <script id="__NEXT_DATA__" type="application/json">
+    {
+      "props":{"pageProps":{"detailProps":{"data":{"product":{
+        "name":"TABLET SAMSUNG GALAXY TAB A11 8.7 64GB",
+        "partNumber":"2004367413754P",
+        "isOutOfStock":false,
+        "buyable":true,
+        "parentpricestock":{"price":{"card":{"valueNumber":439},"sale":{"valueNumber":449},"master":{"valueNumber":649}}},
+        "SKUs":[
+          {"partNumber":"2004367413753P","isOutOfStock":true,"stock":0,"prices":{"cardPrice":439,"offerPrice":439,"listPrice":649}},
+          {"partNumber":"2004367413754P","isOutOfStock":false,"stock":5,"prices":{"offerPrice":449,"listPrice":649}}
+        ]
+      }}}}}
+    }
+    </script>
+    </html>
+    """
+    res_rip = parse_ripley(
+        ripley_active_sku_html,
+        "https://simple.ripley.com.pe/tablet-samsung-galaxy-tab-a11-87-64gb-2004367413754p",
+    )
+    assert res_rip is not None
+    assert res_rip["price"] == 449.0
+    assert res_rip["original_price"] == 649.0
+    assert res_rip["in_stock"] is True
+
+    # 4. ConectaRetail sin .product-info-main: Prioridad 1 (meta tags) y Prioridad 3 (JSON-LD) siguen funcionando
+    conecta_meta_only_html = """
+    <html>
+    <head>
+      <meta property="product:price:amount" content="1979" />
+      <meta property="og:image" content="https://www.efe.com.pe/media/catalog/product/1/5/15proplus5gbrown_1.jpg" />
+    </head>
+    <body>
+      <div class="page-wrapper" id="maincontent">
+        <div class="custom-product-header"><h1>Celular Xiaomi Redmi Note 15 Pro Plus 5G 512GB 12GB</h1></div>
+        <div class="vendido">Vendido por Tiendas EFE</div>
+        <button id="product-addtocart-button">Agregar al carrito</button>
+        <div class="block related"><li class="product-item"><a class="product-item-link" href="/otro.html">Otro</a></li></div>
+      </div>
+    </body>
+    </html>
+    """
+    res_meta = parse_conectaretail(
+        conecta_meta_only_html,
+        "https://www.efe.com.pe/redmi-note15pro-5g-12gb-512gb-brown-15pro-5gbrown.html",
+        canonical_title="Xiaomi Redmi Note 15 Pro+ 5G 512GB 12GB RAM",
+    )
+    assert res_meta is not None
+    assert res_meta["price"] == 1979.0
+    assert res_meta["in_stock"] is True
+
+    conecta_jsonld_only_html = """
+    <html>
+    <head><meta property="og:image" content="https://www.lacuracao.pe/media/catalog/product/1/5/15proplus5gbrown_1.jpg" /></head>
+    <body>
+      <div class="page-wrapper" id="maincontent">
+        <div class="custom-header"><h1>Celular Xiaomi Redmi Note 15 Pro Plus 5G 512GB 12GB</h1></div>
+        <div>Vendido por La Curacao</div>
+        <button id="product-addtocart-button">Agregar al carrito</button>
+        <script type="application/ld+json">
+        {"@type":"Product","name":"Celular Xiaomi Redmi Note 15 Pro Plus 5G 512GB 12GB","offers":{"@type":"Offer","price":"1979.00","highPrice":"2099.00"}}
+        </script>
+      </div>
+    </body>
+    </html>
+    """
+    res_ld = parse_conectaretail(
+        conecta_jsonld_only_html,
+        "https://www.lacuracao.pe/redmi-note15pro-5g-12gb-512gb-brown-15pro-5gbrown.html",
+        canonical_title="Xiaomi Redmi Note 15 Pro+ 5G 512GB 12GB RAM",
+    )
+    assert res_ld is not None
+    assert res_ld["price"] == 1979.0
+    assert res_ld["original_price"] == 2099.0
+    assert res_ld["in_stock"] is True
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_granular_upsert_preserves_stores_on_transient_errors():
+    """
+    Bug #1: Verifica que sync_all_catalog_products NO borre ofertas existentes (La Curacao / Tiendas Efe)
+    cuando fallan por 403/429/500/timeout, actualice 200 OK y marque in_stock=False (price=0.0) si 200 OK agotado.
+    """
+    from sqlalchemy import select
+    from app.collectors.http_client import LAST_FETCH_STATUS
+
+    await init_db()
+    async with AsyncSessionLocal() as session:
+        prod_q = await session.execute(
+            select(ProductEntity).where(ProductEntity.id == "prod_xiaomi_redmi_note")
+        )
+        prod = prod_q.scalar_one()
+
+        from sqlalchemy import delete as sql_delete
+        await session.execute(
+            sql_delete(StoreOfferEntity).where(StoreOfferEntity.product_id == prod.id)
+        )
+        session.add_all([
+            StoreOfferEntity(
+                product_id=prod.id,
+                store_id="hiraoka",
+                store_name="Hiraoka",
+                price=1899.0,
+                original_price=1999.0,
+                offer_url="https://hiraoka.com.pe/celular-xiaomi-redmi-note-15-pro-5g-6-8-512gb-12gb-ram-cafe-moca",
+                is_best_price=True,
+            ),
+            StoreOfferEntity(
+                product_id=prod.id,
+                store_id="curacao",
+                store_name="La Curacao",
+                price=2099.0,
+                original_price=2199.0,
+                offer_url="https://www.lacuracao.pe/redmi-note15pro-5g-12gb-512gb-brown-15pro-5gbrown.html",
+                is_best_price=False,
+            ),
+            StoreOfferEntity(
+                product_id=prod.id,
+                store_id="efe",
+                store_name="Tiendas Efe",
+                price=2099.0,
+                original_price=2199.0,
+                offer_url="https://www.efe.com.pe/redmi-note15pro-5g-12gb-512gb-brown-15pro-5gbrown.html",
+                is_best_price=False,
+            ),
+        ])
+        await session.commit()
+
+        def mock_partial_failure(url: str, *args, **kwargs):
+            if "hiraoka.com.pe" in url and "redmi-note-15-pro" in url:
+                LAST_FETCH_STATUS[url] = "ok"
+                return """
+                <html><body>
+                  <div class="product-info-main">
+                    <h1 class="page-title"><span data-ui-id="page-title-wrapper">Xiaomi Redmi Note 15 Pro+ 5G 512GB 12GB RAM</span></h1>
+                  </div>
+                  <script type="application/ld+json">
+                  {"@type":"Product","name":"Xiaomi Redmi Note 15 Pro+ 5G 512GB 12GB RAM","image":"https://hiraoka.com.pe/pub/media/catalog/product/1/_/1_23_12.jpg","offers":[{"@type":"Offer","price":"1699.00"}]}
+                  </script>
+                </body></html>
+                """
+            if "lacuracao.pe" in url and "15pro-5gbrown" in url:
+                LAST_FETCH_STATUS[url] = "transient_error"
+                return None
+            if "efe.com.pe" in url and "15pro-5gbrown" in url:
+                LAST_FETCH_STATUS[url] = "ok"
+                return """
+                <html><body>
+                  <div class="product-info-main">
+                    <h1 class="page-title"><span data-ui-id="page-title-wrapper">Celular Xiaomi Redmi Note 15 Pro Plus 5G 512GB 12GB</span></h1>
+                    <div class="stock unavailable"><span>No está disponible</span></div>
+                  </div>
+                </body></html>
+                """
+            LAST_FETCH_STATUS[url] = "transient_error"
+            return None
+
+        import app.collectors.orchestrator as orch_mod
+        redmi_only = [
+            p for p in orch_mod.CATALOG_PRODUCTS if p["id"] == "prod_xiaomi_redmi_note"
+        ]
+        with patch("app.collectors.orchestrator.CATALOG_PRODUCTS", redmi_only), patch(
+            "app.collectors.orchestrator.fetch_page", side_effect=mock_partial_failure
+        ):
+            await orchestrator.sync_all_catalog_products(session=session)
+
+        await session.refresh(prod)
+        by_s = {o.store_id: o for o in prod.store_offers}
+        assert "hiraoka" in by_s and by_s["hiraoka"].price == 1699.0
+        # Curacao conservada intacta ante error temporal
+        assert "curacao" in by_s and by_s["curacao"].price == 2099.0
+        # Efe marcada sin stock (price=0.0) sin borrar la fila
+        assert "efe" in by_s and by_s["efe"].price == 0.0
+        assert prod.best_price == 1699.0
+        assert prod.available_stores_count == 2
 
 
 

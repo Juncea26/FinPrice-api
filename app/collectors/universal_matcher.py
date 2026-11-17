@@ -136,6 +136,23 @@ def _normalize_corpus_text(text: str) -> str:
     no_accents = "".join(c for c in decomposed if not unicodedata.combining(c))
     cleaned = re.sub(r"\.(html?|php|aspx?)\b", " ", no_accents)
 
+    # Expandir combos RAM+Storage ('8+256gb', '12+512gb', '8/256') antes de convertir '+' en ' plus '
+    cleaned = re.sub(
+        r"\b(2|3|4|6|8|12|16|24|32)\s*(?:gb|g)?\s*[\-+/]\s*(32|64|128|256|512|1024|2048)\s*(gb|g|tb)?\b",
+        lambda m: f" {m.group(1)}gb {m.group(2)}{'tb' if (m.group(3) and 'tb' in m.group(3).lower()) else 'gb'} ",
+        cleaned,
+    )
+    # Quitar '+' de siglas de resolución, Copilot+ y conectores de bundle ('+ Funda') para evitar falsos tokens 'plus'
+    cleaned = re.sub(r"(?i)\b(fhd|qhd|uhd|hd|wxga|wqhd|hdr10|hdr|dolby|copilot)\s*\+", r"\1", cleaned)
+    cleaned = re.sub(
+        r"(?i)\+\s*(?=(?:funda|case|folio|cargador|audifonos?|mochila|mouse|cover|soundbar|maletin|teclado|lapiz|pen|stylus|combo|pack|tags?|regalo|hph|watch|buds)\b)",
+        " ",
+        cleaned,
+    )
+    # Convertir explícitamente '+' asociado a modelos/variantes en ' plus ' antes de limpiar puntuación
+    cleaned = re.sub(r"(?i)\b(pro|note|tab|s\d+|a\d+)\s*\+", r"\1 plus ", cleaned)
+    cleaned = re.sub(r"\+", " plus ", cleaned)
+
     # Conservar decimales de pulgadas temporalmente antes de limpiar signos de puntuación
     cleaned = re.sub(r"(\d{1,2})\.(\d)\b", r"\1_DEC_\2", cleaned)
     cleaned = re.sub(r"[/\-_\.+%=&?,:;()\[\]\"'{}]+", " ", cleaned)
@@ -147,8 +164,9 @@ def _normalize_corpus_text(text: str) -> str:
         r"\1 \2 \3 \4",
         cleaned,
     )
-    # Expandir 'note15pro5g' / 'a7pro' / 'magic8lite' / 'pad2' / 'loq15' / 'u8000h' / 'ux3407qa'
-    cleaned = re.sub(r"\b(note|magic|pad|loq|tab|victus)(\d+)(pro|lite|ultra|plus|fe)?(5g)?\b", r"\1 \2 \3 \4", cleaned)
+    # Expandir 'note15pro5g' / 'note15proplus5g' / 'a7pro' / 'magic8lite' / 'pad2' / 'loq15' / 'u8000h' / 'ux3407qa'
+    cleaned = re.sub(r"\b(pro)(plus)\b", r"\1 \2", cleaned)
+    cleaned = re.sub(r"\b(note|magic|pad|loq|tab|victus)(\d+)(pro|lite|ultra|plus|fe)?(plus)?(5g)?\b", r"\1 \2 \3 \4 \5", cleaned)
     cleaned = re.sub(r"\b([a-z]\d+)(pro|plus|ultra|max|fe|lite)\b", r"\1 \2", cleaned)
     cleaned = re.sub(r"\b(\d+)(pro|plus|ultra|max|fe|lite)(5g)?\b", r"\1 \2 \3", cleaned)
     cleaned = re.sub(r"\b(u\d{4})([a-z])\b", r"\1 \1\2", cleaned)
@@ -526,8 +544,8 @@ def match_product_universal(target_product: Any, candidate_page_data: Any) -> bo
         f"{cand_title} {cand_url} {json.dumps(cand_specs, ensure_ascii=False)} {cand_desc}"
     ).lower()
 
-    bundle_pat = r"\s*(\+|\bcon\b|\bincluye\b)\s*(funda|case|folio|book\s*cover|cargador|audifonos?(?:\s+inalambricos?)?|mochila|mouse|cover|soundbar|maletin|teclado|lapiz|pen|stylus|combo|pack)\b.*$"
-    url_promo_pat = r"[\-\s]*(funda|case|folio|cargador|audifonos?(?:[\-\s]+inalambricos?)?|mochila|mouse|cover|soundbar|maletin|teclado|lapiz|pen|combo|pack)(?:[\-\s]+\d+)?\s*$"
+    bundle_pat = r"\s*(\+|\bcon\b|\bincluye\b)\s*(funda|case|folio|book\s*cover|cargador|audifonos?(?:\s+inalambricos?)?|mochila|mouse|cover|soundbar|maletin|teclado|lapiz|pen|stylus|combo|pack|tags?|regalo|hph|watch|buds)\b.*$"
+    url_promo_pat = r"[\-\s]*(funda|case|folio|cargador|audifonos?(?:[\-\s]+inalambricos?)?|mochila|mouse|cover|soundbar|maletin|teclado|lapiz|pen|combo|pack|tags?|regalo|hph|watch|buds)(?:[\-\s]+\d+)?\s*$"
     filler_pat = r"\b(celular\s+libre|smartphone|disco\s+solido\s+de|unidad\s+de\s+estado\s+solido|liberado|dual\s+sim)\b"
 
     cand_title_cleaned = re.sub(bundle_pat, "", cand_title, flags=re.IGNORECASE).strip()
@@ -619,12 +637,10 @@ def match_product_universal(target_product: Any, candidate_page_data: Any) -> bo
     target_model_set = set(profile["model_tokens"])
     for tier_tok in STRICT_SUBMODEL_TIERS:
         if tier_tok not in target_model_set:
-            if tier_tok == "plus" and "pro" in target_model_set and "note" in target_model_set:
-                continue
             if _has_word(tier_tok, title_norm) or _has_word(tier_tok, url_norm):
                 return False
         else:
-            # Si el objetivo EXIGE el tier (ej. 'pro', 'ultra', 'air', 'fe'), debe aparecer en title o url
+            # Si el objetivo EXIGE el tier (ej. 'pro', 'plus', 'ultra', 'air', 'fe'), debe aparecer en title o url
             if not (_has_word(tier_tok, title_norm) or _has_word(tier_tok, url_norm)):
                 return False
 
