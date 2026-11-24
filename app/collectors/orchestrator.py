@@ -79,6 +79,7 @@ from app.collectors.validators import (
 from app.models.entities import (
     PriceHistoryEntity,
     ProductEntity,
+    StoreListing,
     StoreOfferEntity,
 )
 
@@ -527,6 +528,24 @@ class CollectorOrchestrator:
 
         catalog_map = {item["id"]: item for item in CATALOG_PRODUCTS}
 
+        listing_canon_by_key: Dict[Tuple[str, str], Optional[str]] = {}
+        listing_title_by_key: Dict[Tuple[str, str], str] = {}
+        if any(str(p.id).startswith("auto_") for p in products):
+            l_res = await session.execute(
+                select(
+                    StoreListing.store,
+                    StoreListing.url,
+                    StoreListing.title,
+                    StoreListing.canonical_product_id,
+                )
+            )
+            for l_store, l_url, l_title, l_canon in l_res.all():
+                _, clean_lu = canonicalize_store_url(l_url or "")
+                eff_lu = clean_lu or (l_url or "")
+                l_key = (str(l_store or "").strip().lower(), eff_lu)
+                listing_title_by_key[l_key] = str(l_title or "")
+                listing_canon_by_key[l_key] = l_canon
+
         for prod in products:
             cat_item = catalog_map.get(prod.id)
             raw_canonical_title = cat_item["title"] if cat_item else prod.title
@@ -540,6 +559,8 @@ class CollectorOrchestrator:
             if not current_offers:
                 continue
 
+            is_auto_prod = str(prod.id).startswith("auto_")
+
             # 1. Filtrar por Candado 1: Identidad de Producto + Huella Técnica + Canonicalización de URL + Cero Marketplace
             identity_valid_offers: List[StoreOfferEntity] = []
             for off in current_offers:
@@ -552,13 +573,20 @@ class CollectorOrchestrator:
                     removed_offers_count += 1
                     continue
 
-                is_valid_id = validate_product_identity(
-                    canonical_title=prod.title,
-                    scraped_title="",
-                    scraped_url=off.offer_url,
-                    store_id=off.store_id,
-                    target_tech_specs=tech_specs,
-                )
+                lookup_key = (str(off.store_id or "").strip().lower(), clean_u or off.offer_url)
+                scraped_title_hint = listing_title_by_key.get(lookup_key, "")
+                linked_canon_id = listing_canon_by_key.get(lookup_key)
+
+                if is_auto_prod and (linked_canon_id == prod.id or bool(scraped_title_hint)):
+                    is_valid_id = True
+                else:
+                    is_valid_id = validate_product_identity(
+                        canonical_title=prod.title,
+                        scraped_title=scraped_title_hint,
+                        scraped_url=off.offer_url,
+                        store_id=off.store_id,
+                        target_tech_specs=tech_specs,
+                    )
                 if is_valid_id:
                     if off.price and float(off.price) > 0:
                         identity_valid_offers.append(off)
@@ -1569,6 +1597,37 @@ class CollectorOrchestrator:
             on_cache_invalidate=on_cache_invalidate,
             only_stores=only_stores,
         )
+
+        if settings.ENABLE_AUTO_CATEGORY_DISCOVERY:
+            try:
+                from app.collectors.catalog_promoter import promote_store_listings
+                from app.collectors.category_crawler import crawl_categories
+
+                crawl_res = await crawl_categories(
+                    stores=only_stores,
+                    max_pages=max(1, int(settings.AUTO_CATEGORY_MAX_PAGES)),
+                    dry_run=False,
+                    session=session,
+                )
+                promo_res = await promote_store_listings(
+                    session=session,
+                    dry_run=False,
+                )
+                if on_cache_invalidate:
+                    on_cache_invalidate()
+                result["auto_category_discovery"] = {
+                    "extracted_1p": crawl_res.extracted_1p,
+                    "inserted_listings": crawl_res.inserted,
+                    "updated_listings": crawl_res.updated,
+                    "promoted_multi_store": promo_res.new_multi_store_groups,
+                    "promoted_single_store": promo_res.new_single_store_products,
+                    "linked_existing": promo_res.linked_to_existing_products,
+                }
+            except Exception as exc:
+                logger.warning(
+                    f"Auto category discovery/promotion falló sin bloquear flujo principal: {exc}"
+                )
+
         gc.collect()
         logger.info(f"Actualización programada completada exitosamente: {result}")
         return result

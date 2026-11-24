@@ -41,6 +41,8 @@ class Settings(BaseSettings):
 
     # Parámetros del motor de recolección en vivo (Optimizado para 512 MB RAM)
     ENABLE_INTERNAL_SCHEDULER: bool = True
+    ENABLE_AUTO_CATEGORY_DISCOVERY: bool = False
+    AUTO_CATEGORY_MAX_PAGES: int = 1
     COLLECTION_INTERVAL_MINUTES: int = 360  # Cada 6 horas por defecto
     COLLECTOR_TIMEOUT_CONNECT: float = 6.0
     COLLECTOR_TIMEOUT_READ: float = 12.0
@@ -86,6 +88,23 @@ class Settings(BaseSettings):
                 return True
             if cleaned in {"false", "0", "no", "off"}:
                 return False
+        return bool(v)
+
+    @field_validator("ENABLE_AUTO_CATEGORY_DISCOVERY", mode="before")
+    @classmethod
+    def parse_enable_auto_category_discovery(cls, v: Union[bool, str, int, None]) -> bool:
+        if v is None:
+            return False
+        if isinstance(v, bool):
+            return v
+        if isinstance(v, int):
+            return bool(v)
+        if isinstance(v, str):
+            cleaned = v.strip().lower()
+            if cleaned in {"", "false", "0", "no", "off"}:
+                return False
+            if cleaned in {"true", "1", "yes", "on", "si", "sí"}:
+                return True
         return bool(v)
 
     @field_validator("ALLOWED_ORIGINS", mode="before")

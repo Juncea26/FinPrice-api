@@ -54,6 +54,7 @@ from app.collectors.spec_extractor import normalize_brand
 from app.collectors.tech_normalizer import (
     _normalize_mpn,
     _strip_bundles_and_colors,
+    build_canonical_product_signature,
     extract_product_codes,
     normalize_tech_text,
     strip_accents_lower,
@@ -214,38 +215,22 @@ class CategoryCrawlSummary:
     listings: List[ScrapedListing] = field(default_factory=list)
 
 
-def build_listing_signature(title: str, brand: str = "", url: str = "") -> str:
+def build_listing_signature(
+    title: str,
+    brand: str = "",
+    url: str = "",
+    category: str = "",
+) -> str:
     """
     Genera una firma técnica normalizada (`normalized_signature`) mediante `tech_normalizer.py`
     para facilitar el matching en Fase 2B sin sensibilidad a colores ni palabras de marketing.
     """
-    clean_title = _strip_bundles_and_colors(strip_accents_lower(title or ""))
-    clean_brand = str(brand or "").strip()
-    if clean_brand and clean_brand.lower() not in clean_title.lower():
-        combined = f"{clean_brand} {clean_title}".strip()
-    else:
-        combined = clean_title or clean_brand
-
-    sig = normalize_tech_text(
-        combined,
-        expand_abbrevs=True,
-        strip_colors=True,
-        strip_neutral=True,
+    return build_canonical_product_signature(
+        title=title,
+        brand=brand,
+        url=url,
+        category=category,
     )
-    if not sig and url:
-        path_txt = re.sub(r"\.(html?|php|aspx?)\b", " ", urlparse(url).path or "", flags=re.I)
-        sig = normalize_tech_text(
-            path_txt,
-            expand_abbrevs=True,
-            strip_colors=True,
-            strip_neutral=True,
-        )
-
-    deduped: List[str] = []
-    for tok in sig.split():
-        if not deduped or deduped[-1] != tok:
-            deduped.append(tok)
-    return " ".join(deduped)[:500]
 
 
 def compute_fallback_sku(store: str, url: str) -> str:
@@ -393,7 +378,7 @@ def _finalize_candidate_listing(
 
     orig_val = round(float(original_price), 2) if (original_price and float(original_price) > price_val) else price_val
     sku_val = str(raw_sku or "").strip()[:120] or compute_fallback_sku(store, eff_url)
-    sig = build_listing_signature(title=full_title, brand=brand, url=eff_url)
+    sig = build_listing_signature(title=full_title, brand=brand, url=eff_url, category=final_category)
 
     return (
         ScrapedListing(
@@ -1243,6 +1228,7 @@ async def crawl_categories(
     dry_run: bool = False,
     session_factory: Optional[Callable[[], AsyncSession]] = None,
     fetch_fn: Optional[Callable[[str], Any]] = None,
+    session: Optional[AsyncSession] = None,
 ) -> CategoryCrawlSummary:
     """
     Barre páginas de categorías tech para las tiendas y categorías indicadas,
@@ -1319,28 +1305,33 @@ async def crawl_categories(
 
     if not dry_run and all_listings:
         # Persistir por fuente para contabilizar inserted/updated exactos por (store, category)
-        async with eff_session_factory() as session:
-            # Mapear source_listings manteniendo el desglose por source
-            listings_by_src: Dict[Tuple[str, str], List[ScrapedListing]] = {}
-            for item in all_listings:
-                # Asociar al bucket (store, category) o al original si fue reclasificado
-                b_key = (item.store, item.category)
-                if b_key not in source_stats_map:
-                    # Buscar primera fuente de esa tienda si fue reclasificado desde categoría amplia
-                    b_key = next(
-                        (k for k in source_stats_map if k[0] == item.store),
-                        b_key,
-                    )
-                listings_by_src.setdefault(b_key, []).append(item)
+        listings_by_src: Dict[Tuple[str, str], List[ScrapedListing]] = {}
+        for item in all_listings:
+            # Asociar al bucket (store, category) o al original si fue reclasificado
+            b_key = (item.store, item.category)
+            if b_key not in source_stats_map:
+                # Buscar primera fuente de esa tienda si fue reclasificado desde categoría amplia
+                b_key = next(
+                    (k for k in source_stats_map if k[0] == item.store),
+                    b_key,
+                )
+            listings_by_src.setdefault(b_key, []).append(item)
 
+        async def _persist_with_session(target_session: AsyncSession) -> None:
             for b_key, src_items in listings_by_src.items():
-                ins, upd = await upsert_store_listings(session, src_items)
+                ins, upd = await upsert_store_listings(target_session, src_items)
                 if b_key in source_stats_map:
                     source_stats_map[b_key].inserted += ins
                     source_stats_map[b_key].updated += upd
                 else:
                     summary.inserted += ins
                     summary.updated += upd
+
+        if session is not None:
+            await _persist_with_session(session)
+        else:
+            async with eff_session_factory() as owned_session:
+                await _persist_with_session(owned_session)
 
     summary.sources_processed = len(summary.by_source)
     summary.listings = all_listings

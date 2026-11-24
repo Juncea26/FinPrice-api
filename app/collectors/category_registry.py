@@ -11,7 +11,7 @@ Proporciona:
 """
 from dataclasses import dataclass
 import re
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from app.collectors.tech_normalizer import _strip_bundles_and_colors, strip_accents_lower
@@ -43,6 +43,110 @@ ALL_TECH_CATEGORIES: Tuple[str, ...] = (
     "accesorios_pc",
     "smart_home",
 )
+
+# Nombres canónicos en la tabla `products` (preserva los 5 nombres históricos de Android)
+CATEGORY_CATALOG_DISPLAY_NAMES: Dict[str, str] = {
+    "celulares": "Smartphones",
+    "laptops": "Laptops",
+    "tablets": "Tablets",
+    "televisores": "TVs",
+    "impresoras": "Impresoras",
+    "consolas": "Consolas",
+    "monitores": "Monitores",
+    "audifonos": "Audífonos",
+    "smartwatches": "Smartwatches",
+    "audio": "Audio",
+    "camaras": "Cámaras",
+    "almacenamiento_redes": "Almacenamiento y Redes",
+    "accesorios_pc": "Accesorios PC",
+    "smart_home": "Smart Home",
+    "otros_tech": "Otros Tech",
+}
+
+_CATEGORY_FILTER_ALIASES: Dict[str, str] = {
+    "celulares": "Smartphones",
+    "celular": "Smartphones",
+    "smartphones": "Smartphones",
+    "smartphone": "Smartphones",
+    "laptops": "Laptops",
+    "laptop": "Laptops",
+    "notebooks": "Laptops",
+    "notebook": "Laptops",
+    "tablets": "Tablets",
+    "tablet": "Tablets",
+    "ipads": "Tablets",
+    "ipad": "Tablets",
+    "televisores": "TVs",
+    "televisor": "TVs",
+    "tvs": "TVs",
+    "tv": "TVs",
+    "smart tv": "TVs",
+    "impresoras": "Impresoras",
+    "impresora": "Impresoras",
+    "multifuncionales": "Impresoras",
+    "consolas": "Consolas",
+    "consola": "Consolas",
+    "gaming": "Consolas",
+    "videojuegos": "Consolas",
+    "monitores": "Monitores",
+    "monitor": "Monitores",
+    "audifonos": "Audífonos",
+    "audifono": "Audífonos",
+    "auriculares": "Audífonos",
+    "headsets": "Audífonos",
+    "smartwatches": "Smartwatches",
+    "smartwatch": "Smartwatches",
+    "wearables": "Smartwatches",
+    "relojes": "Smartwatches",
+    "audio": "Audio",
+    "parlantes": "Audio",
+    "soundbars": "Audio",
+    "camaras": "Cámaras",
+    "camara": "Cámaras",
+    "fotografia": "Cámaras",
+    "drones": "Cámaras",
+    "almacenamiento_redes": "Almacenamiento y Redes",
+    "almacenamiento y redes": "Almacenamiento y Redes",
+    "almacenamiento": "Almacenamiento y Redes",
+    "redes": "Almacenamiento y Redes",
+    "accesorios_pc": "Accesorios PC",
+    "accesorios pc": "Accesorios PC",
+    "accesorios y perifericos": "Accesorios PC",
+    "accesorios y perifericos de pc": "Accesorios PC",
+    "perifericos": "Accesorios PC",
+    "smart_home": "Smart Home",
+    "smart home": "Smart Home",
+    "smart home y domotica": "Smart Home",
+    "domotica": "Smart Home",
+    "otros_tech": "Otros Tech",
+    "otros tech": "Otros Tech",
+}
+
+
+def resolve_category_display_name(slug_or_name: str) -> str:
+    """Convierte un slug de categoría (`celulares`, `consolas`) al nombre canónico en `products`."""
+    raw = str(slug_or_name or "").strip()
+    if not raw:
+        return "Otros Tech"
+    low = strip_accents_lower(raw)
+    if low in CATEGORY_CATALOG_DISPLAY_NAMES:
+        return CATEGORY_CATALOG_DISPLAY_NAMES[low]
+    if low in _CATEGORY_FILTER_ALIASES:
+        return _CATEGORY_FILTER_ALIASES[low]
+    return raw
+
+
+def matches_category_filter(product_category: str, query_category: str) -> bool:
+    """Compara categorías aceptando slugs (`consolas`, `celulares`) y nombres (`Consolas`, `Smartphones`)."""
+    p_low = strip_accents_lower(str(product_category or "").strip())
+    q_low = strip_accents_lower(str(query_category or "").strip())
+    if not p_low or not q_low:
+        return False
+    if p_low == q_low:
+        return True
+    p_canon = _CATEGORY_FILTER_ALIASES.get(p_low, p_low)
+    q_canon = _CATEGORY_FILTER_ALIASES.get(q_low, q_low)
+    return p_canon.lower() == q_canon.lower()
 
 
 @dataclass(frozen=True)
@@ -90,7 +194,7 @@ def _src(
 
 def _build_default_category_registry() -> Dict[str, CategorySpec]:
     """Construye el registro declarativo para las 14 categorías tech en las 8 tiendas 1P."""
-    configs: Tuple[Tuple[str, str, bool, float, Dict[str, Tuple[str, bool]]], ...] = (
+    configs: Tuple[Tuple[str, str, bool, float, Dict[str, Tuple[Any, ...]]], ...] = (
         (
             "celulares",
             "Celulares y Smartphones",
@@ -454,9 +558,17 @@ def _build_default_category_registry() -> Dict[str, CategorySpec]:
                     "https://www.falabella.com.pe/falabella-pe/search?Ntt=disco+externo+ssd+router&f.derived.variant.sellerId=FALABELLA",
                     True,
                 ),
+                # Ripley SSR no soporta filtro de vendedor 1P en query string (`seller_facet` corre en microfrontend cliente);
+                # rutas verificadas HTTP 200 con inventario 1P filtrado luego por `_is_ripley_search_item_official`.
                 "ripley": (
-                    "https://simple.ripley.com.pe/tecnologia/computacion/disco-duro-y-memorias?s=mdco",
-                    False,
+                    (
+                        "https://simple.ripley.com.pe/tecnologia/computacion/disco-duro-y-memorias?s=mdco",
+                        False,
+                    ),
+                    (
+                        "https://simple.ripley.com.pe/tecnologia/smart-home/routers-y-modems?s=mdco",
+                        False,
+                    ),
                 ),
                 "tottus": (
                     "https://www.tottus.com.pe/tottus-pe/buscar?Ntt=disco+externo+usb",
@@ -494,9 +606,16 @@ def _build_default_category_registry() -> Dict[str, CategorySpec]:
                     "https://www.falabella.com.pe/falabella-pe/category/cat40509/Accesorios-Computacion-y-Perifericos?f.derived.variant.sellerId=FALABELLA",
                     False,
                 ),
+                # `/tecnologia/accesorios-computacion` responde 404 en Ripley; mouse y teclados son 200 OK con 1P.
                 "ripley": (
-                    "https://simple.ripley.com.pe/tecnologia/accesorios-computacion?s=mdco",
-                    False,
+                    (
+                        "https://simple.ripley.com.pe/tecnologia/computacion/mouse?s=mdco",
+                        False,
+                    ),
+                    (
+                        "https://simple.ripley.com.pe/tecnologia/computacion/teclados?s=mdco",
+                        False,
+                    ),
                 ),
                 "tottus": (
                     "https://www.tottus.com.pe/tottus-pe/buscar?Ntt=mouse+teclado",
@@ -531,6 +650,8 @@ def _build_default_category_registry() -> Dict[str, CategorySpec]:
                     "https://www.falabella.com.pe/falabella-pe/category/cat11190471/Domotica-y-Smart-Home?f.derived.variant.sellerId=FALABELLA",
                     False,
                 ),
+                # Nota: el árbol smart-home/ver-todo y monitores en Ripley SSR devuelve actualmente 100% Marketplace
+                # (0 ítems en `seller_facet=Ripley`); `_is_ripley_search_item_official` descarta todo tercero.
                 "ripley": (
                     "https://simple.ripley.com.pe/tecnologia/smart-home/ver-todo?s=mdco",
                     False,
@@ -572,14 +693,26 @@ def _build_default_category_registry() -> Dict[str, CategorySpec]:
     for slug, display_name, is_acc, min_price, store_urls in configs:
         sources: Dict[str, Tuple[StoreCategorySource, ...]] = {}
         for store_id in ALL_TECH_STORES:
-            raw_url, is_broad = store_urls[store_id]
-            sources[store_id] = _src(
-                store=store_id,
-                category=slug,
-                url=raw_url,
-                pagination=pagination_by_store[store_id],
-                page_size=48,
-                is_broad_category=is_broad,
+            raw_entry = store_urls[store_id]
+            if (
+                isinstance(raw_entry, tuple)
+                and len(raw_entry) == 2
+                and isinstance(raw_entry[0], str)
+                and isinstance(raw_entry[1], bool)
+            ):
+                entries: Tuple[Tuple[str, bool], ...] = (raw_entry,)
+            else:
+                entries = tuple(raw_entry)
+            sources[store_id] = tuple(
+                StoreCategorySource(
+                    store=store_id,
+                    category=slug,
+                    url=u,
+                    pagination=pagination_by_store[store_id],
+                    page_size=48,
+                    is_broad_category=ib,
+                )
+                for u, ib in entries
             )
         registry[slug] = CategorySpec(
             slug=slug,
@@ -759,8 +892,12 @@ def _classify_clean_text(clean_text: str) -> Optional[str]:
             "reloj inteligente",
             "apple watch",
             "galaxy watch",
+            "galaxy fit",
             "huawei watch",
             "redmi watch",
+            "xiaomi watch",
+            "honor watch",
+            "amazfit",
             "smart band",
             "smartband",
             "mi band",
@@ -1005,6 +1142,7 @@ def _classify_clean_text(clean_text: str) -> Optional[str]:
             "inspiron",
             "latitude",
             "xps",
+            "imac",
             "all in one",
         ),
     ):
@@ -1056,6 +1194,9 @@ def _classify_clean_text(clean_text: str) -> Optional[str]:
             "honor x",
             "honor 200",
             "honor 400",
+            "huawei pura",
+            "xiaomi 14",
+            "xiaomi 15",
             "realme",
             "oppo reno",
             "oppo a",

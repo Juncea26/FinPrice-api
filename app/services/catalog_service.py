@@ -23,6 +23,7 @@ from app.core.config import settings
 from app.core.logging import get_logger
 from app.core.security import sanitize_input_text
 from app.collectors.catalog_urls import PERU_DEPARTMENTS
+from app.collectors.category_registry import matches_category_filter
 from app.collectors.color_stripper import strip_color_tokens
 from app.collectors.orchestrator import orchestrator
 from app.collectors.spec_extractor import (
@@ -89,10 +90,17 @@ STANDARD_CATEGORY_ORDER = (
     "Laptops",
     "Tablets",
     "TVs",
+    "Impresoras",
+    "Consolas",
+    "Monitores",
+    "Audífonos",
+    "Smartwatches",
     "Audio",
     "Gaming",
-    "Impresoras",
     "Cámaras",
+    "Almacenamiento y Redes",
+    "Accesorios PC",
+    "Smart Home",
 )
 
 
@@ -350,8 +358,12 @@ class CatalogService:
         os_filter: Optional[str] = None,
         dynamic_specs: Optional[Dict[str, str]] = None,
         enabled_stores: Optional[str] = None,
-        sort_order: Literal["LOW_TO_HIGH", "HIGH_TO_LOW"] = "LOW_TO_HIGH",
-        limit: int = 250,
+        sort_order: Optional[Literal["LOW_TO_HIGH", "HIGH_TO_LOW"]] = None,
+        limit: Optional[int] = None,
+        offset: int = 0,
+        store: Optional[str] = None,
+        min_stores: Optional[int] = None,
+        sort: Optional[str] = None,
     ) -> List[ProductSchema]:
         """Filtra y ordena el catálogo en memoria respondiendo en < 50ms."""
         products = await self._get_base_products(session)
@@ -377,9 +389,10 @@ class CatalogService:
         search_tokens = _normalize_text(search).split() if search and search.strip() else []
         category_term = category.strip() if _is_active_filter(category) else None
         brand_term = brand.strip().lower() if _is_active_filter(brand) else None
+        store_term = store.strip().lower() if _is_active_filter(store) else None
 
         for prod in products:
-            if category_term and prod.category.lower() != category_term.lower():
+            if category_term and not matches_category_filter(prod.category, category_term):
                 continue
 
             if search_tokens:
@@ -490,6 +503,15 @@ class CatalogService:
                 for idx, sp in enumerate(sorted_stores)
             ]
 
+            if store_term and not any(
+                sp.store_id.lower() == store_term or sp.store_name.lower() == store_term
+                for sp in adjusted_stores
+            ):
+                continue
+
+            if min_stores is not None and len(adjusted_stores) < int(min_stores):
+                continue
+
             if adjusted_stores:
                 effective_best_price = adjusted_stores[0].price
                 effective_best_store = adjusted_stores[0].store_name
@@ -541,12 +563,29 @@ class CatalogService:
             )
             results.append(result_item)
 
-        if sort_order == "HIGH_TO_LOW":
-            results.sort(key=lambda x: x.best_price, reverse=True)
-        else:
+        sort_term = sort.strip().lower() if sort else None
+        if sort_term == "price_asc" or (sort_term is None and sort_order == "LOW_TO_HIGH"):
             results.sort(key=lambda x: x.best_price, reverse=False)
+        elif sort_term == "price_desc" or (sort_term is None and sort_order == "HIGH_TO_LOW"):
+            results.sort(key=lambda x: x.best_price, reverse=True)
+        elif sort_term == "discount":
+            results.sort(key=lambda x: (-x.discount_percentage, -x.available_stores_count, x.best_price))
+        elif sort_term == "stores_desc":
+            results.sort(key=lambda x: (-x.available_stores_count, -x.discount_percentage, x.best_price))
+        else:
+            results.sort(
+                key=lambda x: (
+                    -(1 if x.available_stores_count >= 2 else 0),
+                    -x.available_stores_count,
+                    -x.discount_percentage,
+                    x.best_price,
+                )
+            )
 
-        return results[:limit]
+        safe_offset = max(0, int(offset or 0))
+        if limit is not None:
+            return results[safe_offset : safe_offset + int(limit)]
+        return results[safe_offset:]
 
     async def get_product_by_id(
         self, product_id: str, session: AsyncSession

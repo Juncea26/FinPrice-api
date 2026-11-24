@@ -19,6 +19,10 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
+from app.collectors.catalog_promoter import (
+    CatalogPromotionSummary,
+    promote_store_listings,
+)
 from app.collectors.catalog_urls import STORES_INFO
 from app.collectors.category_crawler import CategoryCrawlSummary, crawl_categories
 from app.collectors.category_registry import CATEGORY_REGISTRY, list_registered_categories
@@ -185,6 +189,22 @@ def build_arg_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--promote-catalog",
+        action="store_true",
+        help=(
+            "Fase 2B: agrupa y promueve `store_listings` hacia `products`, `store_offers` y `price_history` "
+            "(preserva los 25 productos semilla; soporta --dry-run en solo lectura)."
+        ),
+    )
+    parser.add_argument(
+        "--sync-categories-and-promote",
+        action="store_true",
+        help=(
+            "Ejecuta el barrido de categorías tech (--discover-categories) y la promoción al catálogo "
+            "(--promote-catalog) en un solo paso controlado."
+        ),
+    )
+    parser.add_argument(
         "--categories",
         type=parse_categories_arg,
         default=None,
@@ -204,7 +224,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--dry-run",
         action="store_true",
-        help="Ejecuta --discover-categories en modo lectura sin escribir ni inicializar tablas en Neon/DB.",
+        help="Ejecuta --discover-categories / --promote-catalog / --sync-categories-and-promote en modo lectura sin escribir en Neon/DB.",
     )
     return parser
 
@@ -474,6 +494,70 @@ async def run_category_discovery(
         await close_shared_client()
 
 
+def format_catalog_promotion_summary(summary: CatalogPromotionSummary) -> str:
+    """Formatea el resumen de agrupación y promoción de `store_listings` -> `products`."""
+    mode_tag = "DRY-RUN (SOLO LECTURA, SIN ESCRITURAS)" if summary.dry_run else "PROMOCIÓN PERSISTIDA EN BD"
+    lines: List[str] = [
+        f"=== PROMOCIÓN DE CATÁLOGO FINPRICE — FASE 2B ({mode_tag}) ===",
+        (
+            f"Listings activos analizados : {summary.active_listings_scanned} "
+            f"(descartados/outliers={summary.discarded_invalid_or_outliers})"
+        ),
+        (
+            f"Enlazados a prod_* existentes: {summary.linked_to_existing_products} "
+            f"(ofertas actualizadas/insertadas={summary.existing_offers_upserted})"
+        ),
+        (
+            f"Grupos nuevos multi-tienda  : {summary.new_multi_store_groups} (2-8 tiendas)"
+        ),
+        (
+            f"Productos nuevos 1 tienda   : {summary.new_single_store_products}"
+        ),
+        (
+            f"Total productos auto_*      : {summary.total_promoted_products} "
+            f"(ofertas={summary.offers_promoted}, historial_hoy={summary.history_points_upserted})"
+        ),
+    ]
+
+    if summary.by_category:
+        lines.append("Desglose por categoría:")
+        for cat_name in sorted(summary.by_category.keys()):
+            c = summary.by_category[cat_name]
+            lines.append(
+                f"  - {cat_name:<24}: multi={c['multi_store']:>3} | 1_tienda={c['single_store']:>3} | "
+                f"total_auto={c['total']:>3} | enlazados_seed={c['linked_existing']:>2}"
+            )
+
+    if summary.multi_store_examples:
+        lines.append("Top 10 ejemplos reales de grupos multi-tienda:")
+        for idx, ex in enumerate(summary.multi_store_examples[:10], start=1):
+            stores_str = ", ".join(
+                f"{s}:S/{p:,.0f}" for s, p in sorted(ex.store_prices.items(), key=lambda kv: kv[1])
+            )
+            lines.append(
+                f"  {idx:>2}. [{ex.stores_count} tiendas | {ex.category}] {ex.title}"
+            )
+            lines.append(
+                f"      ID={ex.product_id} | Mejor=S/{ex.best_price:,.2f} "
+                f"(Antes=S/{ex.original_price:,.2f}, -{ex.discount_percentage}%) | {stores_str}"
+            )
+
+    return "\n".join(lines)
+
+
+async def run_catalog_promotion(
+    dry_run: bool = False,
+    in_memory_listings: Optional[Sequence[Any]] = None,
+) -> CatalogPromotionSummary:
+    """Ejecuta `promote_store_listings` (solo lectura si `dry_run=True`) e imprime el resumen."""
+    summary = await promote_store_listings(
+        dry_run=dry_run,
+        in_memory_listings=in_memory_listings,
+    )
+    print(format_catalog_promotion_summary(summary))
+    return summary
+
+
 def _install_signal_handlers(stop_event: asyncio.Event) -> None:
     """Registra manejadores limpios para SIGINT/SIGTERM en modo daemon."""
     loop = asyncio.get_running_loop()
@@ -505,15 +589,47 @@ async def run_worker_async(
     audit: bool = False,
     check_proxy: bool = False,
     discover_categories: bool = False,
+    promote_catalog: bool = False,
+    sync_categories_and_promote: bool = False,
     only_categories: Optional[List[str]] = None,
     max_pages: int = 2,
     dry_run: bool = False,
 ) -> int:
-    """Ciclo principal asíncrono del worker independiente (`--check-proxy`, `--audit`, `--discover-categories`, `--once` o daemon)."""
+    """Ciclo principal asíncrono del worker independiente (`--check-proxy`, `--audit`, `--discover-categories`, `--promote-catalog`, `--sync-categories-and-promote`, `--once` o daemon)."""
     target_stores = only_stores if only_stores is not None else list(ALL_8_PERU_STORES)
     if check_proxy:
         await run_proxy_check()
         return 0
+
+    if sync_categories_and_promote:
+        log_proxy_status_once()
+        try:
+            if not dry_run:
+                await bootstrap_worker_db()
+            crawl_summary = await run_category_discovery(
+                only_stores=only_stores,
+                only_categories=only_categories,
+                max_pages=max_pages,
+                dry_run=dry_run,
+            )
+            await run_catalog_promotion(
+                dry_run=dry_run,
+                in_memory_listings=(crawl_summary.listings if (dry_run and crawl_summary.listings) else None),
+            )
+            return 0
+        finally:
+            await engine.dispose()
+            await reader_engine.dispose()
+
+    if promote_catalog:
+        try:
+            if not dry_run:
+                await bootstrap_worker_db()
+            await run_catalog_promotion(dry_run=dry_run)
+            return 0
+        finally:
+            await engine.dispose()
+            await reader_engine.dispose()
 
     if discover_categories:
         log_proxy_status_once()
@@ -528,9 +644,8 @@ async def run_worker_async(
             )
             return 0
         finally:
-            if not dry_run:
-                await engine.dispose()
-                await reader_engine.dispose()
+            await engine.dispose()
+            await reader_engine.dispose()
 
     try:
         if audit:
@@ -615,6 +730,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             audit=bool(args.audit),
             check_proxy=bool(args.check_proxy),
             discover_categories=bool(args.discover_categories),
+            promote_catalog=bool(args.promote_catalog),
+            sync_categories_and_promote=bool(args.sync_categories_and_promote),
             only_categories=args.categories,
             max_pages=int(args.max_pages),
             dry_run=bool(args.dry_run),

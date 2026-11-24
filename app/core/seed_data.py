@@ -1234,23 +1234,29 @@ async def sync_and_upsert_catalog(
         valid_products_to_seed.append(p)
 
     valid_prod_ids = {p["id"] for p in valid_products_to_seed}
+    preserved_auto_ids = (
+        {pid for pid in existing_prods if str(pid).startswith("auto_")}
+        if not overwrite_live
+        else set()
+    )
+    allowed_prod_ids = valid_prod_ids | preserved_auto_ids
 
     # Si la base de datos ya tiene los 25 productos y sus ofertas en vivo y no se pidió overwrite_live,
-    # PROHIBIDO sobreescribir precios o borrar tiendas descubiertas en vivo con datos estáticos.
+    # PROHIBIDO sobreescribir precios o borrar tiendas descubiertas en vivo ni productos promovidos `auto_*`.
     if (
         not overwrite_live
         and valid_prod_ids.issubset(set(existing_prods.keys()))
         and len(existing_offers) >= len(valid_prod_ids)
     ):
         for pid, ent in list(existing_prods.items()):
-            if pid not in valid_prod_ids:
+            if pid not in allowed_prod_ids:
                 await session.delete(ent)
         await session.execute(
             delete(CommunityPostEntity).where(
                 (CommunityPostEntity.author_name.ilike("%Usuario Real%"))
                 | (CommunityPostEntity.title.ilike("%liquidación de vitrina%"))
                 | (CommunityPostEntity.content.ilike("%liquidación de vitrina%"))
-                | (CommunityPostEntity.product_id.notin_(valid_prod_ids))
+                | (CommunityPostEntity.product_id.notin_(allowed_prod_ids))
             )
         )
         await session.execute(
@@ -1258,7 +1264,7 @@ async def sync_and_upsert_catalog(
                 (CommunityOfferEntity.author_name.ilike("%Usuario Real%"))
                 | (CommunityOfferEntity.comment.ilike("%liquidación de vitrina%"))
                 | (CommunityOfferEntity.price_found == 3699.0)
-                | (CommunityOfferEntity.product_id.notin_(valid_prod_ids))
+                | (CommunityOfferEntity.product_id.notin_(allowed_prod_ids))
             )
         )
         await orchestrator._sync_all_products_history_and_min_price(
@@ -1291,18 +1297,18 @@ async def sync_and_upsert_catalog(
         for pt in pts:
             valid_hist_keys.add((pid, pt["day_offset"]))
 
-    # 0. Limpieza de productos obsoletos o fuera de catálogo
+    # 0. Limpieza de productos obsoletos o fuera de catálogo (preservando `auto_*` si `overwrite_live=False`)
     for pid, ent in list(existing_prods.items()):
-        if pid not in valid_prod_ids:
+        if pid not in allowed_prod_ids:
             await session.delete(ent)
 
     valid_offer_keys = {(o["product_id"], o["store_id"]) for o in SEED_STORE_OFFERS if o["product_id"] in valid_prod_ids}
     for (pid, sid), off in list(existing_offers.items()):
-        if (pid, sid) not in valid_offer_keys:
+        if pid not in preserved_auto_ids and (pid, sid) not in valid_offer_keys:
             await session.delete(off)
 
     for (pid, day), hist in list(existing_hist.items()):
-        if (pid, day) not in valid_hist_keys:
+        if pid not in preserved_auto_ids and (pid, day) not in valid_hist_keys:
             await session.delete(hist)
 
     # 1. Upsert Productos Válidos (len(offers) >= 1)
@@ -1423,7 +1429,7 @@ async def sync_and_upsert_catalog(
             (CommunityPostEntity.author_name.ilike("%Usuario Real%")) |
             (CommunityPostEntity.title.ilike("%liquidación de vitrina%")) |
             (CommunityPostEntity.content.ilike("%liquidación de vitrina%")) |
-            (CommunityPostEntity.product_id.notin_(valid_prod_ids))
+            (CommunityPostEntity.product_id.notin_(allowed_prod_ids))
         )
     )
     await session.execute(
@@ -1431,7 +1437,7 @@ async def sync_and_upsert_catalog(
             (CommunityOfferEntity.author_name.ilike("%Usuario Real%")) |
             (CommunityOfferEntity.comment.ilike("%liquidación de vitrina%")) |
             (CommunityOfferEntity.price_found == 3699.0) |
-            (CommunityOfferEntity.product_id.notin_(valid_prod_ids))
+            (CommunityOfferEntity.product_id.notin_(allowed_prod_ids))
         )
     )
 

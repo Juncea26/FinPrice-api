@@ -43,6 +43,11 @@ RESERVED_QUERY_PARAMS = {
     "os",
     "enabled_stores",
     "sort_order",
+    "limit",
+    "offset",
+    "store",
+    "min_stores",
+    "sort",
 }
 
 
@@ -65,14 +70,21 @@ async def get_products(
     screen: Optional[str] = Query(None, max_length=80),
     os: Optional[str] = Query(None, max_length=80),
     enabled_stores: Optional[str] = Query(None, max_length=150),
-    sort_order: Literal["LOW_TO_HIGH", "HIGH_TO_LOW"] = Query("LOW_TO_HIGH"),
-    limit: int = Query(250, ge=1, le=500, description="Límite de productos a retornar"),
+    store: Optional[str] = Query(None, max_length=50, description="Filtra productos disponibles en una tienda oficial"),
+    min_stores: Optional[int] = Query(None, ge=1, le=8, description="Mínimo de tiendas con stock activo"),
+    sort: Optional[Literal["discount", "price_asc", "price_desc", "stores_desc"]] = Query(
+        None,
+        description="Ordenamiento opcional (discount, price_asc, price_desc, stores_desc)",
+    ),
+    sort_order: Optional[Literal["LOW_TO_HIGH", "HIGH_TO_LOW"]] = Query(None),
+    limit: Optional[int] = Query(None, ge=1, le=5000, description="Límite opcional de productos a retornar"),
+    offset: int = Query(0, ge=0, description="Desplazamiento para paginación"),
     session: AsyncSession = Depends(get_read_db),
 ):
     """
     Retorna los productos con precios y fichas técnicas reales extraídas de tiendas de Perú.
-    Soporta tanto parámetros directos (ram, storage, processor, connectivity, tv_resolution)
-    como cualquier clave canónica dinámica de tech_specs enviada por query string.
+    Soporta tanto parámetros directos (ram, storage, processor, connectivity, tv_resolution,
+    store, min_stores, sort, limit, offset) como cualquier clave canónica dinámica de tech_specs.
     """
     clean_search = sanitize_input_text(search, max_length=80)
     clean_category = sanitize_input_text(category, max_length=80)
@@ -85,6 +97,7 @@ async def get_products(
     clean_screen = sanitize_input_text(screen, max_length=80)
     clean_os = sanitize_input_text(os, max_length=80)
     clean_stores = sanitize_input_text(enabled_stores, max_length=150)
+    clean_store = sanitize_input_text(store, max_length=50)
 
     # Capturar cualquier filtro dinámico adicional que corresponda a una clave de tech_specs
     dynamic_specs: Dict[str, str] = {}
@@ -123,6 +136,10 @@ async def get_products(
         enabled_stores=clean_stores,
         sort_order=sort_order,
         limit=limit,
+        offset=offset,
+        store=clean_store,
+        min_stores=min_stores,
+        sort=sort,
     )
 
 
