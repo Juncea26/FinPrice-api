@@ -2,7 +2,7 @@
 Configuración centralizada de FinPrice API utilizando Pydantic Settings.
 """
 import os
-from typing import List, Union
+from typing import List, Optional, Union
 from dotenv import load_dotenv
 from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -47,6 +47,27 @@ class Settings(BaseSettings):
     COLLECTOR_MAX_CONCURRENCY: int = 2
     CIRCUIT_BREAKER_FAILURE_THRESHOLD: int = 4
     CIRCUIT_BREAKER_RECOVERY_SECONDS: int = 15
+
+    # Proxy residencial peruano selectivo opcional (por defecto desactivado; DIRECT en todas las tiendas)
+    PERU_PROXY_URL: Optional[str] = None
+    PERU_PROXY_STORES: str = "ripley,efe,curacao"
+
+    @field_validator("PERU_PROXY_URL", mode="before")
+    @classmethod
+    def parse_peru_proxy_url(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return None
+        cleaned = str(v).strip()
+        return cleaned if cleaned else None
+
+    @field_validator("PERU_PROXY_STORES", mode="before")
+    @classmethod
+    def parse_peru_proxy_stores(cls, v: Union[str, List[str], None]) -> str:
+        if v is None:
+            return "ripley,efe,curacao"
+        if isinstance(v, list):
+            return ",".join(str(item).strip().lower() for item in v if str(item).strip())
+        return str(v).strip()
 
     @field_validator("ENABLE_INTERNAL_SCHEDULER", mode="before")
     @classmethod

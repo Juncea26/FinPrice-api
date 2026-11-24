@@ -14,13 +14,20 @@ import argparse
 import asyncio
 import signal
 import sys
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
 from app.collectors.catalog_urls import STORES_INFO
 from app.collectors.graph.smart_multi_graph import ALL_8_PERU_STORES
+from app.collectors.http_client import (
+    close_shared_client,
+    get_configured_proxy_stores,
+    log_proxy_status_once,
+    mask_proxy_url,
+    probe_store_connection,
+)
 from app.collectors.orchestrator import (
     SCHEDULE_WINDOWS_LABELS,
     calculate_seconds_until_next_window,
@@ -111,6 +118,14 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help=(
             "Solo lectura contra Neon/DB (sin scrapear ni escribir): imprime una tabla compacta "
             "ordenada de menor a mayor cobertura mostrando precios activos y tiendas oficiales faltantes."
+        ),
+    )
+    parser.add_argument(
+        "--check-proxy",
+        action="store_true",
+        help=(
+            "Solo lectura HTTP (sin tocar Neon): realiza 1 petición ligera a ripley, efe, curacao "
+            "y falabella mostrando si usó PERU_PROXY_URL (enmascarado) o DIRECT y el código HTTP."
         ),
     )
     return parser
@@ -256,6 +271,42 @@ async def run_coverage_audit(only_stores: Optional[Sequence[str]] = None) -> Lis
     return rows
 
 
+PROXY_CHECK_TARGETS: Tuple[Tuple[str, str], ...] = (
+    ("ripley", "https://simple.ripley.com.pe/"),
+    ("efe", "https://www.efe.com.pe/"),
+    ("curacao", "https://www.lacuracao.pe/"),
+    ("falabella", "https://www.falabella.com.pe/falabella-pe"),
+)
+
+
+async def run_proxy_check() -> List[Dict[str, Any]]:
+    """
+    Realiza una comprobación ligera en vivo (solo lectura HTTP, sin tocar Neon)
+    sobre ripley, efe, curacao y falabella mostrando ruta (proxy enmascarado vs DIRECT) y HTTP status.
+    """
+    log_proxy_status_once()
+    masked_proxy = mask_proxy_url(settings.PERU_PROXY_URL)
+    proxy_stores = ",".join(get_configured_proxy_stores()) or "ninguna"
+    print(f"=== VERIFICACIÓN DE PROXY SELECTIVO (PERU_PROXY_URL={masked_proxy} | tiendas={proxy_stores}) ===")
+
+    results: List[Dict[str, Any]] = []
+    try:
+        for store_id, url in PROXY_CHECK_TARGETS:
+            res = await probe_store_connection(store_id=store_id, url=url)
+            results.append(res)
+            http_label = str(res["status_code"]) if res["status_code"] is not None else "ERR"
+            mode_label = f"PROXY ({res['route']})" if res["used_proxy"] else "DIRECT"
+            err_suffix = f" | err={res['error']}" if res.get("error") else ""
+            print(
+                f"  - {store_id:<10} | {mode_label:<36} | HTTP {http_label:<4} | "
+                f"{res['elapsed_ms']:>7.1f} ms | {url}{err_suffix}"
+            )
+    finally:
+        await close_shared_client()
+
+    return results
+
+
 def _install_signal_handlers(stop_event: asyncio.Event) -> None:
     """Registra manejadores limpios para SIGINT/SIGTERM en modo daemon."""
     loop = asyncio.get_running_loop()
@@ -285,14 +336,20 @@ async def run_worker_async(
     once: bool = False,
     only_stores: Optional[List[str]] = None,
     audit: bool = False,
+    check_proxy: bool = False,
 ) -> int:
-    """Ciclo principal asíncrono del worker independiente (modo `--audit`, `--once` o daemon)."""
+    """Ciclo principal asíncrono del worker independiente (modo `--check-proxy`, `--audit`, `--once` o daemon)."""
     target_stores = only_stores if only_stores is not None else list(ALL_8_PERU_STORES)
+    if check_proxy:
+        await run_proxy_check()
+        return 0
+
     try:
         if audit:
             await run_coverage_audit(only_stores=only_stores)
             return 0
 
+        log_proxy_status_once()
         await bootstrap_worker_db()
 
         if once:
@@ -368,6 +425,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             once=bool(args.once),
             only_stores=args.stores,
             audit=bool(args.audit),
+            check_proxy=bool(args.check_proxy),
         )
     )
 

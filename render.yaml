@@ -31,6 +31,11 @@ services:
       # - "false": apaga el scraping interno del web service una vez verificado el worker/cron externo.
       - key: ENABLE_INTERNAL_SCHEDULER
         value: "true"
+      # Proxy residencial peruano selectivo opcional (solo para ripley, efe y curacao; sin secreto en git)
+      - key: PERU_PROXY_URL
+        sync: false
+      - key: PERU_PROXY_STORES
+        value: "ripley,efe,curacao"
 
 # ==============================================================================
 # SEPARACIÓN DEL SCRAPING EN WORKER / CRON EXTERNO (LISTO PARA ACTIVAR)
@@ -65,6 +70,10 @@ services:
 #         value: "2"
 #       - key: MALLOC_TRIM_THRESHOLD_
 #         value: "65536"
+#       - key: PERU_PROXY_URL
+#         sync: false
+#       - key: PERU_PROXY_STORES
+#         value: "ripley,efe,curacao"
 #
 # --- Opción B: Render Background Worker continuo (modo daemon 24/7) ---
 #   - type: worker
@@ -84,3 +93,7 @@ services:
 #         value: "2"
 #       - key: MALLOC_TRIM_THRESHOLD_
 #         value: "65536"
+#       - key: PERU_PROXY_URL
+#         sync: false
+#       - key: PERU_PROXY_STORES
+#         value: "ripley,efe,curacao"

@@ -3661,6 +3661,176 @@ def test_validate_product_identity_empty_title_persisted_urls_no_false_purge():
     ) is False
 
 
+def test_mask_proxy_url_and_secret_sanitization(monkeypatch):
+    """
+    Verifica que `mask_proxy_url` y `sanitize_proxy_secrets` oculten usuario y contraseña
+    en esquemas http://, https:// y socks5:// (incluyendo contraseñas con '@'), sin filtrar secretos.
+    """
+    from app.collectors.http_client import (
+        _sanitize_exception,
+        mask_proxy_url,
+        sanitize_proxy_secrets,
+    )
+    from app.core.config import settings
+
+    assert mask_proxy_url(None) == "DIRECT"
+    assert mask_proxy_url("") == "DIRECT"
+    assert mask_proxy_url("   ") == "DIRECT"
+    assert mask_proxy_url("http://user1:pass1@gw.peru.proxy:8080") == "http://***@gw.peru.proxy:8080"
+    assert mask_proxy_url("https://proxyuser:p@ss:word@190.12.34.56:8443/") == "https://***@190.12.34.56:8443"
+    assert mask_proxy_url("socks5://usr:pwd@res.pe:1080") == "socks5://***@res.pe:1080"
+    assert mask_proxy_url("http://190.12.34.56:3128") == "http://190.12.34.56:3128"
+
+    secret_proxy = "socks5://peru_user_99:UltraSecretPass!@res-gw.pe:1080"
+    monkeypatch.setattr(settings, "PERU_PROXY_URL", secret_proxy)
+
+    raw_err = RuntimeError(f"Proxy handshake failed via {secret_proxy} with creds peru_user_99:UltraSecretPass!")
+    sanitized_msg = sanitize_proxy_secrets(raw_err, proxy_url=secret_proxy)
+    assert "peru_user_99" not in sanitized_msg
+    assert "UltraSecretPass!" not in sanitized_msg
+    assert "socks5://***@res-gw.pe:1080" in sanitized_msg
+
+    sanitized_exc = _sanitize_exception(raw_err, proxy_url=secret_proxy)
+    assert "peru_user_99" not in str(sanitized_exc)
+    assert "UltraSecretPass!" not in str(sanitized_exc)
+
+
+def test_resolve_proxy_for_url_selective_routing(monkeypatch):
+    """
+    Verifica el enrutamiento selectivo por hostname de `resolve_proxy_for_url`:
+    - Activo: devuelve PERU_PROXY_URL solo para `ripley`, `efe` y `curacao`.
+    - Devuelve `None` para las otras 5 tiendas (`falabella`, `tottus`, `hiraoka`, `metro`, `wong`) y dominios ajenos.
+    - Si `PERU_PROXY_URL` es None o vacía, devuelve `None` para todas las tiendas.
+    """
+    from app.collectors.http_client import resolve_proxy_for_url
+    from app.core.config import settings
+
+    proxy_url = "http://peru_user:secret_pw@proxy.lima.pe:8000"
+    monkeypatch.setattr(settings, "PERU_PROXY_URL", proxy_url)
+    monkeypatch.setattr(settings, "PERU_PROXY_STORES", "ripley,efe,curacao")
+
+    for proxied_url in (
+        "https://simple.ripley.com.pe/celular-samsung-galaxy-s26-ultra-12-gb-ram-512gb-2065370289125",
+        "https://ripley.com.pe/",
+        "https://www.efe.com.pe/ipad-wifi-128gb-slv-cla-md3y4cl-a.html",
+        "https://efe.com.pe/",
+        "https://www.lacuracao.pe/ipad-wifi-128gb-slv-cla-md3y4cl-a.html",
+        "https://lacuracao.pe/",
+    ):
+        assert resolve_proxy_for_url(proxied_url) == proxy_url
+
+    for direct_url in (
+        "https://www.falabella.com.pe/falabella-pe/product/21398141/s26/21398141",
+        "https://www.tottus.com.pe/tottus-pe/articulo/150930380/ipad/150930381",
+        "https://hiraoka.com.pe/iphone-16-6-1-128gb-negro",
+        "https://www.metro.pe/televisor-lg-oled-55-oled55b6psa-1067136/p",
+        "https://www.wong.pe/televisor-samsung-55-uhd-u8000h-vision-ai-smart-tv-2026-1067747/p",
+        "https://evilripley.com.pe/phishing",
+        "https://example.com/",
+    ):
+        assert resolve_proxy_for_url(direct_url) is None
+
+    for empty_val in (None, "", "   "):
+        monkeypatch.setattr(settings, "PERU_PROXY_URL", empty_val)
+        assert resolve_proxy_for_url("https://simple.ripley.com.pe/") is None
+        assert resolve_proxy_for_url("https://www.efe.com.pe/") is None
+        assert resolve_proxy_for_url("https://www.lacuracao.pe/") is None
+        assert resolve_proxy_for_url("https://www.falabella.com.pe/") is None
+
+
+@pytest.mark.asyncio
+async def test_http_client_proxy_injection_and_secret_scrubbing(monkeypatch):
+    """
+    Verifica la inyección real de proxy en `_request_via_curl_cffi` y `_build_httpx_client`,
+    así como la sanitización de secretos ante excepciones de transporte.
+    """
+    from app.collectors import http_client as hc
+    from app.core.config import settings
+
+    proxy_url = "http://user_abc:pass_xyz@proxy.lima.pe:8080"
+    monkeypatch.setattr(settings, "PERU_PROXY_URL", proxy_url)
+    monkeypatch.setattr(settings, "PERU_PROXY_STORES", "ripley,efe,curacao")
+    monkeypatch.setattr(hc, "_logged_proxy_state", None)
+
+    recorded_calls = []
+
+    class FakeResp:
+        def __init__(self, status_code=200, text="<html>ok</html>"):
+            self.status_code = status_code
+            self.text = text
+
+    class FakeCurlSession:
+        _closed = False
+
+        async def get(self, url, **kwargs):
+            recorded_calls.append((url, dict(kwargs)))
+            if "error-test" in url:
+                raise RuntimeError(f"Curl connect failed to {proxy_url}")
+            return FakeResp(200, "<html>ok</html>")
+
+    monkeypatch.setattr(hc, "get_shared_curl_session", lambda: FakeCurlSession())
+
+    st1, txt1, err1 = await hc._request_via_curl_cffi("https://simple.ripley.com.pe/test", "chrome124")
+    assert st1 == 200 and txt1 == "<html>ok</html>" and err1 is None
+    assert recorded_calls[-1][1].get("proxy") == proxy_url
+
+    st2, txt2, err2 = await hc._request_via_curl_cffi("https://www.falabella.com.pe/test", "chrome124")
+    assert st2 == 200 and txt2 == "<html>ok</html>" and err2 is None
+    assert "proxy" not in recorded_calls[-1][1]
+
+    st3, txt3, err3 = await hc._request_via_curl_cffi("https://www.efe.com.pe/error-test", "chrome124")
+    assert st3 is None and txt3 is None and err3 is not None
+    assert "user_abc" not in str(err3) and "pass_xyz" not in str(err3)
+    assert "http://***@proxy.lima.pe:8080" in str(err3)
+
+    # Verificar creación de httpx.AsyncClient con esquema http://, https:// y socks5h:// -> socks5://
+    assert hc._normalize_httpx_proxy_url("socks5h://u:p@1.2.3.4:1080") == "socks5://u:p@1.2.3.4:1080"
+    hx_client = hc._build_httpx_client(http2=False, proxy="https://u:p@1.2.3.4:8443")
+    await hx_client.aclose()
+
+
+def test_worker_cli_check_proxy_mode(monkeypatch, capsys):
+    """
+    Verifica que `python -m app.worker --check-proxy` ejecute en modo solo lectura sin tocar Neon,
+    muestre el proxy enmascarado para ripley/efe/curacao, `DIRECT` para falabella y código HTTP.
+    """
+    from app import worker as worker_mod
+    from app.collectors import http_client as hc
+    from app.core.config import settings
+
+    proxy_secret = "socks5://myuser99:SuperSecretPw99@190.10.20.30:1080"
+    monkeypatch.setattr(settings, "PERU_PROXY_URL", proxy_secret)
+    monkeypatch.setattr(settings, "PERU_PROXY_STORES", "ripley,efe,curacao")
+    monkeypatch.setattr(hc, "_logged_proxy_state", None)
+
+    async def fake_resilient_attempt(url, store_id, attempt, base_idx, client):
+        status_map = {
+            "ripley": 200,
+            "efe": 200,
+            "curacao": 403,
+            "falabella": 200,
+        }
+        return (status_map.get(store_id, 200), "ok", None)
+
+    monkeypatch.setattr(hc, "_execute_resilient_attempt", fake_resilient_attempt)
+    monkeypatch.setattr(
+        worker_mod,
+        "bootstrap_worker_db",
+        lambda: (_ for _ in ()).throw(AssertionError("--check-proxy no debe tocar Neon/BD")),
+    )
+
+    exit_code = worker_mod.main(["--check-proxy"])
+    out = capsys.readouterr().out
+    assert exit_code == 0
+    assert "socks5://***@190.10.20.30:1080" in out
+    assert "DIRECT" in out
+    assert "HTTP 200" in out
+    assert "HTTP 403" in out
+    assert "myuser99" not in out
+    assert "SuperSecretPw99" not in out
+
+
+
 
 
 

@@ -6,7 +6,10 @@ Reutiliza sesiones compartidas por event loop para mantener la RAM bajo control 
 """
 import asyncio
 import random
+import re
+import time
 from typing import Any, Dict, Optional, Tuple
+from urllib.parse import unquote, urlparse
 
 import httpx
 
@@ -21,6 +24,12 @@ try:
     HAS_HTTP2 = True
 except ImportError:
     HAS_HTTP2 = False
+
+try:
+    import socksio  # noqa: F401
+    HAS_SOCKSIO = True
+except ImportError:
+    HAS_SOCKSIO = False
 
 try:
     from curl_cffi import CurlError, CurlHttpVersion  # type: ignore[attr-defined]
@@ -77,9 +86,150 @@ _HTTP1_FALLBACK_STORES = {"efe", "curacao"}
 _loop_semaphores: Dict[int, asyncio.Semaphore] = {}
 _shared_clients: Dict[int, httpx.AsyncClient] = {}
 _shared_http1_clients: Dict[int, httpx.AsyncClient] = {}
+_shared_proxy_clients: Dict[Tuple[int, str, bool], httpx.AsyncClient] = {}
 _shared_curl_sessions: Dict[int, Any] = {}
 _profile_counter: int = 0
+_logged_proxy_state: Optional[Tuple[str, Tuple[str, ...]]] = None
 LAST_FETCH_STATUS: Dict[str, str] = {}
+
+_STORE_PROXY_BASE_DOMAINS: Tuple[Tuple[str, str], ...] = (
+    ("ripley", "ripley.com.pe"),
+    ("efe", "efe.com.pe"),
+    ("curacao", "lacuracao.pe"),
+    ("falabella", "falabella.com.pe"),
+    ("tottus", "tottus.com.pe"),
+    ("hiraoka", "hiraoka.com.pe"),
+    ("metro", "metro.pe"),
+    ("wong", "wong.pe"),
+)
+
+
+def mask_proxy_url(proxy_url: Optional[str]) -> str:
+    """
+    Enmascara credenciales de un proxy URL (`scheme://***@host:port`) para logging seguro.
+    Si no hay proxy configurado, devuelve `'DIRECT'`.
+    """
+    raw = str(proxy_url or "").strip()
+    if not raw:
+        return "DIRECT"
+
+    if "://" in raw:
+        scheme, rest = raw.split("://", 1)
+    else:
+        scheme, rest = "http", raw
+
+    authority = rest.split("/", 1)[0]
+    if "@" in authority:
+        _, host_port = authority.rsplit("@", 1)
+        return f"{scheme.lower()}://***@{host_port}"
+    return f"{scheme.lower()}://{authority}"
+
+
+def sanitize_proxy_secrets(text: Any, proxy_url: Optional[str] = None) -> str:
+    """Elimina cualquier usuario/contraseña de proxy en mensajes de log o excepciones."""
+    out = str(text or "")
+    if not out:
+        return ""
+
+    candidates = []
+    for cand in (proxy_url, getattr(settings, "PERU_PROXY_URL", None)):
+        c_str = str(cand or "").strip()
+        if c_str and c_str not in candidates:
+            candidates.append(c_str)
+
+    for raw_p in candidates:
+        masked = mask_proxy_url(raw_p)
+        if raw_p in out:
+            out = out.replace(raw_p, masked)
+        rest = raw_p.split("://", 1)[1] if "://" in raw_p else raw_p
+        authority = rest.split("/", 1)[0]
+        if "@" in authority:
+            creds_part = authority.rsplit("@", 1)[0]
+            if creds_part and len(creds_part) >= 2:
+                out = out.replace(creds_part, "***")
+                decoded_creds = unquote(creds_part)
+                if decoded_creds and decoded_creds != creds_part:
+                    out = out.replace(decoded_creds, "***")
+
+    out = re.sub(r"([a-zA-Z][a-zA-Z0-9+.-]*://)[^\s/]+@", r"\1***@", out)
+    return out
+
+
+def _sanitize_exception(err: Exception, proxy_url: Optional[str] = None) -> Exception:
+    """Retorna una excepción con credenciales de proxy enmascaradas, preservando CurlError cuando aplica."""
+    raw_msg = str(err)
+    clean_msg = sanitize_proxy_secrets(raw_msg, proxy_url=proxy_url)
+    if clean_msg == raw_msg:
+        return err
+    if HAS_CURL_CFFI and isinstance(err, CurlError):
+        try:
+            return CurlError(clean_msg)
+        except Exception:
+            pass
+    return RuntimeError(clean_msg)
+
+
+def get_configured_proxy_stores() -> Tuple[str, ...]:
+    """Devuelve la tupla ordenada de tiendas habilitadas para usar `PERU_PROXY_URL`."""
+    raw = str(getattr(settings, "PERU_PROXY_STORES", "") or "")
+    stores = []
+    for item in raw.split(","):
+        cleaned = item.strip().lower()
+        if cleaned and cleaned not in stores:
+            stores.append(cleaned)
+    return tuple(stores)
+
+
+def _match_store_id_strict(url: str) -> str:
+    """Identifica el store_id únicamente cuando el hostname coincide exactamente o como subdominio real."""
+    try:
+        host = (urlparse(str(url or "")).hostname or "").lower().strip()
+    except Exception:
+        return "unknown"
+    if not host:
+        return "unknown"
+    for store_id, base_domain in _STORE_PROXY_BASE_DOMAINS:
+        if host == base_domain or host.endswith(f".{base_domain}"):
+            return store_id
+    return "unknown"
+
+
+def resolve_proxy_for_url(url: str) -> Optional[str]:
+    """
+    Devuelve `PERU_PROXY_URL` solo cuando está configurada y el hostname de `url`
+    pertenece a una de las tiendas configuradas en `PERU_PROXY_STORES` (por defecto `ripley,efe,curacao`).
+    Para `falabella`, `tottus`, `hiraoka`, `metro`, `wong` o cualquier otro host devuelve `None`.
+    """
+    raw_proxy = str(getattr(settings, "PERU_PROXY_URL", None) or "").strip()
+    if not raw_proxy:
+        return None
+    allowed_stores = set(get_configured_proxy_stores())
+    if not allowed_stores:
+        return None
+    store_id = _match_store_id_strict(url)
+    if store_id in allowed_stores:
+        return raw_proxy
+    return None
+
+
+def log_proxy_status_once() -> None:
+    """Registra una única vez si el proxy selectivo peruano está activo (con URL enmascarada) o desactivado."""
+    global _logged_proxy_state
+    raw_proxy = str(getattr(settings, "PERU_PROXY_URL", None) or "").strip()
+    masked = mask_proxy_url(raw_proxy)
+    stores = get_configured_proxy_stores()
+    state_key = (masked, stores)
+    if _logged_proxy_state == state_key:
+        return
+    _logged_proxy_state = state_key
+    if raw_proxy:
+        logger.info(
+            f"[PROXY SELECTIVO ACTIVO] proxy={masked} | tiendas={','.join(stores) or 'ninguna'} | resto_tiendas=DIRECT"
+        )
+    else:
+        logger.info(
+            "[PROXY SELECTIVO DESACTIVADO] PERU_PROXY_URL no configurada; conexión directa en todas las tiendas."
+        )
 
 
 def _mark_fetch_status(url: str, status: str) -> None:
@@ -112,23 +262,34 @@ def _get_collector_semaphore() -> asyncio.Semaphore:
     return sem
 
 
-def _build_httpx_client(http2: bool) -> httpx.AsyncClient:
+def _normalize_httpx_proxy_url(proxy_url: str) -> str:
+    raw = str(proxy_url).strip()
+    if raw.lower().startswith("socks5h://"):
+        return "socks5://" + raw[len("socks5h://") :]
+    return raw
+
+
+def _build_httpx_client(http2: bool, proxy: Optional[str] = None) -> httpx.AsyncClient:
     limits = httpx.Limits(max_keepalive_connections=5, max_connections=10)
     timeout = httpx.Timeout(
         timeout=15.0,
         connect=settings.COLLECTOR_TIMEOUT_CONNECT,
         read=settings.COLLECTOR_TIMEOUT_READ,
     )
-    return httpx.AsyncClient(
-        timeout=timeout,
-        limits=limits,
-        http2=http2,
-        follow_redirects=True,
-    )
+    kwargs: Dict[str, Any] = {
+        "timeout": timeout,
+        "limits": limits,
+        "http2": http2,
+        "follow_redirects": True,
+    }
+    if proxy:
+        kwargs["proxy"] = _normalize_httpx_proxy_url(proxy)
+    return httpx.AsyncClient(**kwargs)
 
 
 def get_shared_client() -> httpx.AsyncClient:
     """Retorna la instancia única compartida de httpx.AsyncClient para el event loop actual."""
+    log_proxy_status_once()
     loop = asyncio.get_running_loop()
     loop_id = id(loop)
     client = _shared_clients.get(loop_id)
@@ -140,6 +301,7 @@ def get_shared_client() -> httpx.AsyncClient:
 
 def get_shared_http1_client() -> httpx.AsyncClient:
     """Retorna el cliente httpx.AsyncClient compartido forzado a HTTP/1.1 (http2=False)."""
+    log_proxy_status_once()
     loop = asyncio.get_running_loop()
     loop_id = id(loop)
     client = _shared_http1_clients.get(loop_id)
@@ -149,8 +311,21 @@ def get_shared_http1_client() -> httpx.AsyncClient:
     return client
 
 
+def get_shared_proxy_client(proxy_url: str, http2: bool = False) -> httpx.AsyncClient:
+    """Retorna el cliente httpx.AsyncClient compartido asociado a `proxy_url` y el event loop actual."""
+    log_proxy_status_once()
+    loop = asyncio.get_running_loop()
+    key = (id(loop), str(proxy_url), bool(http2))
+    client = _shared_proxy_clients.get(key)
+    if client is None or client.is_closed:
+        client = _build_httpx_client(http2=http2, proxy=proxy_url)
+        _shared_proxy_clients[key] = client
+    return client
+
+
 def get_shared_curl_session() -> Any:
     """Retorna la sesión compartida de curl_cffi.requests.AsyncSession para el event loop actual."""
+    log_proxy_status_once()
     if not HAS_CURL_CFFI or CurlAsyncSession is None:
         raise RuntimeError("curl_cffi no está disponible en el entorno actual.")
     loop = asyncio.get_running_loop()
@@ -174,6 +349,11 @@ async def close_shared_client() -> None:
         client = pool.pop(loop_id, None)
         if client and not client.is_closed:
             await client.aclose()
+    proxy_keys = [k for k in list(_shared_proxy_clients.keys()) if k[0] == loop_id]
+    for p_key in proxy_keys:
+        p_client = _shared_proxy_clients.pop(p_key, None)
+        if p_client and not p_client.is_closed:
+            await p_client.aclose()
     curl_session = _shared_curl_sessions.pop(loop_id, None)
     if curl_session and not getattr(curl_session, "_closed", False):
         await curl_session.close()
@@ -213,10 +393,12 @@ async def _request_via_curl_cffi(
     url: str,
     profile: str,
     force_http1: bool = False,
+    proxy_url: Optional[str] = None,
 ) -> Tuple[Optional[int], Optional[str], Optional[Exception]]:
-    """Ejecuta un GET con curl_cffi imitando huella TLS/JA3 de Chrome."""
+    """Ejecuta un GET con curl_cffi imitando huella TLS/JA3 de Chrome y usando proxy selectivo si aplica."""
     if not HAS_CURL_CFFI:
         return (None, None, RuntimeError("curl_cffi no disponible"))
+    eff_proxy = proxy_url if proxy_url is not None else resolve_proxy_for_url(url)
     try:
         session = get_shared_curl_session()
         kwargs: Dict[str, Any] = {
@@ -225,13 +407,15 @@ async def _request_via_curl_cffi(
         }
         if force_http1:
             kwargs["http_version"] = CURL_HTTP_V1_1
+        if eff_proxy:
+            kwargs["proxy"] = eff_proxy
         response = await session.get(url, **kwargs)
         status_code = int(response.status_code)
         text = response.text if status_code in {200, 206} else None
         del response
         return (status_code, text, None)
     except Exception as err:
-        return (None, None, err)
+        return (None, None, _sanitize_exception(err, proxy_url=eff_proxy))
 
 
 async def _request_via_httpx(
@@ -239,21 +423,43 @@ async def _request_via_httpx(
     headers: Dict[str, str],
     client: Optional[httpx.AsyncClient] = None,
     force_http1: bool = False,
+    proxy_url: Optional[str] = None,
 ) -> Tuple[Optional[int], Optional[str], Optional[Exception]]:
-    """Ejecuta un GET usando httpx (HTTP/2 compartido, HTTP/1.1 compartido o cliente inyectado)."""
+    """Ejecuta un GET usando httpx (HTTP/2 o HTTP/1.1, directo o con proxy selectivo)."""
+    eff_proxy = proxy_url if proxy_url is not None else resolve_proxy_for_url(url)
     try:
-        effective_client = (
-            client
-            if client is not None
-            else (get_shared_http1_client() if force_http1 else get_shared_client())
-        )
+        if client is not None:
+            effective_client = client
+        elif eff_proxy:
+            if eff_proxy.lower().startswith("socks5") and not HAS_SOCKSIO:
+                if HAS_CURL_CFFI:
+                    profile = CHROME_IMPERSONATE_PROFILES[0]
+                    return await _request_via_curl_cffi(
+                        url=url,
+                        profile=profile,
+                        force_http1=force_http1,
+                        proxy_url=eff_proxy,
+                    )
+                return (
+                    None,
+                    None,
+                    RuntimeError("Proxy SOCKS5 en httpx requiere `socksio` o `curl_cffi`."),
+                )
+            effective_client = get_shared_proxy_client(
+                eff_proxy,
+                http2=(HAS_HTTP2 and not force_http1),
+            )
+        else:
+            effective_client = (
+                get_shared_http1_client() if force_http1 else get_shared_client()
+            )
         response = await effective_client.get(url, headers=headers)
         status_code = int(response.status_code)
         text = response.text if status_code in {200, 206} else None
         del response
         return (status_code, text, None)
     except Exception as err:
-        return (None, None, err)
+        return (None, None, _sanitize_exception(err, proxy_url=eff_proxy))
 
 
 async def _execute_resilient_attempt(
@@ -289,7 +495,7 @@ async def _execute_resilient_attempt(
             if err is None or isinstance(err, CurlError):
                 logger.info(
                     f"Fallback HTTP/1.1 con curl_cffi ({alt_profile}) para {url} "
-                    f"(previo: status={status}, err={err})"
+                    f"(previo: status={status}, err={sanitize_proxy_secrets(err)})"
                 )
                 s2, t2, e2 = await _request_via_curl_cffi(
                     url, profile=alt_profile, force_http1=True
@@ -306,7 +512,8 @@ async def _execute_resilient_attempt(
             # Respaldo secundario con httpx forzando HTTP/1.1 si curl_cffi falló o devolvió 426/403
             if status in {426, 403} or err is not None:
                 logger.info(
-                    f"Respaldo secundario httpx HTTP/1.1 para {url} (previo: status={status}, err={err})"
+                    f"Respaldo secundario httpx HTTP/1.1 para {url} "
+                    f"(previo: status={status}, err={sanitize_proxy_secrets(err)})"
                 )
                 s3, t3, e3 = await _request_via_httpx(
                     url,
@@ -390,6 +597,7 @@ async def fetch_page(
     Ejecuta una petición GET asíncrona segura con semáforo limitado a 2 tiendas,
     usando curl_cffi (Chrome TLS/JA3) para Ripley/Efe/Curacao y fallback HTTP/1.1 + httpx.
     """
+    log_proxy_status_once()
     store_id, _ = canonicalize_store_url(url)
     base_idx = _next_profile_index()
 
@@ -425,9 +633,10 @@ async def fetch_page(
 
             if status_code in {429, 500, 502, 503, 504} or (err is not None and status_code is None):
                 _mark_fetch_status(url, "transient_error")
+                clean_err = sanitize_proxy_secrets(err)
                 if attempt < max_retries:
                     backoff = (2 ** attempt) + random.uniform(0.2, 0.7)
-                    detail = f"HTTP {status_code}" if status_code else f"Fallo de conexión: {err}"
+                    detail = f"HTTP {status_code}" if status_code else f"Fallo de conexión: {clean_err}"
                     logger.warning(
                         f"{detail} al solicitar {url}. Reintentando en {backoff:.2f}s..."
                     )
@@ -435,7 +644,7 @@ async def fetch_page(
                     continue
                 logger.warning(
                     f"Error temporal tras {max_retries} reintentos en {url} "
-                    f"(status={status_code}, err={err}). Se retendrá la última oferta válida."
+                    f"(status={status_code}, err={clean_err}). Se retendrá la última oferta válida."
                 )
                 return None
 
@@ -447,3 +656,32 @@ async def fetch_page(
             return None
 
     return None
+
+
+async def probe_store_connection(store_id: str, url: str) -> Dict[str, Any]:
+    """
+    Ejecuta una petición ligera de diagnóstico contra `url` para `--check-proxy`,
+    reportando la ruta usada (proxy enmascarado o `DIRECT`), código HTTP y latencia.
+    """
+    log_proxy_status_once()
+    proxy_url = resolve_proxy_for_url(url)
+    route = mask_proxy_url(proxy_url)
+    t0 = time.perf_counter()
+    status_code, _text, err = await _execute_resilient_attempt(
+        url=url,
+        store_id=store_id,
+        attempt=0,
+        base_idx=_next_profile_index(),
+        client=None,
+    )
+    elapsed_ms = round((time.perf_counter() - t0) * 1000.0, 1)
+    clean_err = sanitize_proxy_secrets(err, proxy_url=proxy_url) if err else None
+    return {
+        "store_id": store_id,
+        "url": url,
+        "used_proxy": bool(proxy_url),
+        "route": route,
+        "status_code": status_code,
+        "elapsed_ms": elapsed_ms,
+        "error": clean_err,
+    }
