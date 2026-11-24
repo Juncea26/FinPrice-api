@@ -20,6 +20,8 @@ from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
 from app.collectors.catalog_urls import STORES_INFO
+from app.collectors.category_crawler import CategoryCrawlSummary, crawl_categories
+from app.collectors.category_registry import CATEGORY_REGISTRY, list_registered_categories
 from app.collectors.graph.smart_multi_graph import ALL_8_PERU_STORES
 from app.collectors.http_client import (
     close_shared_client,
@@ -84,9 +86,55 @@ def parse_stores_arg(raw_stores: Optional[str]) -> Optional[List[str]]:
     return parsed
 
 
+def parse_categories_arg(raw_categories: Optional[str]) -> Optional[List[str]]:
+    """Valida y normaliza la lista separada por comas de categorías en `--categories`."""
+    if raw_categories is None:
+        return None
+
+    parsed: List[str] = []
+    invalid: List[str] = []
+    seen = set()
+
+    for token in raw_categories.split(","):
+        cat_slug = token.strip().lower()
+        if not cat_slug:
+            continue
+        if cat_slug not in CATEGORY_REGISTRY:
+            invalid.append(cat_slug)
+            continue
+        if cat_slug not in seen:
+            seen.add(cat_slug)
+            parsed.append(cat_slug)
+
+    valid_list = ", ".join(list_registered_categories())
+    if invalid:
+        raise argparse.ArgumentTypeError(
+            f"Categoría(s) inválida(s): {', '.join(invalid)}. Categorías válidas: {valid_list}"
+        )
+
+    if not parsed:
+        raise argparse.ArgumentTypeError(
+            f"Debe indicar al menos una categoría válida en --categories. Opciones: {valid_list}"
+        )
+
+    return parsed
+
+
+def parse_max_pages_arg(raw_val: str) -> int:
+    """Valida que `--max-pages` sea un entero positivo >= 1."""
+    try:
+        val = int(raw_val)
+    except (TypeError, ValueError) as exc:
+        raise argparse.ArgumentTypeError(f"--max-pages inválido: {raw_val!r}") from exc
+    if val < 1:
+        raise argparse.ArgumentTypeError("--max-pages debe ser >= 1.")
+    return val
+
+
 def build_arg_parser() -> argparse.ArgumentParser:
     """Construye el parser CLI para el worker independiente de FinPrice."""
     valid_stores_text = ", ".join(ALL_8_PERU_STORES)
+    valid_categories_text = ", ".join(list_registered_categories())
     parser = argparse.ArgumentParser(
         prog="python -m app.worker",
         description=(
@@ -127,6 +175,36 @@ def build_arg_parser() -> argparse.ArgumentParser:
             "Solo lectura HTTP (sin tocar Neon): realiza 1 petición ligera a ripley, efe, curacao "
             "y falabella mostrando si usó PERU_PROXY_URL (enmascarado) o DIRECT y el código HTTP."
         ),
+    )
+    parser.add_argument(
+        "--discover-categories",
+        action="store_true",
+        help=(
+            "Fase 2A: barre listados por categorías tech en las tiendas oficiales 1P "
+            "y realiza upsert idempotente en store_listings (sin modificar products ni store_offers)."
+        ),
+    )
+    parser.add_argument(
+        "--categories",
+        type=parse_categories_arg,
+        default=None,
+        metavar="CATEGORIAS",
+        help=(
+            "Lista opcional separada por comas de categorías tech para --discover-categories "
+            f"(ej. consolas,monitores,celulares). Categorías válidas: {valid_categories_text}."
+        ),
+    )
+    parser.add_argument(
+        "--max-pages",
+        type=parse_max_pages_arg,
+        default=2,
+        metavar="N",
+        help="Número máximo de páginas a barrer por tienda y categoría en --discover-categories (default: 2).",
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Ejecuta --discover-categories en modo lectura sin escribir ni inicializar tablas en Neon/DB.",
     )
     return parser
 
@@ -307,6 +385,95 @@ async def run_proxy_check() -> List[Dict[str, Any]]:
     return results
 
 
+def format_category_discovery_summary(summary: CategoryCrawlSummary) -> str:
+    """Formatea el resumen por tienda, categoría y totales de `--discover-categories`."""
+    mode_tag = "DRY-RUN (sin escritura en BD)" if summary.dry_run else "PERSISTIDO EN store_listings"
+    lines: List[str] = [
+        f"=== DESCUBRIMIENTO DE CATEGORÍAS TECH — FASE 2A ({mode_tag}) ===",
+    ]
+
+    store_w = 12
+    cat_w = 22
+    header = (
+        f"{'Tienda':<{store_w}} | "
+        f"{'Categoría':<{cat_w}} | "
+        f"{'Págs':>4} | "
+        f"{'1P':>5} | "
+        f"{'Nuevos':>6} | "
+        f"{'Actual.':>7} | "
+        f"{'Mkp Desc':>8} | "
+        f"{'Filtro':>6}"
+    )
+    sep = (
+        f"{'-' * store_w}-+-{'-' * cat_w}-+-{'-' * 4}-+-{'-' * 5}-+-"
+        f"{'-' * 6}-+-{'-' * 7}-+-{'-' * 8}-+-{'-' * 6}"
+    )
+    lines.extend([header, sep])
+
+    for st in summary.by_source:
+        lines.append(
+            f"{st.store:<{store_w}} | "
+            f"{st.category:<{cat_w}} | "
+            f"{st.pages_fetched:>4} | "
+            f"{st.extracted_1p:>5} | "
+            f"{st.inserted:>6} | "
+            f"{st.updated:>7} | "
+            f"{st.discarded_marketplace:>8} | "
+            f"{st.discarded_filtered:>6}"
+        )
+
+    lines.append(sep)
+    if summary.by_store:
+        lines.append("Desglose por tienda:")
+        for store_id, m in summary.by_store.items():
+            lines.append(
+                f"  - {store_id:<11}: extraídos_1p={m['extracted_1p']} | "
+                f"nuevos={m['inserted']} | actualizados={m['updated']} | "
+                f"descartados_marketplace={m['discarded_marketplace']}"
+            )
+
+    if summary.by_category:
+        lines.append("Desglose por categoría:")
+        for cat_slug, m in summary.by_category.items():
+            lines.append(
+                f"  - {cat_slug:<21}: extraídos_1p={m['extracted_1p']} | "
+                f"nuevos={m['inserted']} | actualizados={m['updated']} | "
+                f"descartados_marketplace={m['discarded_marketplace']}"
+            )
+
+    persisted_label = (
+        "0 nuevos / 0 actualizados (dry-run)"
+        if summary.dry_run
+        else f"{summary.inserted} nuevos / {summary.updated} actualizados"
+    )
+    lines.append(
+        f"RESUMEN TOTAL: páginas={summary.pages_fetched} | extraídos_1p={summary.extracted_1p} | "
+        f"{persisted_label} | descartados_marketplace={summary.discarded_marketplace} | "
+        f"descartados_filtro={summary.discarded_filtered}"
+    )
+    return "\n".join(lines)
+
+
+async def run_category_discovery(
+    only_stores: Optional[Sequence[str]] = None,
+    only_categories: Optional[Sequence[str]] = None,
+    max_pages: int = 2,
+    dry_run: bool = False,
+) -> CategoryCrawlSummary:
+    """Ejecuta el barrido de categorías tech y muestra el resumen completo por tienda y categoría."""
+    try:
+        summary = await crawl_categories(
+            stores=only_stores,
+            categories=only_categories,
+            max_pages=max_pages,
+            dry_run=dry_run,
+        )
+        print(format_category_discovery_summary(summary))
+        return summary
+    finally:
+        await close_shared_client()
+
+
 def _install_signal_handlers(stop_event: asyncio.Event) -> None:
     """Registra manejadores limpios para SIGINT/SIGTERM en modo daemon."""
     loop = asyncio.get_running_loop()
@@ -337,12 +504,33 @@ async def run_worker_async(
     only_stores: Optional[List[str]] = None,
     audit: bool = False,
     check_proxy: bool = False,
+    discover_categories: bool = False,
+    only_categories: Optional[List[str]] = None,
+    max_pages: int = 2,
+    dry_run: bool = False,
 ) -> int:
-    """Ciclo principal asíncrono del worker independiente (modo `--check-proxy`, `--audit`, `--once` o daemon)."""
+    """Ciclo principal asíncrono del worker independiente (`--check-proxy`, `--audit`, `--discover-categories`, `--once` o daemon)."""
     target_stores = only_stores if only_stores is not None else list(ALL_8_PERU_STORES)
     if check_proxy:
         await run_proxy_check()
         return 0
+
+    if discover_categories:
+        log_proxy_status_once()
+        try:
+            if not dry_run:
+                await init_db()
+            await run_category_discovery(
+                only_stores=only_stores,
+                only_categories=only_categories,
+                max_pages=max_pages,
+                dry_run=dry_run,
+            )
+            return 0
+        finally:
+            if not dry_run:
+                await engine.dispose()
+                await reader_engine.dispose()
 
     try:
         if audit:
@@ -426,6 +614,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             only_stores=args.stores,
             audit=bool(args.audit),
             check_proxy=bool(args.check_proxy),
+            discover_categories=bool(args.discover_categories),
+            only_categories=args.categories,
+            max_pages=int(args.max_pages),
+            dry_run=bool(args.dry_run),
         )
     )
 

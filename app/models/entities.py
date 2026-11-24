@@ -18,6 +18,7 @@ from sqlalchemy import (
     DateTime,
     Float,
     ForeignKey,
+    Index,
     Integer,
     String,
     Text,
@@ -225,3 +226,44 @@ class CancellationSuggestionEntity(Base):
     reason = Column(String(255), nullable=False)
     feedback = Column(Text, nullable=True, default="")
     created_at = Column(DateTime, default=utc_now_naive)
+
+
+class StoreListing(Base):
+    """Listado crudo normalizado de productos 1P descubiertos por categoría en las 8 tiendas."""
+
+    __tablename__ = "store_listings"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    store = Column(String(50), nullable=False, index=True)
+    store_sku = Column(String(120), nullable=False, index=True)
+    category = Column(String(80), nullable=False, index=True)
+    title = Column(String(500), nullable=False)
+    brand = Column(String(120), nullable=False, default="", index=True)
+    price = Column(Float, nullable=False)
+    original_price = Column(Float, nullable=True)
+    currency = Column(String(10), nullable=False, default="PEN")
+    url = Column(String(700), nullable=False, index=True)
+    image_url = Column(String(700), nullable=True)
+    in_stock = Column(Boolean, nullable=False, default=True, index=True)
+    seller_name = Column(String(120), nullable=True)
+    mpn = Column(String(120), nullable=True, index=True)
+    ean = Column(String(32), nullable=True, index=True)
+    normalized_signature = Column(String(500), nullable=False, default="", index=True)
+    canonical_product_id = Column(String(80), nullable=True, index=True)
+    first_seen_at = Column(DateTime, nullable=False, default=utc_now_naive)
+    last_seen_at = Column(
+        DateTime,
+        nullable=False,
+        default=utc_now_naive,
+        onupdate=utc_now_naive,
+        index=True,
+    )
+
+    __table_args__ = (
+        UniqueConstraint("store", "store_sku", name="uq_store_listings_store_sku"),
+        UniqueConstraint("store", "url", name="uq_store_listings_store_url"),
+        Index("ix_store_listings_store_cat", "store", "category"),
+    )
+
+
+StoreListingEntity = StoreListing

@@ -204,6 +204,26 @@ async def _configure_postgres_readonly_role() -> None:
     except Exception as exc:
         logger.info(f"Nota sobre provisión de rol finprice_reader en PostgreSQL: {exc}")
 
+    try:
+        async with writer_engine.begin() as conn:
+            await conn.execute(
+                text(
+                    """
+                    DO $$
+                    BEGIN
+                      IF EXISTS (SELECT FROM pg_catalog.pg_roles WHERE rolname = 'finprice_reader') THEN
+                        GRANT USAGE ON SCHEMA public TO finprice_reader;
+                        GRANT SELECT ON TABLE public.store_listings TO finprice_reader;
+                        GRANT SELECT ON ALL TABLES IN SCHEMA public TO finprice_reader;
+                      END IF;
+                    END
+                    $$;
+                    """
+                )
+            )
+    except Exception as exc:
+        logger.info(f"Nota sobre permisos SELECT de store_listings para finprice_reader: {exc}")
+
 
 async def init_db() -> None:
     """Crea y verifica todas las tablas del sistema y configura el rol de solo lectura en Neon PostgreSQL."""
