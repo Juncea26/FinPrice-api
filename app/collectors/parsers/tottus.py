@@ -3,7 +3,7 @@ Extractor real para Tottus Perú (tottus.com.pe).
 Soporta URLs https://www.tottus.com.pe/tottus-pe/articulo/{productId}/{slug}/{skuId}
 y /tottus-pe/product/..., compartiendo la arquitectura Next.js (#__NEXT_DATA__ + JSON-LD) del grupo Falabella.
 """
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Set
 from bs4 import BeautifulSoup
 import json
 
@@ -13,7 +13,10 @@ from app.collectors.url_utils import canonicalize_store_url
 
 
 def parse_tottus(
-    html: str, offer_url: str, canonical_title: Optional[str] = None
+    html: str,
+    offer_url: str,
+    canonical_title: Optional[str] = None,
+    seen_candidate_urls: Optional[Set[str]] = None,
 ) -> Optional[Dict[str, Any]]:
     """
     Extrae desde #__NEXT_DATA__ y JSON-LD de Tottus el precio CMR/Internet,
@@ -23,7 +26,12 @@ def parse_tottus(
         return None
 
     _, clean_url = canonicalize_store_url(offer_url)
-    res = parse_falabella(html, clean_url or offer_url, canonical_title=canonical_title)
+    res = parse_falabella(
+        html,
+        clean_url or offer_url,
+        canonical_title=canonical_title,
+        seen_candidate_urls=seen_candidate_urls,
+    )
     if not res:
         return None
 

@@ -12,7 +12,7 @@ Consolida las ofertas extraídas de las 8 tiendas aplicando:
 4. Filtro Estadístico de Cordura de Precios y Anti-Outliers (0.55 <= price / median <= 1.65).
 5. Actualización de la caché persistente de URLs verificadas (register_verified_store_url).
 """
-from typing import Dict, List
+from typing import Dict, List, Set
 
 from app.core.logging import get_logger
 from app.collectors.catalog_urls import register_verified_store_url
@@ -82,9 +82,20 @@ class MergeAnswersNode(BaseGraphNode):
     async def execute(self, state: GraphState) -> GraphState:
         target = state.target
         best_by_store: Dict[str, ExtractedOfferSchema] = {}
+        seen_offer_urls: Set[str] = set()
 
-        # 1. Filtrar por Corpus Completo e Identidad y deduplicar por tienda (quedándose con el menor precio válido)
-        for offer in state.extracted_offers:
+        # 1. Deduplicar ofertas por URL normalizada dentro del ciclo, filtrar por Corpus Completo e Identidad y quedarse con el menor precio por tienda
+        ordered_offers = sorted(
+            state.extracted_offers,
+            key=lambda off: (-len(off.tech_specs or {}), float(off.price or 0.0)),
+        )
+        for offer in ordered_offers:
+            _, clean_u = canonicalize_store_url(offer.offer_url)
+            dedup_key = f"{offer.store_id}:{(clean_u or offer.offer_url).rstrip('/').lower()}"
+            if dedup_key in seen_offer_urls:
+                continue
+            seen_offer_urls.add(dedup_key)
+
             if not self.validate_single_offer_corpus(offer, target):
                 continue
 

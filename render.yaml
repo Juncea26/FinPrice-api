@@ -26,3 +26,61 @@ services:
         value: "60"
       - key: MALLOC_TRIM_THRESHOLD_
         value: "65536"
+      # Interruptor seguro del scheduler interno:
+      # - "true" (por defecto): mantiene el comportamiento actual en producción sin cambios al desplegar.
+      # - "false": apaga el scraping interno del web service una vez verificado el worker/cron externo.
+      - key: ENABLE_INTERNAL_SCHEDULER
+        value: "true"
+
+# ==============================================================================
+# SEPARACIÓN DEL SCRAPING EN WORKER / CRON EXTERNO (LISTO PARA ACTIVAR)
+# ==============================================================================
+# Nota de Render: `finprice-api` arriba usa `plan: free`. En Render, los servicios
+# `type: cron` y `type: worker` requieren al menos `plan: starter`.
+#
+# Pasos para migrar el scraping fuera del Web Service sin downtime:
+#   1. Descomenta UNA de las dos opciones abajo (Opción A Cron Job recomendada, o
+#      Opción B Worker Daemon) y sincroniza en Render con la misma `DATABASE_URL`.
+#   2. Verifica en los logs del Cron/Worker que completa el barrido y actualiza Neon.
+#   3. Cambia `ENABLE_INTERNAL_SCHEDULER` arriba de "true" a "false" (o en el Dashboard
+#      de Render > Environment) y redeploya `finprice-api` para dejarlo solo como API.
+#   4. Si necesitas revertir de inmediato, vuelve `ENABLE_INTERNAL_SCHEDULER` a "true".
+#
+# --- Opción A (Recomendada): Render Cron Job (ejecuta 1 barrido y sale con código 0) ---
+# Horarios UTC equivalentes a 00:59, 06:59, 12:59 y 18:59 America/Lima (UTC-5):
+#   - type: cron
+#     name: finprice-scraper-cron
+#     env: docker
+#     region: ohio
+#     plan: starter
+#     schedule: "59 5,11,17,23 * * *"
+#     dockerfilePath: Dockerfile
+#     dockerCommand: python -m app.worker --once
+#     envVars:
+#       - key: ENVIRONMENT
+#         value: production
+#       - key: DATABASE_URL
+#         sync: false
+#       - key: COLLECTOR_MAX_CONCURRENCY
+#         value: "2"
+#       - key: MALLOC_TRIM_THRESHOLD_
+#         value: "65536"
+#
+# --- Opción B: Render Background Worker continuo (modo daemon 24/7) ---
+#   - type: worker
+#     name: finprice-scraper-worker
+#     env: docker
+#     region: ohio
+#     plan: starter
+#     dockerfilePath: Dockerfile
+#     dockerCommand: python -m app.worker
+#     autoDeploy: true
+#     envVars:
+#       - key: ENVIRONMENT
+#         value: production
+#       - key: DATABASE_URL
+#         sync: false
+#       - key: COLLECTOR_MAX_CONCURRENCY
+#         value: "2"
+#       - key: MALLOC_TRIM_THRESHOLD_
+#         value: "65536"

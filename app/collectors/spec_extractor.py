@@ -1063,6 +1063,16 @@ def extract_product_specs(
     if brand:
         tech_specs["Marca"] = brand
 
+    # Enriquecer con códigos oficiales de fabricante (EAN/GTIN y MPN) cuando existan en la ficha
+    if html:
+        from app.collectors.tech_normalizer import extract_product_codes
+
+        codes = extract_product_codes(html_or_json=html, tech_specs=tech_specs, title=title)
+        if codes.get("gtin") and "EAN" not in tech_specs:
+            tech_specs["EAN"] = codes["gtin"][0]
+        if codes.get("mpn") and "MPN" not in tech_specs:
+            tech_specs["MPN"] = codes["mpn"][0].upper()
+
     features = generate_product_features(soup=soup, tech_specs=tech_specs, title=title)
 
     return {

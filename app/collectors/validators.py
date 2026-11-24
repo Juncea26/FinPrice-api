@@ -20,6 +20,17 @@ from pydantic import BaseModel, ConfigDict
 
 from app.core.logging import get_logger
 from app.collectors.color_stripper import strip_color_tokens
+from app.collectors.tech_normalizer import (
+    DEFAULT_NEUTRAL_TOKENS,
+    evaluate_strict_guardrails,
+    expand_retail_abbreviations,
+    extract_product_codes,
+    has_exact_code_match,
+    normalize_memory_and_storage,
+    normalize_tech_text,
+    strip_url_bundle_tail,
+    validate_persisted_url_no_contradiction,
+)
 
 logger = get_logger("collectors.validators")
 
@@ -88,6 +99,7 @@ CRITICAL_MODEL_IDENTIFIERS: Tuple[str, ...] = (
     "plus",
     "fe",
     "air",
+    "essential",
     "tuf",
     "oled",
     "evo",
@@ -114,6 +126,7 @@ STRICT_REVERSE_TIER_TOKENS: Tuple[str, ...] = (
     "air",
     "fe",
     "lite",
+    "essential",
     "mini",
     "fold",
     "flip",
@@ -159,17 +172,10 @@ class ScrapedOffer(BaseModel):
 
 
 def normalize_text(text: str) -> str:
-    """Convierte texto a minúsculas sin tildes y normaliza unidades de almacenamiento."""
+    """Convierte texto a minúsculas sin tildes, normaliza memoria/almacenamiento y expande abreviaturas retail."""
     if not text:
         return ""
-    decomposed = unicodedata.normalize("NFKD", str(text).lower())
-    no_accents = "".join(c for c in decomposed if not unicodedata.combining(c))
-    # Unificar '512 gb' -> '512gb', '1 tb' -> '1tb', '11 pulgadas' -> '11', '512ssd' -> '512gb ssd'
-    normalized = re.sub(r"(\d+)\s*(gb|tb)\b", r"\1\2", no_accents)
-    normalized = re.sub(r"(\d+(?:\.\d+)?)\s*pulgadas\b", r"\1", normalized)
-    normalized = re.sub(r"\b(128|256|512|1024)\s*ssd\b", r"\1gb ssd", normalized)
-    normalized = re.sub(r"\b(4|6|8|12|16)\s*[\-+/]\s*(64|128|256|512|1024)\b", r"\1gb \2gb", normalized)
-    return normalized.strip()
+    return normalize_tech_text(str(text), expand_abbrevs=True, strip_colors=False)
 
 
 def normalize_url_slug(url: str) -> str:
@@ -178,25 +184,16 @@ def normalize_url_slug(url: str) -> str:
         return ""
     parsed = urlparse(str(url))
     raw_path = f"{parsed.path} {parsed.query}"
-    norm = normalize_text(raw_path)
-    norm = re.sub(r"\.(html?|php|aspx?)\b", " ", norm)
-    norm = re.sub(r"[/\-_\.+%=&?]+", " ", norm)
-    # Separar patrones pegados comunes en slugs de efe/curacao como 'note15pro' -> 'note 15 pro'
-    norm = re.sub(r"\b(note|pad|loq|tab|victus)(\d+)(pro|plus|ultra|fe|lite)?\b", r"\1 \2 \3", norm)
-    norm = re.sub(r"\b(\d+)(pro)\b", r"\1 \2", norm)
+    cleaned = re.sub(r"\.(html?|php|aspx?)\b", " ", raw_path, flags=re.IGNORECASE)
+    norm = normalize_tech_text(cleaned, expand_abbrevs=True, strip_colors=False)
     norm = re.sub(r"\b(\d+gb|\d+tb)(ram|ssd)?\b", r"\1 \2", norm)
     norm = re.sub(r"\b(u\d{4})([a-z])\b", r"\1 \1\2", norm)
     norm = re.sub(r"\b(ux\d{4})([a-z]{1,2})\b", r"\1 \1\2 a14", norm)
     norm = re.sub(r"\b(tb336[a-z0-9]*)\b", r"\1 idea tab 11", norm)
     norm = re.sub(r"\b(fx607[a-z0-9]*)\b", r"\1 tuf f16", norm)
     norm = re.sub(r"\b(82xq[a-z0-9]*)\b", r"\1 ideapad slim 3", norm)
-    norm = re.sub(
-        r"\b(oled|qned|nanocell)(\d{2})([bcgmrwz]\d)([a-z0-9]*)\b",
-        r"\1 \2 \3 \4",
-        norm,
-    )
     norm = re.sub(r"\s+", " ", norm).strip()
-    return norm
+    return strip_url_bundle_tail(norm)
 
 
 def _has_whole_word(token: str, text: str) -> bool:
@@ -211,6 +208,11 @@ def _has_whole_word(token: str, text: str) -> bool:
         concat_pattern = rf"\b\d{{2}}{re.escape(token)}\b"
         if bool(re.search(concat_pattern, text)):
             return True
+    # Equivalencia Intel Core 5 / Core i5 (ej. Intel Core 5 210H <-> CI5 / C5)
+    if token in {"3", "5", "7", "9"} and bool(re.search(rf"\bcore\s+i{re.escape(token)}\b", text)):
+        return True
+    if token in {"i3", "i5", "i7", "i9"} and bool(re.search(rf"\bcore\s+{re.escape(token[1:])}\b", text)):
+        return True
     # Aliases comunes en retailers de gaming y audio (ej. ps5 <-> playstation 5, 2da <-> 2 generacion)
     if token == "playstation" and ("ps5" in text or "ps4" in text):
         return True
@@ -237,7 +239,7 @@ def _has_whole_word(token: str, text: str) -> bool:
         return True
     if token == "ryzen" and any(re.search(rf"\b{x}\b", text) for x in ["ryzen", "r5", "r7", "r9", "82xq"]):
         return True
-    if token == "intel" and any(re.search(rf"\b{x}\b", text) for x in ["intel", "i3", "i5", "i7", "i9", "c5", "210h", "fx607", "83je"]):
+    if token == "intel" and any(re.search(rf"\b{x}\b", text) for x in ["intel", "core", "i3", "i5", "i7", "i9", "c5", "ci5", "210h", "fx607", "83je"]):
         return True
     if token == "rtx" and ("rtx" in text or "fx607" in text or "83je" in text or "fb3049" in text):
         return True
@@ -250,30 +252,33 @@ def extract_critical_model_tokens(canonical_title: str) -> Tuple[List[str], Opti
     """
     Extrae del título canónico (previa limpieza de colores con strip_color_tokens):
     1. Lista de tokens críticos de modelo, serie, gama y generación (ej. ['redmi', 'note', '15', 'pro'])
-    2. Capacidad de almacenamiento principal (ej. '512gb')
+    2. Capacidad de almacenamiento principal (ej. '512gb', '1tb')
     3. Capacidad de memoria RAM si se especifica (ej. '12gb')
     """
-    norm = normalize_text(strip_color_tokens(canonical_title))
+    norm = normalize_tech_text(
+        strip_color_tokens(normalize_memory_and_storage(canonical_title)),
+        expand_abbrevs=True,
+        strip_colors=True,
+    )
 
     # 1. Extraer almacenamiento y RAM
     storage_match: Optional[str] = None
     ram_match: Optional[str] = None
     all_mem_tokens = re.findall(r"\b(\d+(?:gb|tb))\b", norm)
     for mem_tok in all_mem_tokens:
-        if mem_tok in STORAGE_TOKENS_SET and storage_match is None:
-            storage_match = mem_tok
+        if (mem_tok in STORAGE_TOKENS_SET or mem_tok.endswith("tb")) and storage_match is None:
+            storage_match = "1tb" if mem_tok == "1024gb" else mem_tok
         elif mem_tok not in STORAGE_TOKENS_SET and ram_match is None:
             ram_match = mem_tok
 
     # 2. Extraer tokens críticos de familia, serie y gama en el orden en que aparecen
     critical_tokens: List[str] = []
-    words = re.findall(r"\b[a-z0-9]+\b", norm)
+    words = re.findall(r"\b[a-z0-9\.]+\b", norm)
     for w in words:
-        if w in CRITICAL_MODEL_IDENTIFIERS and w not in critical_tokens:
+        if w in CRITICAL_MODEL_IDENTIFIERS and w not in DEFAULT_NEUTRAL_TOKENS and w not in critical_tokens:
             critical_tokens.append(w)
 
     # 3. Extraer números exactos de generación y códigos alfanuméricos de modelo
-    # Limpiamos previamente memoria (512gb, 12gb), conectividad (5g, 4g), y decimales de pulgadas (13.6, 6.8)
     cleaned_for_gen = re.sub(r"\b\d+(?:gb|tb|mb|mp|mah|hz|w)\b", " ", norm)
     cleaned_for_gen = re.sub(r"\b[45]g\b", " ", cleaned_for_gen)
     cleaned_for_gen = re.sub(r"\b\d+\.\d+\b", " ", cleaned_for_gen)
@@ -281,7 +286,7 @@ def extract_critical_model_tokens(canonical_title: str) -> Tuple[List[str], Opti
     gen_candidates = re.findall(r"\b[a-z]*\d+[a-z]*\b", cleaned_for_gen)
     ignored_numeric = {"2024", "2025", "2026", "2027", "360", "100"}
     for cand in gen_candidates:
-        if cand in ignored_numeric:
+        if cand in ignored_numeric or cand in DEFAULT_NEUTRAL_TOKENS:
             continue
         if cand not in critical_tokens:
             critical_tokens.append(cand)
@@ -296,29 +301,46 @@ def validate_product_identity(
     store_id: str = "unknown",
     tech_specs: Optional[Dict[str, Any]] = None,
     description: str = "",
+    target_tech_specs: Optional[Dict[str, Any]] = None,
+    candidate_html: str = "",
 ) -> bool:
     """
     Valida estrictamente que la oferta extraída corresponda al mismo producto canónico
-    inspeccionando tanto el título y la URL como el corpus de tech_specs y description.
-    Rechaza accesorios, modelos distintos (ej. Redmi A7 vs Redmi Note 15 Pro),
-    variantes sin sufijo crítico (ej. Note 15 vs Note 15 Pro) y capacidades distintas (128GB vs 512GB).
+    inspeccionando título, URL, tech_specs, description y códigos oficiales (EAN/GTIN/MPN).
+    Elimina falsos [IDENTITY_MISMATCH] por espacios (12 GB RAM 512GB), omisión de 5G/Chip
+    o abreviaturas retail, manteniendo estricto el rechazo de variantes distintas.
     """
     if not canonical_title:
         return False
 
+    # Modo solo-contradicción explícita cuando solo se evalúa una URL persistida en BD (título vacío)
+    if not (scraped_title or "").strip():
+        is_ok = validate_persisted_url_no_contradiction(
+            canonical_title=canonical_title,
+            scraped_url=scraped_url,
+            store_id=store_id,
+            target_specs=target_tech_specs or tech_specs,
+        )
+        if not is_ok:
+            logger.warning(
+                f"[IDENTITY_MISMATCH] Oferta descartada en {store_id}: "
+                f"esperado='{canonical_title}', recibido='{scraped_title}' ({scraped_url})"
+            )
+            return False
+        return True
+
+    bundle_pat = r"\s*(\+|\bcon\b|\bincluye\b)\s*(funda|case|folio|book\s*cover|cargador|audifonos?(?:\s+inalambricos?)?|mochila|mouse|cover|soundbar|maletin|teclado|lapiz|pen|stylus|combo|pack|tags?|regalo|hph|watch|buds)\b.*$"
+    url_promo_pat = r"\b(funda|case|folio|cargador|audifonos?(?:\s+inalambricos?)?|mochila|mouse|cover|soundbar|maletin|teclado|lapiz|pen|combo|pack)(?:\s+\d+)?\s*$"
+    filler_pat = r"\b(celular\s+libre|smartphone|disco\s+solido\s+de|unidad\s+de\s+estado\s+solido|liberado|dual\s+sim|teclado\s+en\s+(?:espanol|ingles))\b"
+
+    raw_cand_no_bundle = re.sub(bundle_pat, "", scraped_title or "", flags=re.IGNORECASE).strip()
     canonical_norm = normalize_text(canonical_title)
-    scraped_title_norm = normalize_text(scraped_title)
+    scraped_title_norm = normalize_text(raw_cand_no_bundle)
     scraped_url_norm = normalize_url_slug(scraped_url)
 
-    # Limpieza de promociones y regalos secundarios en el título (+ funda, con funda, etc.) y palabras de relleno
-    bundle_pat = r"\s*(\+|\bcon\b|\bincluye\b)\s*(funda|case|folio|book\s*cover|cargador|audifonos?(?:\s+inalambricos?)?|mochila|mouse|cover|soundbar|maletin|teclado|lapiz|pen|stylus|combo|pack)\b.*$"
-    url_promo_pat = r"\b(funda|case|folio|cargador|audifonos?(?:\s+inalambricos?)?|mochila|mouse|cover|soundbar|maletin|teclado|lapiz|pen|combo|pack)(?:\s+\d+)?\s*$"
-    clean_title_norm = re.sub(bundle_pat, "", scraped_title_norm, flags=re.IGNORECASE).strip()
+    clean_title_norm = re.sub(filler_pat, "", scraped_title_norm, flags=re.IGNORECASE).strip()
     clean_url_norm = re.sub(bundle_pat, "", scraped_url_norm, flags=re.IGNORECASE).strip()
     clean_url_norm = re.sub(url_promo_pat, "", clean_url_norm, flags=re.IGNORECASE).strip()
-
-    filler_pat = r"\b(celular\s+libre|smartphone|disco\s+solido\s+de|unidad\s+de\s+estado\s+solido|liberado|dual\s+sim|teclado\s+en\s+(?:espanol|ingles))\b"
-    clean_title_norm = re.sub(filler_pat, "", clean_title_norm, flags=re.IGNORECASE).strip()
     clean_url_norm = re.sub(filler_pat, "", clean_url_norm, flags=re.IGNORECASE).strip()
 
     specs_text = ""
@@ -334,13 +356,39 @@ def validate_product_identity(
         return False
 
     # --------------------------------------------------------------------------
+    # 0. EXTRACCIÓN DE CÓDIGOS OFICIALES (EAN/GTIN/MPN) Y GUARDRAILS ESTRICTOS
+    # --------------------------------------------------------------------------
+    target_codes = extract_product_codes(tech_specs=target_tech_specs, title=canonical_title)
+    candidate_codes = extract_product_codes(
+        html_or_json=candidate_html,
+        tech_specs=tech_specs,
+        title=scraped_title,
+        url=scraped_url,
+    )
+    exact_code_matched = has_exact_code_match(target_codes, candidate_codes)
+
+    if not evaluate_strict_guardrails(
+        canonical_title=canonical_title,
+        scraped_title=scraped_title,
+        scraped_url=scraped_url,
+        cand_specs=tech_specs,
+        cand_description=description,
+        target_specs=target_tech_specs,
+        exact_code_matched=exact_code_matched,
+    ):
+        logger.warning(
+            f"[IDENTITY_MISMATCH] Oferta descartada en {store_id}: "
+            f"esperado='{canonical_title}', recibido='{scraped_title}' ({scraped_url})"
+        )
+        return False
+
+    # --------------------------------------------------------------------------
     # 1. BLOQUEO DE ACCESORIOS, REACONDICIONADOS E INTRUSOS
     # --------------------------------------------------------------------------
     if "open box" in clean_title_norm or "open box" in clean_url_norm:
         return False
 
     for acc_kw in ACCESSORY_KEYWORDS:
-        # Excepción legítima: Si el producto canónico es un dispositivo de audio (ej. AirPods), 'audifono/s' no es un accesorio
         if acc_kw in {"audifono", "audifonos"} and any(x in canonical_norm for x in ["airpods", "headphone", "earphone", "audifono", "auricular"]):
             continue
         target_acc_check = clean_title_norm if clean_title_norm else clean_url_norm
@@ -353,6 +401,10 @@ def validate_product_identity(
             )
             return False
 
+    # Señal exacta por EAN / GTIN / MPN (tras pasar accesorios y guardrails estrictos)
+    if exact_code_matched:
+        return True
+
     # --------------------------------------------------------------------------
     # 2. COINCIDENCIA EXACTA DE FAMILIA, MODELO, GENERACIÓN Y SUFIJOS CRÍTICOS
     # --------------------------------------------------------------------------
@@ -360,11 +412,18 @@ def validate_product_identity(
 
     primary_target = clean_title_norm if clean_title_norm else clean_url_norm
     title_and_specs = f"{primary_target} {specs_text} {desc_norm}".strip()
+    hardware_or_chip_tokens = {
+        "a14", "a15", "a16", "a17", "a18",
+        "m1", "m2", "m3", "m4", "m5",
+        "ryzen", "intel", "core", "i3", "i5", "i7", "i9",
+        "snapdragon", "exynos", "dimensity",
+        "rtx", "gtx", "3050", "4050", "4060", "5050", "210h", "7520u",
+    }
 
     for token in critical_tokens:
-        # Si existe scraped_title, los tokens de modelo/línea deben estar en scraped_title (o en tech_specs/description
-        # para medidas de pantalla/resolución como '11', '13', '4k', 'evo'). Solo si scraped_title está vacío se usa scraped_url.
-        is_screen_or_res_token = token in {"11", "13", "14", "15", "16", "55", "65", "4k", "evo"}
+        if token in DEFAULT_NEUTRAL_TOKENS:
+            continue
+        is_screen_or_res_token = token in {"8.7", "10.9", "11", "13", "14", "15", "16", "55", "65", "4k", "evo"}
         if is_screen_or_res_token:
             full_screen_corpus = f"{title_and_specs} {scraped_url_norm}".strip()
             found_token = _has_whole_word(token, full_screen_corpus)
@@ -373,7 +432,13 @@ def validate_product_identity(
             elif not found_token and token == "13":
                 found_token = _has_whole_word("13.3", full_screen_corpus) or _has_whole_word("13.6", full_screen_corpus)
             elif not found_token and token in {"14", "15", "16"}:
-                found_token = any(x in full_screen_corpus for x in [f"{token}.0", f"{token}.6", f"{token}f", f"fx607", f"fx507"])
+                found_token = any(x in full_screen_corpus for x in [f"{token}.0", f"{token}.6", f"{token}f", "fx607", "fx507"])
+        elif token in hardware_or_chip_tokens:
+            # Permitir que chip/CPU/GPU se verifique tanto en título como en ficha técnica (tech_specs/URL)
+            hw_corpus = f"{primary_target} {specs_text} {scraped_url_norm}".strip()
+            found_token = _has_whole_word(token, hw_corpus)
+            if not found_token and token == "x" and "snapdragon" in hw_corpus:
+                found_token = True
         else:
             found_token = _has_whole_word(token, primary_target)
             if not found_token and len(token) >= 4 and _has_whole_word(token, scraped_url_norm):
@@ -384,7 +449,9 @@ def validate_product_identity(
                 found_token = True
             if not found_token and not scraped_title_norm:
                 found_token = _has_whole_word(token, f"{primary_target} {specs_text}")
-                if not found_token and token == "galaxy" and ("sm-a" in scraped_url_norm or "sm-s" in scraped_url_norm or "sm a" in scraped_url_norm or "sm s" in scraped_url_norm or "sm x" in scraped_url_norm):
+                if not found_token and token == "plus" and _has_whole_word("pro", canonical_norm) and _has_whole_word("pro", scraped_url_norm):
+                    found_token = True
+                if not found_token and token == "galaxy" and ("sm a" in scraped_url_norm or "sm s" in scraped_url_norm or "sm x" in scraped_url_norm):
                     found_token = True
         if not found_token:
             logger.warning(
@@ -394,26 +461,17 @@ def validate_product_identity(
             return False
 
     # Bloquear cruce de arquitecturas de procesador en laptops (AMD Ryzen vs Intel Core)
-    combined_cand_cpu = f"{clean_title_norm} {clean_url_norm}"
+    combined_cand_cpu = f"{clean_title_norm} {clean_url_norm} {specs_text}"
     if "ryzen" in canonical_norm or "amd" in canonical_norm:
-        if any(re.search(rf"\b{x}\b", combined_cand_cpu) for x in ["intel", "i3", "i5", "i7", "i9", "3i", "5i"]):
+        if any(re.search(rf"\b{x}\b", f"{clean_title_norm} {clean_url_norm}") for x in ["intel", "i3", "i5", "i7", "i9", "3i", "5i"]):
             return False
     elif "intel" in canonical_norm or any(re.search(rf"\b{x}\b", canonical_norm) for x in ["i3", "i5", "i7", "i9"]):
-        if any(re.search(rf"\b{x}\b", combined_cand_cpu) for x in ["ryzen", "amd"]):
+        if any(re.search(rf"\b{x}\b", f"{clean_title_norm} {clean_url_norm}") for x in ["ryzen", "amd"]):
             return False
 
-    # Si el título extraído tiene un sufijo de gama estricto ('pro', 'ultra', 'lite', 'fe', 'mini')
-    # que el título canónico NO tiene, rechazar para no mezclar gamas
+    # Rechazo estricto bidireccional de sufijos de gama ('pro', 'ultra', 'plus', 'air', 'lite', 'fe', 'mini', 'essential')
     if scraped_title_norm:
         for rev_tok in STRICT_REVERSE_TIER_TOKENS:
-            if (
-                rev_tok == "plus"
-                and "redmi" in canonical_norm
-                and "note" in canonical_norm
-                and "pro" in canonical_norm
-                and "512gb" in canonical_norm
-            ):
-                continue
             if _has_whole_word(rev_tok, scraped_title_norm) and not _has_whole_word(rev_tok, canonical_norm):
                 logger.warning(
                     f"[IDENTITY_MISMATCH] Oferta descartada en {store_id}: "
@@ -448,7 +506,7 @@ def validate_product_identity(
     # 3. VALIDACIÓN DE ALMACENAMIENTO (STORAGE MATCH) EN EL CORPUS COMPLETO
     # --------------------------------------------------------------------------
     if required_storage:
-        # Extraer capacidades de almacenamiento mencionadas en scraped_title, specs, description y URL
+        req_stor_set = {"1024gb", "1tb"} if required_storage in {"1024gb", "1tb"} else {required_storage}
         title_storages = {
             m for m in re.findall(r"\b(\d+(?:gb|tb))\b", scraped_title_norm) if m in STORAGE_TOKENS_SET
         }
@@ -462,28 +520,25 @@ def validate_product_identity(
             m for m in re.findall(r"\b(\d+(?:gb|tb))\b", scraped_url_norm) if m in STORAGE_TOKENS_SET
         }
 
-        # Si el título extraído declara una capacidad de almacenamiento distinta (ej. 128gb o 256gb vs 512gb), rechazar
-        if title_storages and required_storage not in title_storages:
+        if title_storages and not (title_storages & req_stor_set):
             logger.warning(
                 f"[IDENTITY_MISMATCH] Oferta descartada en {store_id}: "
                 f"esperado='{canonical_title}', recibido='{scraped_title}' ({scraped_url})"
             )
             return False
 
-        # Si la URL declara explícitamente una capacidad de almacenamiento distinta y no la requerida, rechazar
-        if url_storages and required_storage not in url_storages:
+        if url_storages and not (url_storages & req_stor_set):
             logger.warning(
                 f"[IDENTITY_MISMATCH] Oferta descartada en {store_id}: "
                 f"esperado='{canonical_title}', recibido='{scraped_title}' ({scraped_url})"
             )
             return False
 
-        # Debe coincidir con required_storage en al menos uno de: scraped_title, tech_specs, description o scraped_url
         has_storage_match = (
-            (required_storage in title_storages)
-            or (required_storage in specs_storages)
-            or (required_storage in desc_storages)
-            or (not title_storages and required_storage in url_storages)
+            bool(req_stor_set & title_storages)
+            or bool(req_stor_set & specs_storages)
+            or bool(req_stor_set & desc_storages)
+            or (not title_storages and bool(req_stor_set & url_storages))
             or (not scraped_title_norm and not specs_text and not desc_norm and not url_storages)
         )
         if not has_storage_match:
@@ -662,6 +717,114 @@ def check_is_in_stock(
     return bool(has_valid_price)
 
 
+def _is_falabella_group_node_official(node: Dict[str, Any], expected_token: str) -> Optional[bool]:
+    """
+    Evalúa los campos estructurados de vendedor en un nodo productData/item/variant de Falabella o Tottus.
+    Retorna True si declara vendedor oficial, False si declara vendedor tercero, o None si no declara vendedor.
+    """
+    if not isinstance(node, dict):
+        return None
+    if node.get("isMarketplace") is True:
+        return False
+
+    direct_sellers: List[str] = []
+    for key in ("sellerName", "sellerId"):
+        val = node.get(key)
+        if val is not None and str(val).strip():
+            direct_sellers.append(str(val).strip().lower())
+    seller_obj = node.get("seller")
+    if isinstance(seller_obj, dict):
+        for key in ("name", "sellerName", "id", "sellerId"):
+            val = seller_obj.get(key)
+            if val is not None and str(val).strip():
+                direct_sellers.append(str(val).strip().lower())
+    elif isinstance(seller_obj, str) and seller_obj.strip():
+        direct_sellers.append(seller_obj.strip().lower())
+
+    if direct_sellers:
+        return any(expected_token in s for s in direct_sellers)
+    return None
+
+
+def _is_ripley_item_official_struct(node: Dict[str, Any]) -> bool:
+    """Evalúa si un nodo producto/resultado de Ripley en __NEXT_DATA__ es 1P oficial de Ripley."""
+    if not isinstance(node, dict):
+        return True
+    if node.get("isMarketplaceProduct") is True:
+        return False
+    part_id = str(
+        node.get("partNumber") or node.get("parentProductID") or node.get("sku") or ""
+    ).strip().upper()
+    if part_id.startswith("PMP"):
+        return False
+
+    seller_val = str(node.get("seller") or node.get("sellerName") or "").strip().lower()
+    if seller_val and ("marketplace" in seller_val or "ripley" not in seller_val):
+        return False
+
+    mkt = node.get("marketplace")
+    if isinstance(mkt, dict):
+        shop_name = str(mkt.get("shopName") or mkt.get("sellerName") or "").strip().lower()
+        if shop_name and "ripley" not in shop_name and "ecsa" not in shop_name:
+            return False
+
+    shop = node.get("shop")
+    if isinstance(shop, dict) and not seller_val:
+        shop_seller_id = str(shop.get("sellerId") or shop.get("id") or "").strip()
+        shop_name = str(shop.get("shopName") or "").strip().lower()
+        if shop_seller_id not in {"", "1"} and "ripley" not in shop_name and "ecsa" not in shop_name:
+            return False
+
+    return True
+
+
+_SIDEBAR_FILTER_SELLER_PREFIXES: Tuple[str, ...] = (
+    "ordenar por",
+    "relevancia",
+    "menor precio",
+    "mayor precio",
+    "color",
+    "capacidad",
+    "camara",
+    "cámara",
+    "conectividad",
+    "procesador",
+    "memoria",
+    "almacenamiento",
+    "pantalla",
+    "resolucion",
+    "resolución",
+    "sistema operativo",
+    "tipo de",
+    "filtrar",
+    "filtros",
+    "precio",
+    "marca",
+    "categoria",
+    "categoría",
+    "tamano",
+    "tamaño",
+)
+
+
+def _strip_layout_and_filter_blocks(raw_html: str) -> str:
+    """Elimina scripts, sidebars, nav, header, footer y facetas de filtro antes de analizar 'Vendido por ...'."""
+    cleaned = re.sub(
+        r"<(script|style|noscript|template|aside|nav|header|footer)\b[^>]*>.*?</\1>",
+        " ",
+        raw_html,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    cleaned = re.sub(
+        r"<(div|section|ul|form)\b[^>]*(?:class|id)=[\"'][^\"']*"
+        r"(?:facet|filter|sidebar|refinement|sort-by|layered-filter)[^\"']*[\"'][^>]*>.*?</\1>",
+        " ",
+        cleaned,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    return cleaned
+
+
 def is_official_store_seller(
     store_id: str,
     html_or_json: str,
@@ -690,6 +853,10 @@ def is_official_store_seller(
         return False
 
     raw = html_or_json.strip()
+    u_low = (url or "").lower()
+    is_search_url = any(
+        seg in u_low for seg in ("/search", "/buscar", "/catalogsearch/", "ntt=", "?q=", "&q=", "?ft=")
+    )
 
     # Caso VTEX JSON directo (Metro / Wong)
     if s_id in {"metro", "wong"} and (raw.startswith("[") or raw.startswith("{")):
@@ -718,7 +885,7 @@ def is_official_store_seller(
         except Exception:
             return False
 
-    # Inspección de __NEXT_DATA__ para Falabella, Tottus y Ripley
+    # Inspección estructurada de __NEXT_DATA__ para Falabella, Tottus y Ripley
     if s_id in {"falabella", "tottus", "ripley"} and "__NEXT_DATA__" in raw:
         nd_match = re.search(
             r'<script[^>]+id=["\']__NEXT_DATA__["\'][^>]*>(.*?)</script>',
@@ -731,46 +898,122 @@ def is_official_store_seller(
                 page_props = nd_data.get("props", {}).get("pageProps", {})
                 if s_id in {"falabella", "tottus"}:
                     expected_token = "falabella" if s_id == "falabella" else "tottus"
-                    p_data = page_props.get("productData") or {}
-                    top_seller = str(p_data.get("sellerName") or p_data.get("sellerId") or "").strip().lower()
-                    if top_seller and expected_token not in top_seller:
-                        logger.warning(f"[MARKETPLACE_SELLER_REJECTED] {s_id}: seller={top_seller!r} url={url}")
-                        return False
-                    for var in p_data.get("variants") or []:
-                        if not isinstance(var, dict):
-                            continue
-                        v_seller = str(var.get("sellerName") or var.get("sellerId") or "").strip().lower()
-                        if v_seller and expected_token not in v_seller:
-                            logger.warning(f"[MARKETPLACE_SELLER_REJECTED] {s_id}: variant seller={v_seller!r} url={url}")
+                    p_data = page_props.get("productData") or page_props.get("product") or {}
+                    search_results = page_props.get("results")
+
+                    if isinstance(search_results, list) and not p_data:
+                        if not search_results:
+                            return True
+                        has_official_or_unknown = False
+                        for item in search_results:
+                            if not isinstance(item, dict):
+                                continue
+                            item_res = _is_falabella_group_node_official(item, expected_token)
+                            if item_res is not False:
+                                has_official_or_unknown = True
+                                break
+                        if not has_official_or_unknown:
+                            logger.warning(
+                                f"[MARKETPLACE_SELLER_REJECTED] {s_id}: todos los resultados son de terceros ({url})"
+                            )
                             return False
-                        for off in var.get("offerings") or var.get("offers") or []:
-                            if isinstance(off, dict):
-                                o_seller = str(off.get("sellerName") or off.get("sellerId") or "").strip().lower()
-                                if o_seller and expected_token not in o_seller:
-                                    logger.warning(f"[MARKETPLACE_SELLER_REJECTED] {s_id}: offering seller={o_seller!r} url={url}")
-                                    return False
+                        return True
+
+                    if isinstance(p_data, dict) and p_data:
+                        top_check = _is_falabella_group_node_official(p_data, expected_token)
+                        if top_check is False:
+                            top_seller = str(p_data.get("sellerName") or p_data.get("sellerId") or "").strip().lower()
+                            logger.warning(f"[MARKETPLACE_SELLER_REJECTED] {s_id}: seller={top_seller!r} url={url}")
+                            return False
+
+                        var_checks: List[Optional[bool]] = []
+                        for var in p_data.get("variants") or []:
+                            if not isinstance(var, dict):
+                                continue
+                            v_check = _is_falabella_group_node_official(var, expected_token)
+                            if v_check is not None:
+                                var_checks.append(v_check)
+                            for off in var.get("offerings") or var.get("offers") or []:
+                                if isinstance(off, dict):
+                                    o_check = _is_falabella_group_node_official(off, expected_token)
+                                    if o_check is not None:
+                                        var_checks.append(o_check)
+
+                        if var_checks:
+                            if any(vc is True for vc in var_checks):
+                                return True
+                            logger.warning(
+                                f"[MARKETPLACE_SELLER_REJECTED] {s_id}: ninguna variante/offering pertenece a {expected_token} ({url})"
+                            )
+                            return False
+                        if top_check is True:
+                            return True
+
                 elif s_id == "ripley":
                     r_prod = (
                         page_props.get("detailProps", {}).get("data", {}).get("product")
                         or page_props.get("product")
                         or {}
                     )
-                    if r_prod.get("isMarketplaceProduct") is True:
-                        logger.warning(f"[MARKETPLACE_SELLER_REJECTED] ripley: isMarketplaceProduct=True url={url}")
+                    findability_prods = (
+                        (page_props.get("findabilityProps") or {}).get("data") or {}
+                    ).get("products")
+
+                    if isinstance(findability_prods, list) and not r_prod:
+                        if not findability_prods:
+                            return True
+                        if any(
+                            isinstance(it, dict) and _is_ripley_item_official_struct(it)
+                            for it in findability_prods
+                        ):
+                            return True
+                        logger.warning(
+                            f"[MARKETPLACE_SELLER_REJECTED] ripley: todos los resultados de búsqueda son marketplace ({url})"
+                        )
                         return False
-                    mkt = r_prod.get("marketplace") or {}
-                    if isinstance(mkt, dict):
-                        shop_name = str(mkt.get("shopName") or mkt.get("sellerName") or "").strip().lower()
-                        if shop_name and "ripley" not in shop_name:
-                            logger.warning(f"[MARKETPLACE_SELLER_REJECTED] ripley: shopName={shop_name!r} url={url}")
+
+                    if isinstance(r_prod, dict) and r_prod:
+                        if not _is_ripley_item_official_struct(r_prod):
+                            logger.warning(f"[MARKETPLACE_SELLER_REJECTED] ripley: producto marketplace en PDP url={url}")
                             return False
+                        has_pdp_struct = bool(
+                            r_prod.get("name")
+                            or r_prod.get("partNumber")
+                            or r_prod.get("SKUs")
+                            or r_prod.get("parentpricestock")
+                        )
+                        if has_pdp_struct:
+                            # Confirmar también que no exista un "Vendido por <tercero>" en el buybox principal
+                            stripped_pdp = _strip_layout_and_filter_blocks(raw)
+                            vis_pdp = re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", stripped_pdp)).strip()
+                            for vm in re.findall(
+                                r"Vendido\s+por[:\s]+([A-Za-z0-9\s\.\-&ÁÉÍÓÚáéíóúñÑ]{2,45})",
+                                vis_pdp,
+                                flags=re.IGNORECASE,
+                            ):
+                                c_sel = re.split(
+                                    r"\b(?:raz[oó]n\s+social|ruc|env[ií]o|retiro|garant[ií]a|condici[oó]n|pol[ií]ticas|precio|s/|agregar|comprar|stock|disponible|calificaci[oó]n)\b",
+                                    vm,
+                                    flags=re.IGNORECASE,
+                                )[0].strip(" .:-|,;").lower()
+                                if (
+                                    c_sel
+                                    and not any(c_sel.startswith(p) for p in _SIDEBAR_FILTER_SELLER_PREFIXES)
+                                    and not re.match(r"^(?:marketplace\s+\d+\b|ripley\s+\d+\b)", c_sel)
+                                    and not c_sel.startswith("ripley")
+                                ):
+                                    logger.warning(
+                                        f"[MARKETPLACE_SELLER_REJECTED] ripley: 'Vendido por {c_sel}' no es tienda oficial ({url})"
+                                    )
+                                    return False
+                            return True
             except Exception:
                 pass
 
     if s_id == "ripley" and '"isMarketplaceProduct":true' in raw.replace(" ", ""):
         return False
 
-    if s_id in {"falabella", "tottus", "ripley"} and '"sellerName"' in raw:
+    if not is_search_url and s_id in {"falabella", "tottus", "ripley"} and '"sellerName"' in raw:
         expected_tok = s_id
         for sm in re.findall(r'"sellerName"\s*:\s*"([^"]+)"', raw, flags=re.IGNORECASE):
             sm_clean = sm.strip().lower()
@@ -780,14 +1023,9 @@ def is_official_store_seller(
                 )
                 return False
 
-    # Inspección de texto visible "Vendido por ..."
-    vis_text = re.sub(
-        r"<(script|style|noscript|template)\b[^>]*>.*?</\1>",
-        " ",
-        raw,
-        flags=re.IGNORECASE | re.DOTALL,
-    )
-    vis_text = re.sub(r"<[^>]+>", " ", vis_text)
+    # Inspección de texto visible "Vendido por ..." (excluyendo nav/aside/footer/facetas/filtros)
+    vis_html = _strip_layout_and_filter_blocks(raw)
+    vis_text = re.sub(r"<[^>]+>", " ", vis_html)
     vis_text = re.sub(r"\s+", " ", vis_text).strip()
 
     vendido_matches = re.findall(
@@ -814,6 +1052,10 @@ def is_official_store_seller(
                 flags=re.IGNORECASE,
             )[0].strip(" .:-|,;").lower()
             if not clean_seller:
+                continue
+            if any(clean_seller.startswith(prefix) for prefix in _SIDEBAR_FILTER_SELLER_PREFIXES):
+                continue
+            if re.match(r"^(?:marketplace\s+\d+\b|ripley\s+\d+\b)", clean_seller):
                 continue
             if not any(clean_seller.startswith(prefix) or clean_seller == prefix for prefix in allowed_prefixes):
                 logger.warning(

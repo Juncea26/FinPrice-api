@@ -5,7 +5,7 @@ aislando completamente los carruseles de productos relacionados (.block.related,
 """
 import json
 import re
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional, Set
 from urllib.parse import urljoin
 from bs4 import BeautifulSoup, Tag
 
@@ -61,20 +61,121 @@ def _extract_main_h1_title(soup: BeautifulSoup) -> str:
     return ""
 
 
+_EXCLUDED_LAYOUT_OR_PROMO_CLASSES = {
+    "widget",
+    "block-products-list",
+    "block-banners",
+    "block-static-block",
+    "upsell",
+    "related",
+    "crosssell",
+    "products-upsell",
+    "products-related",
+    "products-crosssell",
+    "owl-carousel",
+    "slick-slider",
+    "swiper",
+    "swiper-wrapper",
+    "swiper-container",
+    "product-carousel",
+    "related-products",
+    "nav-sections",
+    "navigation",
+    "megamenu",
+    "level0-submenu",
+    "sidebar",
+}
+
+_EXCLUDED_LAYOUT_OR_PROMO_SUBSTRINGS = (
+    "carousel",
+    "banner",
+    "upsell",
+    "crosssell",
+    "recomendad",
+    "recommended",
+    "warranty",
+    "garantia",
+)
+
+
+def _has_excluded_promo_or_layout_ancestor(tag: Tag) -> bool:
+    """Retorna True si el nodo vive dentro de carruseles promocionales, banners, sidebars, nav o footer."""
+    for anc in tag.parents:
+        if not isinstance(anc, Tag):
+            continue
+        if anc.name in {"header", "nav", "aside", "footer"}:
+            return True
+        if str(anc.get("data-content-type") or "").strip().lower() in {"products", "slider", "banner"}:
+            return True
+        raw_classes = anc.get("class") or []
+        if isinstance(raw_classes, str):
+            raw_classes = raw_classes.split()
+        cls_lower = {str(c).strip().lower() for c in raw_classes if str(c).strip()}
+        if cls_lower & _EXCLUDED_LAYOUT_OR_PROMO_CLASSES:
+            return True
+        anc_id = str(anc.get("id") or "").strip().lower()
+        tokens = list(cls_lower) + ([anc_id] if anc_id else [])
+        for tok in tokens:
+            if any(sub in tok for sub in _EXCLUDED_LAYOUT_OR_PROMO_SUBSTRINGS):
+                return True
+    return False
+
+
+def _select_hiraoka_main_search_cards(soup: BeautifulSoup) -> List[Tag]:
+    """
+    Selecciona exclusivamente las tarjetas del contenedor principal de resultados de búsqueda
+    (`.search.results` o `.column.main > .products.wrapper`), excluyendo carruseles y banners.
+    """
+    has_page_layout = bool(soup.select_one("main, #maincontent, .column.main, .page-wrapper, .columns"))
+
+    containers = soup.select(
+        "main .search.results, #maincontent .search.results, .column.main .search.results, .search.results"
+    )
+    if not containers:
+        containers = soup.select(
+            "main#maincontent .column.main > .products.wrapper, "
+            "main .column.main > .products.wrapper, "
+            "#maincontent .column.main > .products.wrapper, "
+            ".column.main > .products.wrapper"
+        )
+    if not containers and not has_page_layout:
+        containers = soup.select("ol.products.list.items, ol.product-items, ul.product-items")
+
+    cards: List[Tag] = []
+    seen_node_ids: Set[int] = set()
+    for container in containers:
+        if _has_excluded_promo_or_layout_ancestor(container):
+            continue
+        raw_cards = container.select("li.product-item")
+        if not raw_cards:
+            raw_cards = container.select(".product-item-info")
+        for card in raw_cards:
+            node_id = id(card)
+            if node_id in seen_node_ids or _has_excluded_promo_or_layout_ancestor(card):
+                continue
+            seen_node_ids.add(node_id)
+            cards.append(card)
+    return cards
+
+
 def _parse_search_results(
-    soup: BeautifulSoup, search_url: str, canonical_title: Optional[str]
+    soup: BeautifulSoup,
+    search_url: str,
+    canonical_title: Optional[str],
+    seen_candidate_urls: Optional[Set[str]] = None,
 ) -> Optional[Dict[str, Any]]:
     """
-    Itera sobre TODOS los resultados de búsqueda en Hiraoka (todos los colores disponibles),
-    filtra aquellos que aprueben validate_product_identity(canonical_title, item_title, item_url)
+    Itera sobre TODOS los resultados del grid principal de búsqueda en Hiraoka (todos los colores disponibles),
+    deduplica URLs normalizadas, filtra aquellos que aprueben validate_product_identity
     y selecciona el que tenga el MENOR precio vigente.
     """
     if not canonical_title:
         logger.warning(f"Búsqueda en {search_url} rechazada: se requiere canonical_title.")
         return None
 
+    local_seen = seen_candidate_urls if seen_candidate_urls is not None else set()
     best_candidate: Optional[Dict[str, Any]] = None
-    cards = soup.select(".product-item-info, li.product-item")
+    cards = _select_hiraoka_main_search_cards(soup)
     for card in cards:
         if card.select_one(".stock.unavailable"):
             continue
@@ -102,6 +203,11 @@ def _parse_search_results(
 
         _, clean_card_url = canonicalize_store_url(item_url)
         item_url = clean_card_url or item_url
+
+        dedup_key = f"hiraoka:{item_url.rstrip('/').lower()}"
+        if dedup_key in local_seen:
+            continue
+        local_seen.add(dedup_key)
 
         if not validate_product_identity(canonical_title, item_title, item_url, store_id="hiraoka"):
             continue
@@ -160,7 +266,10 @@ FORBIDDEN_ERROR_PHRASES_HIRAOKA = (
 
 
 def parse_hiraoka(
-    html: str, offer_url: str, canonical_title: Optional[str] = None
+    html: str,
+    offer_url: str,
+    canonical_title: Optional[str] = None,
+    seen_candidate_urls: Optional[Set[str]] = None,
 ) -> Optional[Dict[str, Any]]:
     """
     Extrae título real, el menor precio de venta vigente (PRECIO ONLINE / Especial), precio de lista e imagen oficial de Hiraoka.
@@ -191,7 +300,9 @@ def parse_hiraoka(
     if main_info_box and main_info_box.select_one(".stock.unavailable"):
         return None
 
-    if is_search_url and main_info_box and not soup.select(".product-item-info, li.product-item"):
+    main_search_cards = _select_hiraoka_main_search_cards(soup)
+
+    if is_search_url and main_info_box and not main_search_cards:
         canon_link = soup.find("link", rel="canonical")
         og_url_meta = soup.find("meta", property="og:url")
         redirected_u = (
@@ -203,8 +314,13 @@ def parse_hiraoka(
             offer_url = clean_offer_url or str(redirected_u)
             is_search_url = False
 
-    if is_search_url or (not main_info_box and soup.select(".product-item-info, li.product-item")):
-        return _parse_search_results(soup, offer_url, canonical_title)
+    if is_search_url or (not main_info_box and main_search_cards):
+        return _parse_search_results(
+            soup,
+            offer_url,
+            canonical_title,
+            seen_candidate_urls=seen_candidate_urls,
+        )
 
     # Eliminar carruseles de productos relacionados, upsell, crosssell y garantías extendidas
     for unwanted in soup.select(CAROUSEL_AND_RELATED_SELECTORS):

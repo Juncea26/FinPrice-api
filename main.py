@@ -38,6 +38,7 @@ from app.core.seed_data import seed_database_fast, sync_and_upsert_catalog
 from app.collectors.orchestrator import (
     SCHEDULE_WINDOWS,
     SCHEDULE_WINDOWS_LABELS,
+    calculate_seconds_until_next_window,
     orchestrator,
 )
 from app.models.entities import ProductEntity
@@ -62,26 +63,6 @@ def calculate_seconds_until_target(
     if target <= now:
         target += timedelta(days=1)
     return max(1.0, (target - now).total_seconds())
-
-
-def calculate_seconds_until_next_window(
-    tz_name: str = "America/Lima",
-) -> tuple[float, str]:
-    """
-    Calcula los segundos exactos restantes hasta el próximo corte programado
-    entre las 4 ventanas diarias: 00:59, 06:59, 12:59 y 18:59 (America/Lima).
-    Retorna (segundos_restantes, etiqueta_ventana).
-    """
-    tz = ZoneInfo(tz_name)
-    now = datetime.now(tz)
-    candidates = []
-    for hour, minute in SCHEDULE_WINDOWS:
-        candidate = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
-        if candidate <= now:
-            candidate += timedelta(days=1)
-        candidates.append((candidate, f"{hour:02d}:{minute:02d}"))
-    next_dt, label = min(candidates, key=lambda item: item[0])
-    return max(1.0, (next_dt - now).total_seconds()), label
 
 
 async def daily_scheduler_loop():
@@ -161,15 +142,28 @@ async def lifespan(app: FastAPI):
         await catalog_service.purge_ghost_community_data(session)
         synced_count = await sync_and_upsert_catalog(session=session)
         catalog_service.invalidate_cache()
-        if await orchestrator.needs_scheduled_catchup(session):
+        if settings.ENABLE_INTERNAL_SCHEDULER and await orchestrator.needs_scheduled_catchup(session):
             logger.info("Catch-Up on Wakeup: registrando corte programado pendiente para today_peru...")
             await orchestrator.run_scheduled_price_update(
                 session=session,
                 on_cache_invalidate=catalog_service.invalidate_cache,
             )
 
-    logger.info(f"Catálogo oficial de FinPrice sincronizado ({synced_count} productos en Neon con >= 1 tienda). Arranque instantáneo listo.")
-    _background_task = asyncio.create_task(daily_scheduler_loop())
+    logger.info(
+        f"Catálogo oficial de FinPrice sincronizado ({synced_count} productos en Neon con >= 1 tienda). Arranque instantáneo listo."
+    )
+    if settings.ENABLE_INTERNAL_SCHEDULER:
+        logger.info(
+            "Scheduler interno ACTIVADO (ENABLE_INTERNAL_SCHEDULER=true): "
+            f"ejecutando bucle programado en {', '.join(SCHEDULE_WINDOWS_LABELS)} America/Lima."
+        )
+        _background_task = asyncio.create_task(daily_scheduler_loop())
+    else:
+        _background_task = None
+        logger.info(
+            "Scheduler interno DESACTIVADO (ENABLE_INTERNAL_SCHEDULER=false): "
+            "recolección programada de precios delegada a worker externo (python -m app.worker)."
+        )
     _keep_alive_task = asyncio.create_task(keep_alive_self_ping_loop())
 
     logger.info(f"FinPrice API en línea y disponible en puerto {settings.PORT}.")

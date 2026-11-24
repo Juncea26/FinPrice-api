@@ -40,12 +40,32 @@ class Settings(BaseSettings):
     RATE_LIMIT_WRITE_PER_MINUTE: int = 5
 
     # Parámetros del motor de recolección en vivo (Optimizado para 512 MB RAM)
+    ENABLE_INTERNAL_SCHEDULER: bool = True
     COLLECTION_INTERVAL_MINUTES: int = 360  # Cada 6 horas por defecto
     COLLECTOR_TIMEOUT_CONNECT: float = 6.0
     COLLECTOR_TIMEOUT_READ: float = 12.0
     COLLECTOR_MAX_CONCURRENCY: int = 2
     CIRCUIT_BREAKER_FAILURE_THRESHOLD: int = 4
     CIRCUIT_BREAKER_RECOVERY_SECONDS: int = 15
+
+    @field_validator("ENABLE_INTERNAL_SCHEDULER", mode="before")
+    @classmethod
+    def parse_enable_internal_scheduler(cls, v: Union[bool, str, int, None]) -> bool:
+        if v is None:
+            return True
+        if isinstance(v, bool):
+            return v
+        if isinstance(v, int):
+            return bool(v)
+        if isinstance(v, str):
+            cleaned = v.strip().lower()
+            if cleaned == "":
+                return True
+            if cleaned in {"true", "1", "yes", "on", "si", "sí"}:
+                return True
+            if cleaned in {"false", "0", "no", "off"}:
+                return False
+        return bool(v)
 
     @field_validator("ALLOWED_ORIGINS", mode="before")
     @classmethod

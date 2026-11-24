@@ -12,6 +12,11 @@ import unicodedata
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from app.collectors.color_stripper import SINGLE_COLOR_TOKENS, strip_color_tokens
+from app.collectors.tech_normalizer import (
+    DEFAULT_NEUTRAL_TOKENS,
+    normalize_memory_and_storage,
+    normalize_tech_text,
+)
 
 # Colores prohibidos en queries de búsqueda para nunca perder variantes de otro color del mismo SKU
 FORBIDDEN_QUERY_COLORS: Set[str] = set(SINGLE_COLOR_TOKENS) | {
@@ -536,3 +541,174 @@ def build_short_search_query(
     if storage_num and storage_num not in [t.lower() for t in base_tokens]:
         base_tokens.append(storage_num)
     return " ".join(base_tokens[: (6 if has_plus else 4)])
+
+
+def _unpack_product_input(
+    product: Any,
+    tech_specs: Optional[Dict[str, Any]] = None,
+) -> Tuple[str, Dict[str, Any], str, str]:
+    if isinstance(product, str):
+        return product, dict(tech_specs or {}), "", ""
+    if isinstance(product, dict):
+        return (
+            str(product.get("title") or ""),
+            dict(tech_specs or product.get("tech_specs") or product.get("raw_tech_specs") or {}),
+            str(product.get("category") or ""),
+            str(product.get("brand") or ""),
+        )
+    return (
+        str(getattr(product, "title", "") or ""),
+        dict(
+            tech_specs
+            or getattr(product, "tech_specs", None)
+            or getattr(product, "raw_tech_specs", None)
+            or {}
+        ),
+        str(getattr(product, "category", "") or ""),
+        str(getattr(product, "brand", "") or ""),
+    )
+
+
+CLEAN_QUERY_CPU_NOISE: Set[str] = {
+    "amd",
+    "intel",
+    "ryzen",
+    "core",
+    "qualcomm",
+    "snapdragon",
+    "exynos",
+    "mediatek",
+    "dimensity",
+    "nvidia",
+    "geforce",
+    "rtx",
+    "gtx",
+    "3050",
+    "4050",
+    "4060",
+    "5050",
+    "210h",
+    "7520u",
+    "copilot",
+    "pc",
+    "tizen",
+    "webos",
+    "evo",
+}
+
+
+def build_clean_catalog_queries(
+    product: Any,
+    tech_specs: Optional[Dict[str, Any]] = None,
+) -> List[str]:
+    """
+    Genera consultas limpias genéricas basadas en `tech_normalizer.py` preservando la marca,
+    familia/modelo, pulgadas clave (tablets/TVs) y almacenamiento, eliminando tokens de relleno
+    (`5G`, `Chip`, `RAM`, `Wi-Fi`, `Smart TV`, `Celular`, `Laptop`, colores, etc.).
+
+    Ejemplos:
+      - "Samsung Galaxy S26 Ultra 5G 512GB 12GB RAM" -> ["Samsung Galaxy S26 Ultra 512GB", "Samsung Galaxy S26 Ultra"]
+      - 'Apple iPad 11" Chip A16 Wi-Fi 128GB' -> ["Apple iPad 11 128GB", "Apple iPad 11"]
+    """
+    raw_title, specs, category, explicit_brand = _unpack_product_input(product, tech_specs)
+    if not raw_title:
+        return []
+
+    storage_token, screen_inches_token, cap_tokens = _extract_storage_and_inches(raw_title, specs)
+    cleaned_norm = normalize_tech_text(
+        raw_title,
+        expand_abbrevs=True,
+        strip_colors=True,
+        strip_neutral=True,
+    )
+    # Remover capacidades de memoria/almacenamiento y decimales de pantalla del núcleo de tokens
+    cleaned_core = re.sub(r"\b\d{1,4}(?:gb|tb|mah|mp|hz|w)\b", " ", cleaned_norm)
+    cleaned_core = re.sub(r"\b\d{1,2}\.\d+\b", " ", cleaned_core)
+
+    cat_low = category.lower()
+    is_tv = cat_low == "tvs" or any(w in cleaned_norm for w in ("oled", "qled", "qned", "nanocell", "u8000"))
+    is_tablet = cat_low == "tablets" or any(w in cleaned_norm for w in ("ipad", "tab", "pad"))
+    is_laptop = cat_low == "laptops" or any(
+        w in cleaned_norm for w in ("macbook", "zenbook", "ideapad", "victus", "tuf", "loq", "thinkpad", "vivobook")
+    )
+
+    extra_drop = (
+        set(FORBIDDEN_QUERY_COLORS)
+        | set(FORBIDDEN_QUERY_MARKETING_WORDS)
+        | DEFAULT_NEUTRAL_TOKENS
+        | CLEAN_QUERY_CPU_NOISE
+        | cap_tokens
+    )
+
+    tokens = re.findall(r"\b[a-z0-9]+\b", cleaned_core)
+    model_tokens: List[str] = []
+
+    if explicit_brand:
+        b_norm = _strip_accents(explicit_brand).lower().strip()
+        if b_norm and b_norm not in extra_drop:
+            model_tokens.append(_format_token(b_norm))
+
+    # Detectar si hay sufijo de tamaño decimal como 15.6" en Victus/LOQ que suelen nombrarse "15"
+    has_15_6 = bool(re.search(r"\b15\.6\b", raw_title))
+
+    for i, tok in enumerate(tokens):
+        if tok in extra_drop:
+            continue
+        # Omitir año de modelo salvo si no hay otros números
+        if tok in {"2023", "2024", "2025", "2026", "2027"}:
+            continue
+        # En iPad / Tablet con diagonal en pulgadas explícita, omitir token de chip SoC (a16, a17, a15)
+        # para encontrar títulos retail como 'Apple iPad 11" 128GB Plata' sin 'Chip A16'
+        if is_tablet and screen_inches_token and re.match(r"^a1[4-9]$", tok):
+            continue
+        # En laptops, omitir número suelto de tier CPU (3/5/7/9) o 'x' después de AMD/Intel/Snapdragon
+        if is_laptop and tok in {"3", "5", "7", "9", "i3", "i5", "i7", "i9", "x"}:
+            prev_tok = tokens[i - 1] if i > 0 else ""
+            if prev_tok in CLEAN_QUERY_CPU_NOISE or tok in {"i3", "i5", "i7", "i9", "x"}:
+                continue
+        if is_laptop and tok in {"13", "14", "15", "16"} and not any(x in tokens for x in ("victus", "loq")):
+            # En laptops como IdeaPad Slim 3 / Zenbook A14 / MacBook Air 13: conservar '13' en MacBook Air 13, omitir '14'/'15' redundante
+            if "macbook" not in tokens:
+                continue
+
+        # Expandir códigos OLED55C6PSA -> OLED 55 C6
+        m_oled = re.match(r"^oled(\d{2})([a-z]\d+)[a-z]*$", tok)
+        if m_oled:
+            if not screen_inches_token:
+                screen_inches_token = m_oled.group(1)
+            tok = m_oled.group(2)
+
+        fmt = _format_token(tok) if tok != "ideapad" else "IdeaPad"
+        if tok == "macbook":
+            fmt = "MacBook"
+        if fmt.lower() not in [m.lower() for m in model_tokens]:
+            model_tokens.append(fmt)
+
+    # Insertar pulgadas enteras donde aporta valor de búsqueda (tablets como iPad 11 / Idea Tab 11 y TVs 55 / 65)
+    if screen_inches_token:
+        if is_tv and screen_inches_token not in [m.lower() for m in model_tokens]:
+            insert_idx = 2 if len(model_tokens) >= 2 and model_tokens[1].upper() in {"OLED", "QLED", "QNED", "UHD", "NEO"} else min(len(model_tokens), 1)
+            model_tokens.insert(insert_idx, screen_inches_token)
+        elif is_tablet and screen_inches_token in {"10", "11", "12", "13"} and screen_inches_token not in [m.lower() for m in model_tokens]:
+            model_tokens.append(screen_inches_token)
+    elif is_laptop and has_15_6 and any(m.lower() in {"victus", "loq"} for m in model_tokens) and "15" not in model_tokens:
+        model_tokens.append("15")
+
+    broad_clean = " ".join(model_tokens).strip()
+    queries: List[str] = []
+    if storage_token and broad_clean:
+        with_stor = f"{broad_clean} {storage_token}".strip()
+        queries.append(with_stor)
+    if broad_clean and broad_clean not in queries:
+        queries.append(broad_clean)
+
+    return queries
+
+
+def build_clean_catalog_query(
+    product: Any,
+    tech_specs: Optional[Dict[str, Any]] = None,
+) -> str:
+    """Retorna la consulta limpia principal generada con `tech_normalizer.py`."""
+    qs = build_clean_catalog_queries(product, tech_specs=tech_specs)
+    return qs[0] if qs else ""

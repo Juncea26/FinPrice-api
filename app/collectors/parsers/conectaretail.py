@@ -5,7 +5,7 @@ extracción de título H1/JSON-LD y validación de identidad en búsquedas.
 """
 import json
 import re
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Set
 from urllib.parse import urljoin
 from bs4 import BeautifulSoup, Tag
 
@@ -84,19 +84,23 @@ def _has_active_add_to_cart(html: str, soup: BeautifulSoup) -> bool:
 
 
 def _parse_search_results(
-    soup: BeautifulSoup, search_url: str, canonical_title: Optional[str]
+    soup: BeautifulSoup,
+    search_url: str,
+    canonical_title: Optional[str],
+    seen_candidate_urls: Optional[Set[str]] = None,
 ) -> Optional[Dict[str, Any]]:
     """
     Itera sobre TODAS las tarjetas de búsqueda (todos los colores disponibles),
-    filtra aquellas que aprueben validate_product_identity(canonical_title, item_title, item_url)
+    deduplica por URL normalizada, filtra aquellas que aprueben validate_product_identity(canonical_title, item_title, item_url)
     y selecciona la que tenga el MENOR precio vigente.
     """
     if not canonical_title:
         logger.warning(f"Búsqueda en {search_url} rechazada: se requiere canonical_title para validar tarjetas.")
         return None
 
+    local_seen = seen_candidate_urls if seen_candidate_urls is not None else set()
     best_candidate: Optional[Dict[str, Any]] = None
-    cards = soup.select(".product-item-info, li.product-item")
+    cards = soup.select("li.product-item") or soup.select(".product-item-info")
     for card in cards:
         if card.select_one(".stock.unavailable"):
             continue
@@ -118,6 +122,12 @@ def _parse_search_results(
         eff_card_store = "curacao" if det_store == "curacao" else "efe"
         if is_marketplace_url(eff_card_store, item_url):
             continue
+
+        dedup_key = f"{eff_card_store}:{item_url.rstrip('/').lower()}"
+        if dedup_key in local_seen:
+            continue
+        local_seen.add(dedup_key)
+
         if not is_official_store_seller(eff_card_store, str(card), item_url):
             continue
 
@@ -182,7 +192,10 @@ FORBIDDEN_ERROR_PHRASES_CONECTARETAIL = (
 
 
 def parse_conectaretail(
-    html: str, offer_url: str, canonical_title: Optional[str] = None
+    html: str,
+    offer_url: str,
+    canonical_title: Optional[str] = None,
+    seen_candidate_urls: Optional[Set[str]] = None,
 ) -> Optional[Dict[str, Any]]:
     """
     Extrae título real, el menor precio de venta vigente, precio original e imagen oficial desde efe.com.pe o lacuracao.pe.
@@ -247,7 +260,12 @@ def parse_conectaretail(
     )
 
     if is_search_url or (not main_info_box and not has_product_metadata and soup.select(".product-item-info, li.product-item")):
-        return _parse_search_results(soup, offer_url, canonical_title)
+        return _parse_search_results(
+            soup,
+            offer_url,
+            canonical_title,
+            seen_candidate_urls=seen_candidate_urls,
+        )
 
     # Eliminar todos los carruseles de productos relacionados, upsell, crosssell y garantías extendidas
     for unwanted in soup.select(CAROUSEL_AND_RELATED_SELECTORS):

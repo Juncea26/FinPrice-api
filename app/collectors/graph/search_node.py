@@ -12,7 +12,11 @@ from typing import Dict, List
 
 from app.core.logging import get_logger
 from app.collectors.catalog_urls import get_verified_store_urls_for_product
-from app.collectors.query_builder import build_search_queries, build_short_search_query
+from app.collectors.query_builder import (
+    build_clean_catalog_queries,
+    build_search_queries,
+    build_short_search_query,
+)
 from app.collectors.url_utils import (
     build_external_dork_search_url,
     build_store_search_url,
@@ -40,8 +44,9 @@ class SearchInternetNode(BaseGraphNode):
         target = state.target
         short_q = build_short_search_query(target, target.tech_specs)
         cascade_queries = build_search_queries(target.title, target.tech_specs)
+        clean_queries = build_clean_catalog_queries(target, target.tech_specs)
         queries: List[str] = []
-        for q_item in [short_q] + cascade_queries:
+        for q_item in [short_q] + cascade_queries + clean_queries:
             if q_item and q_item.lower() not in {x.lower() for x in queries}:
                 queries.append(q_item)
         state.search_queries = queries
@@ -65,8 +70,9 @@ class SearchInternetNode(BaseGraphNode):
             if direct_u:
                 _, clean_u = canonicalize_store_url(direct_u)
                 effective_u = clean_u or direct_u
-                if effective_u not in seen_urls:
-                    seen_urls.add(effective_u)
+                dedup_u = effective_u.rstrip("/").lower()
+                if dedup_u not in seen_urls:
+                    seen_urls.add(dedup_u)
                     store_entries.append(
                         CandidateUrlEntry(
                             store_id=store_id,
@@ -85,36 +91,42 @@ class SearchInternetNode(BaseGraphNode):
             if state.enable_cascade_search:
                 for idx, q in enumerate(queries):
                     s_url = build_store_search_url(store_id, q)
-                    if s_url and s_url not in seen_urls:
-                        seen_urls.add(s_url)
-                        store_entries.append(
-                            CandidateUrlEntry(
-                                store_id=store_id,
-                                url=s_url,
-                                channel="channel_2_store_search",
-                                query_used=q,
-                                is_search_endpoint=True,
-                                priority=2 + idx,
+                    if s_url:
+                        _, clean_s_url = canonicalize_store_url(s_url)
+                        eff_s_url = clean_s_url or s_url
+                        dedup_s = eff_s_url.rstrip("/").lower()
+                        if dedup_s not in seen_urls:
+                            seen_urls.add(dedup_s)
+                            store_entries.append(
+                                CandidateUrlEntry(
+                                    store_id=store_id,
+                                    url=eff_s_url,
+                                    channel="channel_2_store_search",
+                                    query_used=q,
+                                    is_search_endpoint=True,
+                                    priority=2 + idx,
+                                )
                             )
-                        )
 
             # ------------------------------------------------------------------
             # CANAL 3: Búsqueda Externa (Dork site:{canonical_host} {query})
             # ------------------------------------------------------------------
             if state.enable_external_dork and queries:
                 dork_url = build_external_dork_search_url(store_id, queries[0])
-                if dork_url and dork_url not in seen_urls:
-                    seen_urls.add(dork_url)
-                    store_entries.append(
-                        CandidateUrlEntry(
-                            store_id=store_id,
-                            url=dork_url,
-                            channel="channel_3_external_dork",
-                            query_used=queries[0],
-                            is_search_endpoint=True,
-                            priority=10,
+                if dork_url:
+                    dedup_d = dork_url.rstrip("/").lower()
+                    if dedup_d not in seen_urls:
+                        seen_urls.add(dedup_d)
+                        store_entries.append(
+                            CandidateUrlEntry(
+                                store_id=store_id,
+                                url=dork_url,
+                                channel="channel_3_external_dork",
+                                query_used=queries[0],
+                                is_search_endpoint=True,
+                                priority=10,
+                            )
                         )
-                    )
 
             candidates_map[store_id] = store_entries
 

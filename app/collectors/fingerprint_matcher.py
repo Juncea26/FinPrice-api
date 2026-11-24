@@ -18,6 +18,12 @@ from app.collectors.url_utils import (
     build_store_search_url,
     canonicalize_store_url,
 )
+from app.collectors.tech_normalizer import (
+    DEFAULT_NEUTRAL_TOKENS,
+    expand_retail_abbreviations,
+    normalize_memory_and_storage,
+    normalize_plus_tokens,
+)
 from app.collectors.validators import ACCESSORY_KEYWORDS
 
 logger = get_logger("collectors.fingerprint_matcher")
@@ -143,68 +149,33 @@ class ProductFingerprint(BaseModel):
 
 def _normalize_for_fingerprint(text: str) -> str:
     """
-    Normaliza un texto o slug a minúsculas sin tildes y separa códigos compuestos de retail
-    (como 'oled55c6psaotb' -> 'oled 55 c6 psaotb', 'note15pro' -> 'note 15 pro', '12+512gb' -> '12gb 512gb').
+    Normaliza un texto o slug a minúsculas sin tildes, normaliza RAM/almacenamiento,
+    separa códigos compuestos de retail y expande abreviaturas genéricas.
     """
     if not text:
         return ""
-    decomposed = unicodedata.normalize("NFKD", str(text).lower())
-    no_accents = "".join(c for c in decomposed if not unicodedata.combining(c))
-    cleaned = re.sub(r"\.(html?|php|aspx?)\b", " ", no_accents)
-
-    # Expandir patrones '12+512gb', '8/256gb', '8+256' antes de convertir '+' en ' plus '
-    cleaned = re.sub(
-        r"\b(2|3|4|6|8|12|16|24|32)\s*(?:gb|g)?\s*[+/]\s*(32|64|128|256|512|1024|2048)\s*(gb|g|tb)?\b",
-        lambda m: f" {m.group(1)}gb {m.group(2)}{'tb' if (m.group(3) and 'tb' in m.group(3).lower()) else 'gb'} ",
-        cleaned,
-    )
-    # Quitar '+' de siglas de resolución, Copilot+ y conectores de bundle ('+ Funda') para evitar falsos tokens 'plus'
-    cleaned = re.sub(r"(?i)\b(fhd|qhd|uhd|hd|wxga|wqhd|hdr10|hdr|dolby|copilot)\s*\+", r"\1", cleaned)
-    cleaned = re.sub(
-        r"(?i)\+\s*(?=(?:funda|case|folio|cargador|audifonos?|mochila|mouse|cover|soundbar|maletin|teclado|lapiz|pen|stylus|combo|pack|tags?|regalo|hph|watch|buds)\b)",
-        " ",
-        cleaned,
-    )
-    # Convertir explícitamente '+' asociado a modelos/variantes en ' plus ' antes de limpiar signos
-    cleaned = re.sub(r"(?i)\b(pro|note|tab|s\d+|a\d+)\s*\+", r"\1 plus ", cleaned)
-    cleaned = re.sub(r"\+", " plus ", cleaned)
-
-    cleaned = re.sub(r"[/\-_\.+%=&?,:;()\[\]\"']+", " ", cleaned)
-
-    # Expandir '8g ram 256g rom' -> '8gb ram 256gb rom'
-    cleaned = re.sub(r"\b(\d{1,4})\s*g\b(?=\s*(?:ram|rom|blue|black|green|white|gray))", r"\1gb", cleaned)
-    cleaned = re.sub(r"\b(\d{1,4})\s+(gb|tb)\b", r"\1\2", cleaned)
-
-    # Expandir códigos de modelo de TVs LG/Samsung pegados: ej. 'oled55c6psa' -> 'oled 55 c6 psa', 'oled77g6psa' -> 'oled 77 g6 psa'
-    cleaned = re.sub(
-        r"\b(oled|qned|nanocell)(\d{2})([bcgmrwz]\d)([a-z0-9]*)\b",
-        r"\1 \2 \3 \4",
-        cleaned,
-    )
-    # Expandir 'note15pro5g' / 'note15proplus5g' / 'note15pro' / 'a7pro' / 'pad2' / 'loq15' / 'u8000h' / 'ux3407qa'
-    cleaned = re.sub(r"\b(pro)(plus)\b", r"\1 \2", cleaned)
-    cleaned = re.sub(r"\b(note|magic|pad|loq|tab|victus)(\d+)(pro|lite|ultra|plus|fe)?(plus)?(5g)?\b", r"\1 \2 \3 \4 \5", cleaned)
-    cleaned = re.sub(r"\b([a-z]\d+)(pro|plus|ultra|max|fe|lite)\b", r"\1 \2", cleaned)
-    cleaned = re.sub(r"\b(\d+)(pro|plus|ultra|max|fe|lite)(5g)?\b", r"\1 \2 \3", cleaned)
+    cleaned = re.sub(r"\.(html?|php|aspx?)\b", " ", str(text), flags=re.IGNORECASE)
+    cleaned = expand_retail_abbreviations(cleaned)
     cleaned = re.sub(r"\b(u\d{4})([a-z])\b", r"\1 \1\2", cleaned)
     cleaned = re.sub(r"\b(ux\d{4})([a-z]{1,2})\b", r"\1 \1\2 a14", cleaned)
     cleaned = re.sub(r"\b(tb336[a-z0-9]*)\b", r"\1 idea tab 11", cleaned)
     cleaned = re.sub(r"\b(fx607[a-z0-9]*)\b", r"\1 tuf f16 intel", cleaned)
     cleaned = re.sub(r"\b(82xq[a-z0-9]*)\b", r"\1 ideapad slim 3 ryzen 5", cleaned)
     cleaned = re.sub(r"\b(83je[a-z0-9]*)\b", r"\1 loq 15 intel i7", cleaned)
-    cleaned = re.sub(r"\b(rtx)(\d{4})\b", r"\1 \2", cleaned)
-    cleaned = re.sub(r"\b(r)([579])\b", r"ryzen \2", cleaned)
-    cleaned = re.sub(r"\bc5\s+210h\b", "intel core 5 210h", cleaned)
-    cleaned = re.sub(r"\b(i[3579])\b", r"intel \1", cleaned)
-    cleaned = re.sub(r"\b(128|256|512|1024)\s*ssd\b", r"\1gb ssd", cleaned)
-
     return re.sub(r"\s+", " ", cleaned).strip()
 
 
 def _has_word(token: str, normalized_text: str) -> bool:
     if not token or not normalized_text:
         return False
-    return bool(re.search(rf"\b{re.escape(token.lower())}\b", normalized_text))
+    low = token.lower()
+    if bool(re.search(rf"\b{re.escape(low)}\b", normalized_text)):
+        return True
+    if low in {"3", "5", "7", "9"} and bool(re.search(rf"\bcore\s+i{re.escape(low)}\b", normalized_text)):
+        return True
+    if low in {"i3", "i5", "i7", "i9"} and bool(re.search(rf"\bcore\s+{re.escape(low[1:])}\b", normalized_text)):
+        return True
+    return False
 
 
 def build_compact_search_query(fingerprint: ProductFingerprint) -> str:
@@ -320,7 +291,7 @@ def matches_fingerprint(
 
     # Bloquear sufijos de otra gama cuando no están en family_tokens
     family_set = {t.lower().strip() for t in fingerprint.family_tokens}
-    for strict_suffix in ("pro", "plus", "ultra", "fe", "lite", "mini", "fold", "flip"):
+    for strict_suffix in ("pro", "plus", "ultra", "air", "fe", "lite", "max", "essential", "mini", "fold", "flip"):
         if strict_suffix not in family_set and _has_word(strict_suffix, title_norm):
             return False
 
@@ -394,12 +365,12 @@ def matches_fingerprint(
         if found_rams_specs and req_ram_tok not in found_rams_specs:
             return False
 
-    # 7. Verificación de Red (network='5g')
+    # 7. Verificación de Red (network='5g'):
+    # '5g' es token neutro si se omite en título/specs, pero se rechaza si declara 4G/LTE explícitamente sin 5G.
     if fingerprint.network and fingerprint.network.lower() == "5g":
-        # Si el candidato indica explícitamente 4G y no 5G, o no menciona 5G en título/URL/specs
-        if _has_word("4g", title_norm) and not _has_word("5g", title_norm):
-            return False
-        if not _has_word("5g", combined_text):
+        primary_net_zone = f"{title_norm} {url_norm}"
+        has_4g_or_lte = _has_word("4g", primary_net_zone) or _has_word("lte", primary_net_zone)
+        if has_4g_or_lte and not _has_word("5g", combined_text):
             return False
 
     return True

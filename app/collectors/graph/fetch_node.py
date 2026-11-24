@@ -152,12 +152,22 @@ class FetchNode(BaseGraphNode):
         target_dict = state.target.to_target_dict()
         had_transient_failure = False
         last_transport_error: Optional[str] = None
+        seen_fetched_urls: set = set()
 
         for entry in entries:
             target_url = entry.url
             if not entry.is_search_endpoint:
                 _, clean_u = canonicalize_store_url(target_url)
                 target_url = clean_u or target_url
+            else:
+                _, clean_s = canonicalize_store_url(target_url)
+                if clean_s:
+                    target_url = clean_s
+
+            dedup_target_key = target_url.rstrip("/").lower()
+            if dedup_target_key in seen_fetched_urls:
+                continue
+            seen_fetched_urls.add(dedup_target_key)
 
             # Modo A: Si se inyectó un scrape_fn de alto nivel (ej. en tests unitarios o adaptadores)
             if self.scrape_fn is not None:
@@ -232,6 +242,10 @@ class FetchNode(BaseGraphNode):
                 for d_link in dork_links:
                     _, clean_d = canonicalize_store_url(d_link)
                     eff_d = clean_d or d_link
+                    dedup_d_key = eff_d.rstrip("/").lower()
+                    if dedup_d_key in seen_fetched_urls:
+                        continue
+                    seen_fetched_urls.add(dedup_d_key)
                     d_html = await self._call_fetch(fetch_callable, eff_d)
                     if d_html:
                         docs.append(
@@ -269,18 +283,34 @@ class FetchNode(BaseGraphNode):
             )
 
             # Si es una grilla de búsqueda HTML, extraer también las fichas de los primeros 5 candidatos
-            # cuyo título coincida con broad_model_query para que ParseNode y SchemaExtractorNode
+            # cuyo título coincida con la query usada (o broad_model_query) para que ParseNode y SchemaExtractorNode
             # puedan inspeccionar su tabla de especificaciones y variantes SKU
             if is_search and c_type == "html":
+                effective_query = entry.query_used or broad_q
                 cand_links = extract_search_candidate_links(
                     html=raw_content,
                     search_url=target_url,
-                    broad_model_query=broad_q,
+                    broad_model_query=effective_query,
                     limit=5,
                 )
+                if len(cand_links) < 5 and broad_q and broad_q != effective_query:
+                    for extra_link in extract_search_candidate_links(
+                        html=raw_content,
+                        search_url=target_url,
+                        broad_model_query=broad_q,
+                        limit=5,
+                    ):
+                        if extra_link not in cand_links:
+                            cand_links.append(extra_link)
+                            if len(cand_links) >= 5:
+                                break
                 for cand_link in cand_links:
                     _, clean_cand = canonicalize_store_url(cand_link)
                     eff_cand = clean_cand or cand_link
+                    dedup_cand_key = eff_cand.rstrip("/").lower()
+                    if dedup_cand_key in seen_fetched_urls:
+                        continue
+                    seen_fetched_urls.add(dedup_cand_key)
                     cand_html = await self._call_fetch(fetch_callable, eff_cand)
                     if cand_html:
                         docs.append(

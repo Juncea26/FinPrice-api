@@ -10,7 +10,7 @@ Ejecuta:
    `parsed_node.distilled_markdown` cuando `enable_llm_fallback=True`.
 """
 import json
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Set
 
 from app.core.logging import get_logger
 from app.collectors.catalog_urls import STORES_INFO
@@ -120,6 +120,7 @@ class SchemaExtractorNode(BaseGraphNode):
         node_data: ParsedPageNodeData,
         target: ProductTargetSpec,
         enable_llm_fallback: bool = False,
+        seen_candidate_urls: Optional[Set[str]] = None,
     ) -> Optional[ExtractedOfferSchema]:
         store_id = node_data.store_id
         store_meta = STORES_INFO.get(store_id, {})
@@ -155,7 +156,21 @@ class SchemaExtractorNode(BaseGraphNode):
         parser = get_store_parser(store_id)
         data: Optional[Dict[str, Any]] = None
         if parser is not None:
-            if node_data.is_search_page or store_id in {"falabella", "tottus"}:
+            if node_data.is_search_page and store_id in {"falabella", "tottus", "ripley", "hiraoka", "efe", "curacao"}:
+                try:
+                    data = parser(
+                        node_data.raw_html,
+                        node_data.url,
+                        canonical_title=target.title,
+                        seen_candidate_urls=seen_candidate_urls,
+                    )
+                except TypeError:
+                    data = parser(
+                        node_data.raw_html,
+                        node_data.url,
+                        canonical_title=target.title,
+                    )
+            elif node_data.is_search_page or store_id in {"falabella", "tottus"}:
                 data = parser(
                     node_data.raw_html,
                     node_data.url,
@@ -217,19 +232,53 @@ class SchemaExtractorNode(BaseGraphNode):
 
     async def execute(self, state: GraphState) -> GraphState:
         extracted: List[ExtractedOfferSchema] = []
+        seen_search_candidates: Set[str] = set()
+        detail_results_by_key: Dict[str, Optional[ExtractedOfferSchema]] = {}
         try:
             from app.collectors.orchestrator import CIRCUIT_BREAKERS
         except Exception:
             CIRCUIT_BREAKERS = {}
 
-        for parsed_node in state.parsed_nodes:
+        # Evaluar primero fichas de producto reales para que su stock/precio prevalezca sobre cachés de búsqueda
+        detail_nodes = [pn for pn in state.parsed_nodes if not pn.is_search_page]
+        search_nodes = [pn for pn in state.parsed_nodes if pn.is_search_page]
+
+        for parsed_node in detail_nodes:
+            detail_key = f"{parsed_node.store_id}:{(parsed_node.canonical_url or parsed_node.url).rstrip('/').lower()}"
+            if detail_key in detail_results_by_key:
+                continue
             try:
                 offer = self.extract_from_parsed_node(
                     node_data=parsed_node,
                     target=state.target,
                     enable_llm_fallback=state.enable_llm_fallback,
+                    seen_candidate_urls=seen_search_candidates,
+                )
+                valid_offer = offer if (offer is not None and offer.price > 0) else None
+                detail_results_by_key[detail_key] = valid_offer
+                if valid_offer is not None:
+                    cb = CIRCUIT_BREAKERS.get(valid_offer.store_id)
+                    if cb:
+                        cb.record_success()
+                    extracted.append(valid_offer)
+            except Exception as e:
+                detail_results_by_key[detail_key] = None
+                logger.debug(f"[SchemaExtractorNode] Error en {parsed_node.url}: {e}")
+                state.errors.append(f"SchemaExtractorNode error ({parsed_node.url}): {e}")
+
+        for parsed_node in search_nodes:
+            try:
+                offer = self.extract_from_parsed_node(
+                    node_data=parsed_node,
+                    target=state.target,
+                    enable_llm_fallback=state.enable_llm_fallback,
+                    seen_candidate_urls=seen_search_candidates,
                 )
                 if offer is not None and offer.price > 0:
+                    _, clean_off_u = canonicalize_store_url(offer.offer_url)
+                    off_detail_key = f"{offer.store_id}:{(clean_off_u or offer.offer_url).rstrip('/').lower()}"
+                    if off_detail_key in detail_results_by_key and detail_results_by_key[off_detail_key] is None:
+                        continue
                     cb = CIRCUIT_BREAKERS.get(offer.store_id)
                     if cb:
                         cb.record_success()

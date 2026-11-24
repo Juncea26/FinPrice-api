@@ -1070,10 +1070,10 @@ def test_legacy_get_products(client: TestClient):
 async def test_live_network_extraction_hiraoka():
     """
     Realiza una extracción en vivo directamente contra hiraoka.com.pe para el
-    Xiaomi Redmi Note 15 Pro 5G 512GB 12GB RAM Café Moca, verificando precio real e identidad.
+    Xiaomi Redmi Note 15 Pro+ 5G 512GB 12GB RAM Café Moca, verificando precio real e identidad.
     """
     from app.collectors.http_client import fetch_page
-    canonical = "Xiaomi Redmi Note 15 Pro 5G 512GB 12GB RAM Café Moca"
+    canonical = "Xiaomi Redmi Note 15 Pro+ 5G 512GB 12GB RAM Café Moca"
     url = "https://hiraoka.com.pe/celular-xiaomi-redmi-note-15-pro-5g-6-8-512gb-12gb-ram-cafe-moca"
     html = await fetch_page(url)
     assert html is not None, "El servidor de Hiraoka no respondió o hubo timeout de red"
@@ -2735,6 +2735,933 @@ async def test_orchestrator_granular_upsert_preserves_stores_on_transient_errors
         assert "efe" in by_s and by_s["efe"].price == 0.0
         assert prod.best_price == 1699.0
         assert prod.available_stores_count == 2
+
+
+def test_search_sidebar_vendido_por_filters_ignored_in_falabella_and_ripley(caplog):
+    """
+    Bug #1 & #2: Verifica que los textos laterales de facetas/filtros en búsquedas
+    ('Vendido por ordenar por ordenar por', 'Vendido por color conectividad',
+     'Vendido por marketplace 51 ripley 4 tipo de producto...') NO disparen
+    [MARKETPLACE_SELLER_REJECTED] falsos, manteniendo estricto el rechazo de terceros reales
+    y extrayendo el menor precio promocional vigente (CMR/Tarjeta vs Internet).
+    """
+    import logging
+    from app.collectors.validators import is_official_store_seller
+
+    caplog.set_level(logging.WARNING)
+
+    # 1. Falabella búsqueda con sidebar contaminado + mezcla de vendedor tercero ('Neotech') y 1P ('Falabella')
+    fala_search_html = """
+    <html><body>
+      <aside class="filters-sidebar">
+        <div class="facet-group">
+          <span>Vendido por ordenar por ordenar por</span>
+          <span>Vendido por color conectividad</span>
+          <span>Vendido por procesador capacidad de almacenamiento</span>
+        </div>
+      </aside>
+      <script id="__NEXT_DATA__" type="application/json">
+      {
+        "props": {
+          "pageProps": {
+            "results": [
+              {
+                "productId": "9990001",
+                "skuId": "9990001",
+                "displayName": "Galaxy Tab A11 8.7 64GB 4GB RAM",
+                "brand": "SAMSUNG",
+                "sellerId": "SC57305",
+                "sellerName": "Neotech",
+                "url": "https://www.falabella.com.pe/falabella-pe/product/9990001/galaxy-tab-a11",
+                "prices": [{"type": "internetPrice", "price": ["350"], "crossed": false}]
+              },
+              {
+                "productId": "21239694",
+                "skuId": "21239694",
+                "displayName": "Tablet Samsung Galaxy Tab A11 8.7\\" 64GB 4GB RAM",
+                "brand": "SAMSUNG",
+                "sellerId": "FALABELLA_PERU",
+                "sellerName": "Falabella",
+                "url": "https://www.falabella.com.pe/falabella-pe/product/21239694/galaxy-tab-a11",
+                "prices": [
+                  {"type": "cmrPrice", "price": ["399"], "crossed": false},
+                  {"type": "internetPrice", "price": ["429"], "crossed": false},
+                  {"type": "normalPrice", "price": ["899"], "crossed": true}
+                ],
+                "mediaUrls": ["https://media.falabella.com/falabellaPE/21239694_1/public"]
+              }
+            ]
+          }
+        }
+      }
+      </script>
+    </body></html>
+    """
+    fala_search_url = "https://www.falabella.com.pe/falabella-pe/search?Ntt=Tab%20A11&f.derived.variant.sellerId=FALABELLA"
+    assert is_official_store_seller("falabella", fala_search_html, fala_search_url) is True
+    fala_res = parse_falabella(
+        fala_search_html,
+        fala_search_url,
+        canonical_title='Tablet Samsung Galaxy Tab A11 8.7" 64GB 4GB RAM',
+    )
+    assert fala_res is not None
+    assert fala_res["price"] == 399.0
+    assert fala_res["original_price"] == 899.0
+    assert "21239694" in fala_res["offer_url"]
+
+    # Verificar iPad A16 CMR 1799 vs Internet 1899 vs Normal 2599 con sidebar de filtros
+    fala_ipad_html = """
+    <html><body>
+      <div class="search-sidebar">Vendido por color tamaño de la pantalla procesador capacidad</div>
+      <script id="__NEXT_DATA__" type="application/json">
+      {
+        "props": {
+          "pageProps": {
+            "results": [
+              {
+                "productId": "prod18440041",
+                "skuId": "21014911",
+                "displayName": "iPad A16 11\\" 128GB Wi-Fi",
+                "brand": "APPLE",
+                "sellerId": "FALABELLA_PERU",
+                "sellerName": "Falabella",
+                "url": "https://www.falabella.com.pe/falabella-pe/product/prod18440041/iPad-Apple-11-Chip-A16-Wi-Fi",
+                "prices": [
+                  {"type": "cmrPrice", "price": ["1,799"], "crossed": false},
+                  {"type": "internetPrice", "price": ["1,899"], "crossed": false},
+                  {"type": "normalPrice", "price": ["2,599"], "crossed": true}
+                ]
+              }
+            ]
+          }
+        }
+      }
+      </script>
+    </body></html>
+    """
+    fala_ipad_res = parse_falabella(
+        fala_ipad_html,
+        "https://www.falabella.com.pe/falabella-pe/search?Ntt=iPad%20A16&f.derived.variant.sellerId=FALABELLA",
+        canonical_title='Apple iPad 11" Chip A16 Wi-Fi 128GB',
+    )
+    assert fala_ipad_res is not None
+    assert fala_ipad_res["price"] == 1799.0
+    assert fala_ipad_res["original_price"] == 2599.0
+
+    # 2. Ripley búsqueda con faceta lateral 'Vendido por marketplace 51 ripley 4 tipo de producto...' + ítems 1P y 3P
+    ripley_search_html = """
+    <html><body>
+      <aside class="catalog-filters">
+        <div>Vendido por marketplace 51 ripley 4 tipo de producto tablets</div>
+      </aside>
+      <a href="/ipad-a16-silver-11-128gb-2004361236380p?color_80=silver&pos=1">IPAD A16</a>
+      <script id="__NEXT_DATA__" type="application/json">
+      {
+        "props": {
+          "pageProps": {
+            "findabilityProps": {
+              "data": {
+                "products": [
+                  {
+                    "sku": "7746268",
+                    "parentProductID": "PMP20001081471",
+                    "brand": "APPLE",
+                    "name": "APPLE IPAD A16 11' WIFI, 128 GB, BLUE",
+                    "priceNumber": 1799,
+                    "masterPriceNumber": 2099,
+                    "inStock": true,
+                    "seller": "MARKETPLACE",
+                    "shop": {"id": "1735", "sellerId": 1496, "shopName": "ALL IN LUC"}
+                  },
+                  {
+                    "sku": "2004361236380",
+                    "parentProductID": "2004361236380P",
+                    "brand": "APPLE",
+                    "name": "IPAD A16 SILVER 11” 128GB",
+                    "priceNumber": 1899,
+                    "masterPriceNumber": 2599,
+                    "inStock": true,
+                    "seller": "RIPLEY",
+                    "shop": {"id": "1", "sellerId": 1, "shopName": "Shop Ecsa"},
+                    "primaryImage": "https://rimage.ripley.com.pe/home.ripley/Attachment/WOP/1/2004361236380/full_image-2004361236380.webp"
+                  }
+                ]
+              }
+            }
+          }
+        }
+      }
+      </script>
+    </body></html>
+    """
+    ripley_search_url = "https://simple.ripley.com.pe/search/iPad%20A16%20128"
+    assert is_official_store_seller("ripley", ripley_search_html, ripley_search_url) is True
+    ripley_res = parse_ripley(
+        ripley_search_html,
+        ripley_search_url,
+        canonical_title='Apple iPad 11" Chip A16 Wi-Fi 128GB',
+    )
+    assert ripley_res is not None
+    assert ripley_res["price"] == 1899.0
+    assert ripley_res["original_price"] == 2599.0
+    assert ripley_res["offer_url"] == "https://simple.ripley.com.pe/ipad-a16-silver-11-128gb-2004361236380p"
+
+    # Ningún falso MARKETPLACE_SELLER_REJECTED debe haberse emitido por los filtros laterales
+    assert "MARKETPLACE_SELLER_REJECTED" not in caplog.text
+
+    # Un vendedor tercero real explícito en ficha sigue siendo rechazado estrictamente
+    assert is_official_store_seller(
+        "falabella",
+        "<html><body><div>Vendido por Neotech</div></body></html>",
+        "https://www.falabella.com.pe/falabella-pe/product/123/test/123",
+    ) is False
+
+
+def test_hiraoka_search_ignores_promo_carousels_and_banners_outside_main_grid(caplog):
+    """
+    Bug #3: Verifica que Hiraoka restrinja las tarjetas de búsqueda exclusivamente al
+    contenedor principal (.search.results / .column.main > .products.wrapper), ignorando
+    banners y carruseles promocionales como 'Vitrina Exhibidora Oster'.
+    """
+    import logging
+
+    caplog.set_level(logging.WARNING)
+
+    # Caso A: Sin resultados reales en el grid principal, solo banner promocional de Oster fuera del grid
+    hiraoka_only_promo_html = """
+    <html><body>
+      <div class="page-wrapper">
+        <header>
+          <div class="owl-carousel promo-banner">
+            <li class="item product product-item">
+              <div class="product-item-info">
+                <a class="product-item-link" href="https://hiraoka.com.pe/vitrina-exhibidora-oster-os-pvscx450b-450l">
+                  Vitrina Exhibidora Oster OS-PVSCX450B 450L
+                </a>
+                <span data-price-type="finalPrice" data-price-amount="2999.00"></span>
+              </div>
+            </li>
+          </div>
+        </header>
+        <main id="maincontent" class="page-main">
+          <div class="columns">
+            <div class="column main">
+              <div class="widget block-products-list" data-content-type="products">
+                <ol class="product-items">
+                  <li class="item product product-item">
+                    <div class="product-item-info">
+                      <a class="product-item-link" href="https://hiraoka.com.pe/vitrina-exhibidora-oster-os-pvscx450b-450l">
+                        Vitrina Exhibidora Oster OS-PVSCX450B 450L
+                      </a>
+                      <span data-price-type="finalPrice" data-price-amount="2999.00"></span>
+                    </div>
+                  </li>
+                </ol>
+              </div>
+              <div class="search results">
+                <div class="message notice"><div>Su búsqueda no devolvió resultados.</div></div>
+              </div>
+            </div>
+          </div>
+        </main>
+      </div>
+    </body></html>
+    """
+    res_none = parse_hiraoka(
+        hiraoka_only_promo_html,
+        "https://hiraoka.com.pe/catalogsearch/result/?q=Galaxy+S25+Ultra",
+        canonical_title="Samsung Galaxy S25 Ultra 512GB 12GB RAM",
+    )
+    assert res_none is None
+    assert "vitrina-exhibidora-oster" not in caplog.text
+
+    # Caso B: Banner promocional Oster arriba + producto real dentro de .column.main > .products.wrapper
+    hiraoka_with_main_grid_html = """
+    <html><body>
+      <div class="page-wrapper">
+        <main id="maincontent" class="page-main">
+          <div class="columns">
+            <div class="column main">
+              <div class="owl-carousel banner-top">
+                <li class="item product product-item">
+                  <div class="product-item-info">
+                    <a class="product-item-link" href="https://hiraoka.com.pe/vitrina-exhibidora-oster-os-pvscx450b-450l">
+                      Vitrina Exhibidora Oster
+                    </a>
+                    <span data-price-type="finalPrice" data-price-amount="2999.00"></span>
+                  </div>
+                </li>
+              </div>
+              <div class="products wrapper grid products-grid">
+                <ol class="products list items product-items">
+                  <li class="item product product-item">
+                    <div class="product-item-info">
+                      <a class="product-item-link" href="https://hiraoka.com.pe/ipad-11-11ma-gen-a16-wifi-128gb-plata">APPLE</a>
+                      <a class="product-item-link" href="https://hiraoka.com.pe/ipad-11-11ma-gen-a16-wifi-128gb-plata">
+                        iPad 11 (11ma Gen) Chip A16 Wi-Fi 128GB Plata
+                      </a>
+                      <span data-price-type="finalPrice" data-price-amount="1999.00"></span>
+                      <span data-price-type="oldPrice" data-price-amount="2499.00"></span>
+                    </div>
+                  </li>
+                </ol>
+              </div>
+            </div>
+          </div>
+        </main>
+      </div>
+    </body></html>
+    """
+    res_ipad = parse_hiraoka(
+        hiraoka_with_main_grid_html,
+        "https://hiraoka.com.pe/catalogsearch/result/?q=iPad+A16+128",
+        canonical_title='Apple iPad 11" Chip A16 Wi-Fi 128GB',
+    )
+    assert res_ipad is not None
+    assert res_ipad["price"] == 1999.0
+    assert res_ipad["offer_url"] == "https://hiraoka.com.pe/ipad-11-11ma-gen-a16-wifi-128gb-plata"
+    assert "vitrina-exhibidora-oster" not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_search_candidate_deduplication_across_multiple_query_variants():
+    """
+    Bug #4: Verifica que cuando Tottus devuelve los mismos productos de relleno ante las
+    3 variantes de búsqueda de un mismo producto, SchemaExtractorNode deduplica por URL
+    normalizada y solo valida cada candidato 1 vez en el ciclo.
+    """
+    from app.collectors.graph.extractor_node import SchemaExtractorNode
+    from app.collectors.graph.state import GraphState, ParsedPageNodeData, ProductTargetSpec
+
+    tottus_filler_html = """
+    <html><body>
+      <script id="__NEXT_DATA__" type="application/json">
+      {
+        "props": {
+          "pageProps": {
+            "results": [
+              {
+                "productId": "147377797",
+                "skuId": "147377797",
+                "displayName": "Olla Arrocera Oster Diamondforce",
+                "brand": "OSTER",
+                "sellerId": "TOTTUS_PERU",
+                "sellerName": "Tottus",
+                "url": "https://www.tottus.com.pe/tottus-pe/articulo/147377797/olla-arrocera-oster",
+                "prices": [{"type": "internetPrice", "price": ["249"], "crossed": false}]
+              },
+              {
+                "productId": "150930380",
+                "skuId": "150930381",
+                "displayName": "Ipad A16 11\\" Wifi 128GB Azul",
+                "brand": "APPLE",
+                "sellerId": "TOTTUS_PERU",
+                "sellerName": "Tottus",
+                "url": "https://www.tottus.com.pe/tottus-pe/articulo/150930380/ipad-a16-wifi-128gb-azul",
+                "prices": [
+                  {"type": "cmrPrice", "price": ["1,799"], "crossed": false},
+                  {"type": "internetPrice", "price": ["1,899"], "crossed": false}
+                ]
+              }
+            ]
+          }
+        }
+      }
+      </script>
+    </body></html>
+    """
+
+    target = ProductTargetSpec.from_target(
+        {
+            "id": "prod_ipad_11",
+            "title": 'Apple iPad 11" Chip A16 Wi-Fi 128GB',
+            "category": "Tablets",
+            "brand": "Apple",
+            "tech_specs": {"Almacenamiento": "128 GB"},
+        }
+    )
+    state = GraphState(
+        target=target,
+        stores_to_check=["tottus"],
+        parsed_nodes=[
+            ParsedPageNodeData(
+                store_id="tottus",
+                url="https://www.tottus.com.pe/tottus-pe/buscar?Ntt=iPad+A16+128",
+                canonical_url="https://www.tottus.com.pe/tottus-pe/buscar?Ntt=iPad+A16+128",
+                is_search_page=True,
+                raw_html=tottus_filler_html,
+            ),
+            ParsedPageNodeData(
+                store_id="tottus",
+                url="https://www.tottus.com.pe/tottus-pe/buscar?Ntt=iPad+A16+128GB",
+                canonical_url="https://www.tottus.com.pe/tottus-pe/buscar?Ntt=iPad+A16+128GB",
+                is_search_page=True,
+                raw_html=tottus_filler_html,
+            ),
+            ParsedPageNodeData(
+                store_id="tottus",
+                url="https://www.tottus.com.pe/tottus-pe/buscar?Ntt=iPad+A16",
+                canonical_url="https://www.tottus.com.pe/tottus-pe/buscar?Ntt=iPad+A16",
+                is_search_page=True,
+                raw_html=tottus_filler_html,
+            ),
+        ],
+    )
+
+    validated_urls = []
+    import app.collectors.parsers.falabella as fal_mod
+    orig_val = fal_mod.validate_product_identity
+
+    def spy_validate(*args, **kwargs):
+        validated_urls.append(args[2] if len(args) > 2 else kwargs.get("scraped_url"))
+        return orig_val(*args, **kwargs)
+
+    with patch("app.collectors.parsers.falabella.validate_product_identity", side_effect=spy_validate):
+        out_state = await SchemaExtractorNode().execute(state)
+
+    assert len(validated_urls) == 2
+    assert len(out_state.extracted_offers) == 1
+    assert out_state.extracted_offers[0].price == 1799.0
+
+
+def test_tech_normalizer_memory_abbreviations_and_neutral_tokens():
+    """
+    Verifica la capa genérica `tech_normalizer.py` y su integración en `validators.py`
+    y `universal_matcher.py`:
+    - Normalización de RAM/almacenamiento (12 GB -> 12gb, 12+512Gb -> 12gb 512gb, 1 TB -> 1tb).
+    - Abreviaturas estándar retail Perú (R5 -> ryzen 5, CI5/C5 -> core i5, Ips3 -> ideapad slim 3, RTX4050 -> rtx 4050, + -> plus).
+    - Omisión de tokens neutros (5G, Chip, Wi-Fi, RAM, colores) sin falsos [IDENTITY_MISMATCH].
+    """
+    from app.collectors.tech_normalizer import (
+        expand_retail_abbreviations,
+        normalize_memory_and_storage,
+        normalize_tech_text,
+    )
+
+    assert normalize_memory_and_storage("12 GB RAM 512 GB") == "12gb ram 512gb"
+    assert normalize_memory_and_storage("Smartphone 12+512Gb") == "smartphone 12gb 512gb"
+    assert normalize_memory_and_storage("12/512 GB") == "12gb 512gb"
+    assert normalize_memory_and_storage("SSD 1 TB NVMe") == "ssd 1tb nvme"
+
+    assert "ryzen 5" in expand_retail_abbreviations("Laptop Ips3 R5 8GB 512SSD")
+    assert "ideapad slim 3" in expand_retail_abbreviations("Laptop Ips3 R5 8GB 512SSD")
+    assert "ryzen 7" in expand_retail_abbreviations("Victus R7 RTX4050")
+    assert "rtx 4050" in expand_retail_abbreviations("Victus R7 RTX4050")
+    assert "core i5" in expand_retail_abbreviations("Laptop TUF CI5 8GB 512GB")
+    assert "core i5" in expand_retail_abbreviations("Laptop TUF C5 8GB 512GB")
+    assert "tab a11 plus" in expand_retail_abbreviations("Tablet Samsung Galaxy Tab A11+ 128GB")
+    assert "note 15 pro plus" in expand_retail_abbreviations("Xiaomi Redmi Note 15 Pro+ 5G")
+
+    clean_s26 = normalize_tech_text(
+        "Celular Samsung Galaxy S26 Ultra 5G 12 GB RAM 512GB Titanium Black",
+        strip_colors=True,
+        strip_neutral=True,
+    )
+    assert clean_s26 == "samsung galaxy s26 ultra 12gb 512gb"
+
+    # 1. Ripley S26 Ultra: '12 GB RAM 512GB' y omite '5G' -> DEBE ACEPTARSE
+    s26_target = {
+        "id": "prod_samsung_galaxy_s24_ultra",
+        "title": "Samsung Galaxy S26 Ultra 5G 512GB 12GB RAM",
+        "category": "Smartphones",
+        "brand": "Samsung",
+        "tech_specs": {"Almacenamiento": "512 GB", "Memoria RAM": "12 GB", "Conectividad": "5G"},
+    }
+    ripley_s26_url = "https://simple.ripley.com.pe/celular-samsung-galaxy-s26-ultra-12-gb-ram-512gb-2065370289125"
+    assert validate_product_identity(
+        s26_target["title"],
+        "CELULAR SAMSUNG GALAXY S26 ULTRA 12 GB RAM 512GB",
+        ripley_s26_url,
+        store_id="ripley",
+    ) is True
+    assert match_product_universal(
+        s26_target,
+        {
+            "title": "CELULAR SAMSUNG GALAXY S26 ULTRA 12 GB RAM 512GB",
+            "brand": "SAMSUNG",
+            "offer_url": ripley_s26_url,
+            "tech_specs": {},
+            "description": "",
+        },
+    ) is True
+
+    # 2. Combo 12+512Gb con abreviatura en tienda -> DEBE ACEPTARSE
+    assert validate_product_identity(
+        s26_target["title"],
+        "Galaxy S26 Ultra 12+512Gb Negro",
+        "https://www.efe.com.pe/galaxy-s26-ultra-12-512gb.html",
+        store_id="efe",
+    ) is True
+
+    # 3. Laptop con abreviaturas Ips3 + R5 -> DEBE ACEPTARSE contra IdeaPad Slim 3 Ryzen 5
+    canon_ideapad = 'Laptop Lenovo IdeaPad Slim 3 15.6" AMD Ryzen 5 8GB 512GB SSD'
+    assert validate_product_identity(
+        canon_ideapad,
+        "Laptop Lenovo Ips3 R5 8GB 512SSD 15.6",
+        "https://www.curacao.pe/laptop-lenovo-ips3-r5-8gb-512gb.html",
+        store_id="curacao",
+    ) is True
+    assert match_product_universal(
+        {"title": canon_ideapad, "category": "Laptops", "brand": "Lenovo"},
+        {
+            "title": "Laptop Lenovo Ips3 R5 8GB 512SSD 15.6",
+            "offer_url": "https://www.curacao.pe/laptop-lenovo-ips3-r5-8gb-512gb.html",
+            "tech_specs": {"Marca": "Lenovo", "Procesador": "AMD Ryzen 5", "Almacenamiento": "512 GB"},
+        },
+    ) is True
+
+    # 4. Tiendas Efe / La Curacao iPad 11" A16: omite 'Chip A16' y 'Wi-Fi' en el título pero 'Chip A16' está en ficha técnica
+    ipad_target = {
+        "id": "prod_ipad_11",
+        "title": 'Apple iPad 11" Chip A16 Wi-Fi 128GB',
+        "category": "Tablets",
+        "brand": "Apple",
+        "tech_specs": {"Almacenamiento": "128 GB", "Pantalla": '11"', "Procesador": "Chip A16"},
+    }
+    efe_ipad_url = "https://www.efe.com.pe/ipad-wifi-128gb-slv-cla-md3y4cl-a.html"
+    efe_ipad_specs = {"Marca": "Apple", "Procesador": "Chip A16", "Almacenamiento": "128 GB"}
+    assert validate_product_identity(
+        ipad_target["title"],
+        'Apple iPad 11" 128GB Plata',
+        efe_ipad_url,
+        store_id="conectaretail",
+        tech_specs=efe_ipad_specs,
+    ) is True
+    assert match_product_universal(
+        ipad_target,
+        {
+            "title": 'Apple iPad 11" 128GB Plata',
+            "brand": "Apple",
+            "offer_url": efe_ipad_url,
+            "tech_specs": efe_ipad_specs,
+        },
+    ) is True
+
+
+def test_tech_normalizer_gtin_mpn_and_strict_guardrails():
+    """
+    Verifica:
+    1. Extracción genérica de EAN/GTIN/MPN desde JSON-LD y __NEXT_DATA__ y coincidencia exacta.
+    2. Guardrails estrictos que rechazan variantes distintas (capacidad, modificador, pulgadas, CPU/GPU, accesorios/tintas).
+    """
+    from app.collectors.tech_normalizer import extract_product_codes, has_exact_code_match
+
+    ld_html = """
+    <html><head><script type="application/ld+json">
+    {"@type":"Product","name":"Tablet Apple 11 Plata","sku":"MD3Y4CL/A","gtin13":"0195949123456"}
+    </script></head><body></body></html>
+    """
+    nd_html = """
+    <html><script id="__NEXT_DATA__" type="application/json">
+    {"props":{"pageProps":{"productData":{"name":"iPad 11 128GB","manufacturerPartNumber":"MD3Y4CL/A","ean":"0195949123456"}}}}
+    </script></html>
+    """
+    codes_a = extract_product_codes(ld_html, url="https://www.efe.com.pe/ipad-wifi-128gb-slv-cla-md3y4cl-a.html")
+    codes_b = extract_product_codes(nd_html)
+    assert "0195949123456" in codes_a["gtin"]
+    assert "md3y4cla" in codes_a["mpn"]
+    assert has_exact_code_match(codes_a, codes_b) is True
+
+    # Coincidencia exacta por MPN/GTIN acepta título abreviado, pero rechaza accesorio o capacidad distinta
+    assert validate_product_identity(
+        'Apple iPad 11" Chip A16 Wi-Fi 128GB',
+        'Tablet Apple 128GB Silver',
+        "https://www.efe.com.pe/ipad-wifi-128gb-slv-cla-md3y4cl-a.html",
+        store_id="efe",
+        tech_specs={"Almacenamiento": "128 GB", "MPN": "MD3Y4CL/A", "EAN": "0195949123456"},
+        target_tech_specs={"MPN": "MD3Y4CL/A", "EAN": "0195949123456"},
+    ) is True
+    assert validate_product_identity(
+        'Apple iPad 11" Chip A16 Wi-Fi 128GB',
+        "Funda Protectora Silicone Case MD3Y4CL/A",
+        "https://www.efe.com.pe/funda-ipad-md3y4cl-a.html",
+        store_id="efe",
+        tech_specs={"MPN": "MD3Y4CL/A"},
+        target_tech_specs={"MPN": "MD3Y4CL/A"},
+    ) is False
+
+    # Guardrails estrictos (ambos validadores deben devolver False)
+    rejection_cases = [
+        # Capacidad distinta: 256GB vs 512GB
+        (
+            "Samsung Galaxy S26 Ultra 5G 512GB 12GB RAM",
+            "Celular Samsung Galaxy S26 Ultra 5G 256GB 12GB RAM",
+            "https://tienda.pe/galaxy-s26-ultra-256gb",
+            {"Almacenamiento": "256 GB"},
+        ),
+        # Sub-modelo distinto: iPad Air 11 vs iPad 11
+        (
+            'Apple iPad 11" Chip A16 Wi-Fi 128GB',
+            'Apple iPad Air 11" 128GB Wi-Fi',
+            "https://tienda.pe/ipad-air-11-128gb",
+            {"Almacenamiento": "128 GB", "Pantalla": '11"'},
+        ),
+        # Base vs Ultra: S26 vs S26 Ultra (y viceversa)
+        (
+            "Samsung Galaxy S26 5G 512GB 12GB RAM",
+            "Samsung Galaxy S26 Ultra 5G 512GB 12GB RAM",
+            "https://tienda.pe/galaxy-s26-ultra-512gb",
+            {"Almacenamiento": "512 GB"},
+        ),
+        (
+            "Samsung Galaxy S26 Ultra 5G 512GB 12GB RAM",
+            "Samsung Galaxy S26 5G 512GB 12GB RAM",
+            "https://tienda.pe/galaxy-s26-512gb",
+            {"Almacenamiento": "512 GB"},
+        ),
+        # Tab A11+ vs Tab A11 (bidireccional)
+        (
+            'Tablet Samsung Galaxy Tab A11 8.7" 128GB',
+            'Tablet Samsung Galaxy Tab A11+ 128GB',
+            "https://tienda.pe/galaxy-tab-a11-plus-128gb",
+            {"Almacenamiento": "128 GB"},
+        ),
+        (
+            'Tablet Samsung Galaxy Tab A11+ 128GB',
+            'Tablet Samsung Galaxy Tab A11 8.7" 128GB',
+            "https://tienda.pe/galaxy-tab-a11-128gb",
+            {"Almacenamiento": "128 GB"},
+        ),
+        # Pulgadas distintas: 11" vs 12.7"
+        (
+            'Tablet Lenovo Idea Tab 11" 4GB RAM 128GB',
+            'Tablet Lenovo Idea Tab 12.7" 4GB RAM 128GB',
+            "https://tienda.pe/lenovo-idea-tab-12-7-128gb",
+            {"Almacenamiento": "128 GB", "Pantalla": '12.7"'},
+        ),
+        # Pulgadas TV distintas: 55" vs 65"
+        (
+            'Televisor LG 55" OLED evo AI C6 4K Smart TV 2026',
+            'Televisor LG 65" OLED evo AI C6 4K Smart TV 2026',
+            "https://tienda.pe/lg-oled-65-c6",
+            {"Pantalla": '65"'},
+        ),
+        # Botella de tinta vs impresora multifuncional
+        (
+            "Impresora Multifuncional Epson EcoTank L3250 Wi-Fi",
+            "Botella de Tinta Epson T544 EcoTank L3250 Negra",
+            "https://tienda.pe/botella-tinta-epson-l3250",
+            {},
+        ),
+    ]
+    for canon_t, cand_t, cand_u, cand_sp in rejection_cases:
+        assert validate_product_identity(canon_t, cand_t, cand_u, store_id="ripley", tech_specs=cand_sp) is False, (
+            f"validate_product_identity debió rechazar '{cand_t}' contra '{canon_t}'"
+        )
+        assert match_product_universal(
+            {"title": canon_t, "tech_specs": {}},
+            {"title": cand_t, "offer_url": cand_u, "tech_specs": cand_sp},
+        ) is False, f"match_product_universal debió rechazar '{cand_t}' contra '{canon_t}'"
+
+
+def test_clean_catalog_queries_and_ripley_promo_card_price():
+    """
+    Verifica:
+    1. `build_clean_catalog_queries` genera consultas limpias sin tokens de relleno (`5G`, `Chip`, `RAM`, `Wi-Fi`).
+    2. `parse_ripley` selecciona consistentemente el menor precio promocional vigente no tachado
+       (Tarjeta Ripley S/ 4,699 vs Internet S/ 4,799 vs Normal S/ 6,099) manteniendo filtro 1P y stock real.
+    """
+    from app.collectors.query_builder import build_clean_catalog_queries
+
+    q_s26 = build_clean_catalog_queries("Samsung Galaxy S26 Ultra 5G 512GB 12GB RAM")
+    assert q_s26[0] == "Samsung Galaxy S26 Ultra 512GB"
+
+    q_ipad = build_clean_catalog_queries('Apple iPad 11" Chip A16 Wi-Fi 128GB', {"Almacenamiento": "128 GB"})
+    assert q_ipad[0] == "Apple iPad 11 128GB"
+
+    ripley_search_s26_html = """
+    <html><script id="__NEXT_DATA__" type="application/json">
+    {
+      "props": {
+        "pageProps": {
+          "findabilityProps": {
+            "data": {
+              "products": [
+                {
+                  "sku": "2065370289132",
+                  "parentProductID": "2065370289125",
+                  "name": "CELULAR SAMSUNG GALAXY S26 ULTRA 12 GB RAM 512GB",
+                  "brand": "SAMSUNG",
+                  "seller": "RIPLEY",
+                  "isMarketplaceProduct": false,
+                  "inStock": true,
+                  "oldPrice": "S/ 6,099.00",
+                  "price": "S/ 4,799.00",
+                  "ripleyPrice": "S/ 4,699.00",
+                  "priceNumber": 4799,
+                  "masterPriceNumber": 6099,
+                  "ripleyPriceNumber": 4699
+                }
+              ]
+            }
+          }
+        }
+      }
+    }
+    </script></html>
+    """
+    res_search = parse_ripley(
+        ripley_search_s26_html,
+        "https://simple.ripley.com.pe/search/Samsung%20Galaxy%20S26%20Ultra%20512GB",
+        canonical_title="Samsung Galaxy S26 Ultra 5G 512GB 12GB RAM",
+    )
+    assert res_search is not None
+    assert res_search["price"] == 4699.0
+    assert res_search["original_price"] == 6099.0
+    assert res_search["in_stock"] is True
+
+    ripley_pdp_s26_html = """
+    <html>
+      <body><section class="product-header"><h1>CELULAR SAMSUNG GALAXY S26 ULTRA 12 GB RAM 512GB</h1></section>
+      <script id="__NEXT_DATA__" type="application/json">
+      {
+        "props": {
+          "pageProps": {
+            "detailProps": {
+              "data": {
+                "product": {
+                  "name": "CELULAR SAMSUNG GALAXY S26 ULTRA 12 GB RAM 512GB",
+                  "brand": "SAMSUNG",
+                  "seller": "RIPLEY",
+                  "isMarketplaceProduct": false,
+                  "parentpricestock": {
+                    "stock": true,
+                    "price": {
+                      "master": {"valueNumber": 6099, "crossed": true},
+                      "sale": {"valueNumber": 4799, "crossed": false},
+                      "ripley": {"valueNumber": 4699, "crossed": false}
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+      </script></body>
+    </html>
+    """
+    res_pdp = parse_ripley(
+        ripley_pdp_s26_html,
+        "https://simple.ripley.com.pe/celular-samsung-galaxy-s26-ultra-12-gb-ram-512gb-2065370289125",
+        canonical_title="Samsung Galaxy S26 Ultra 5G 512GB 12GB RAM",
+    )
+    assert res_pdp is not None
+    assert res_pdp["price"] == 4699.0
+    assert res_pdp["original_price"] == 6099.0
+    assert res_pdp["in_stock"] is True
+
+
+def test_worker_cli_audit_flag_read_only_and_sorted(capsys):
+    """
+    Verifica que `python -m app.worker --audit` ejecute en modo solo lectura sin scrapear,
+    ordene los productos de menor a mayor cobertura e imprima las tiendas oficiales faltantes.
+    """
+    import asyncio
+    from sqlalchemy import delete as sql_delete
+    from app import worker as worker_mod
+
+    async def _seed_cov_rows():
+        await init_db()
+        async with AsyncSessionLocal() as session:
+            await session.execute(sql_delete(StoreOfferEntity))
+            await session.execute(sql_delete(ProductEntity))
+            session.add_all(
+                [
+                    ProductEntity(
+                        id="prod_cov_two",
+                        title="Producto Cobertura Dos",
+                        category="Smartphones",
+                        brand="Samsung",
+                        best_price=1999.0,
+                        original_price=2199.0,
+                        best_store_name="Ripley",
+                        best_store_url="https://simple.ripley.com.pe/prod-12345678p",
+                    ),
+                    ProductEntity(
+                        id="prod_cov_zero",
+                        title="Producto Cobertura Cero",
+                        category="Tablets",
+                        brand="Apple",
+                        best_price=0.0,
+                        original_price=0.0,
+                    ),
+                ]
+            )
+            session.add_all(
+                [
+                    StoreOfferEntity(
+                        product_id="prod_cov_two",
+                        store_id="ripley",
+                        store_name="Ripley",
+                        price=1999.0,
+                        original_price=2199.0,
+                        offer_url="https://simple.ripley.com.pe/prod-12345678p",
+                    ),
+                    StoreOfferEntity(
+                        product_id="prod_cov_two",
+                        store_id="efe",
+                        store_name="Tiendas Efe",
+                        price=2099.0,
+                        original_price=2199.0,
+                        offer_url="https://www.efe.com.pe/prod.html",
+                    ),
+                ]
+            )
+            await session.commit()
+
+    asyncio.run(_seed_cov_rows())
+
+    with patch.object(
+        worker_mod,
+        "run_single_sweep",
+        side_effect=AssertionError("--audit no debe invocar scraping"),
+    ):
+        exit_code = worker_mod.main(["--audit"])
+
+    captured = capsys.readouterr().out
+    assert exit_code == 0
+    assert "0/8" in captured and "2/8" in captured
+    assert captured.index("Producto Cobertura Cero") < captured.index("Producto Cobertura Dos")
+    assert "falabella, tottus" in captured
+
+
+def test_validate_product_identity_empty_title_persisted_urls_no_false_purge():
+    """
+    Regresión de `Saneamiento de BD` (received_title="" en store_offers persistidas):
+    - URLs válidas con slugs cortos o abreviados (omitiendo ryzen/snapdragon/ultra/wifi)
+      o regalos encadenados (-folio-case-lapiz) NO deben eliminarse.
+    - URLs contradictorias (otra marca, capacidad, generación, categoría, accesorio o marketplace)
+      SÍ deben rechazarse.
+    - Con `scraped_title` NO vacío se mantiene la validación estricta completa.
+    """
+    valid_empty_title_cases = [
+        (
+            'Laptop Lenovo IdeaPad Slim 3 15.6" AMD Ryzen 5 8GB 512GB SSD',
+            "efe",
+            "https://www.efe.com.pe/lap-ip3-15f-r5-75-8gb-512ssd-82xq00ltlm.html",
+            {"Marca": "Lenovo", "Almacenamiento": "512 GB SSD", "Memoria RAM": "8 GB"},
+        ),
+        (
+            'Laptop Lenovo IdeaPad Slim 3 15.6" AMD Ryzen 5 8GB 512GB SSD',
+            "falabella",
+            "https://www.falabella.com.pe/falabella-pe/product/883111222/laptop-lenovo-ideapad-slim-3-15-6/883111222",
+            {"Marca": "Lenovo", "Almacenamiento": "512 GB SSD", "Memoria RAM": "8 GB"},
+        ),
+        (
+            'Tablet Lenovo Idea Tab 11" 4GB RAM 128GB',
+            "hiraoka",
+            "https://hiraoka.com.pe/tablet-lenovo-idea-tab-11-128gb-4gb-ram-luna-grey-folio-case-lapiz",
+            {"Marca": "Lenovo", "Almacenamiento": "128 GB", "Memoria RAM": "4 GB"},
+        ),
+        (
+            'Tablet Lenovo Idea Tab 11" 4GB RAM 128GB',
+            "efe",
+            "https://www.efe.com.pe/tab-len-tb336fu-4-128-zafr0908pe-cnt-len866tab.html",
+            {"Marca": "Lenovo", "Almacenamiento": "128 GB", "Memoria RAM": "4 GB"},
+        ),
+        (
+            'Laptop Asus Zenbook A14 14" Snapdragon X 16GB RAM 512GB SSD',
+            "efe",
+            "https://www.efe.com.pe/laptop-asus-zenbook-a14-ux3407qa-16gb-512gb.html",
+            {"Marca": "Asus", "Almacenamiento": "512 GB SSD", "Memoria RAM": "16 GB"},
+        ),
+        (
+            "Samsung Galaxy S25 Ultra 512GB 12GB RAM",
+            "efe",
+            "https://www.efe.com.pe/samsung-galaxy-s25-ultra-512gb-12gb-200m-s25ul-512gray.html",
+            {"Marca": "Samsung", "Almacenamiento": "512 GB", "Memoria RAM": "12 GB"},
+        ),
+        (
+            "Samsung Galaxy S25 Ultra 512GB 12GB RAM",
+            "falabella",
+            "https://www.falabella.com.pe/falabella-pe/product/21099999/celular-samsung-galaxy-s25/21099999",
+            {"Marca": "Samsung", "Almacenamiento": "512 GB", "Memoria RAM": "12 GB"},
+        ),
+        (
+            'Apple iPad 11" Chip A16 Wi-Fi 128GB',
+            "efe",
+            "https://www.efe.com.pe/ipad-wifi-128gb-slv-cla-md3y4cl-a.html",
+            {"Marca": "Apple", "Almacenamiento": "128 GB"},
+        ),
+    ]
+    for canon_t, st_id, cand_u, t_specs in valid_empty_title_cases:
+        assert validate_product_identity(
+            canonical_title=canon_t,
+            scraped_title="",
+            scraped_url=cand_u,
+            store_id=st_id,
+            target_tech_specs=t_specs,
+        ) is True, f"No debió descartar URL persistida válida '{cand_u}' para '{canon_t}'"
+
+    contradictory_empty_title_cases = [
+        # Otro modelo y capacidad (Redmi A7 Pro 128GB vs Note 15 Pro+ 512GB)
+        (
+            "Xiaomi Redmi Note 15 Pro+ 5G 512GB 12GB RAM",
+            "efe",
+            "https://www.efe.com.pe/redmi-a7pro-4gb-128gb-black-a7problack.html",
+        ),
+        # Capacidad contradictoria (256GB vs 512GB)
+        (
+            "Samsung Galaxy S25 Ultra 512GB 12GB RAM",
+            "ripley",
+            "https://simple.ripley.com.pe/celular-samsung-galaxy-s25-ultra-256gb-2065352942420p",
+        ),
+        # Generación contradictoria (S24 Ultra vs S25 Ultra)
+        (
+            "Samsung Galaxy S25 Ultra 512GB 12GB RAM",
+            "ripley",
+            "https://simple.ripley.com.pe/celular-samsung-galaxy-s24-ultra-512gb-2065333333333p",
+        ),
+        # Modificador no solicitado en URL (iPad Air vs iPad base)
+        (
+            'Apple iPad 11" Chip A16 Wi-Fi 128GB',
+            "hiraoka",
+            "https://hiraoka.com.pe/ipad-air-11-m3-wifi-128gb",
+        ),
+        # Accesorio independiente (Funda para tablet)
+        (
+            'Tablet Lenovo Idea Tab 11" 4GB RAM 128GB',
+            "falabella",
+            "https://www.falabella.com.pe/falabella-pe/product/12345/funda-tablet-lenovo-idea-tab-11/12345",
+        ),
+        # Case independiente sin capacidad (Case para S26 Ultra)
+        (
+            "Samsung Galaxy S26 Ultra 5G 512GB 12GB RAM",
+            "ripley",
+            "https://simple.ripley.com.pe/samsung-galaxy-s26-ultra-case-200011223344p",
+        ),
+        # Categoría/producto totalmente ajeno (Vitrina Oster vs Laptop Lenovo)
+        (
+            'Laptop Lenovo IdeaPad Slim 3 15.6" AMD Ryzen 5 8GB 512GB SSD',
+            "hiraoka",
+            "https://hiraoka.com.pe/vitrina-exhibidora-oster-os-pvscx450b-450l",
+        ),
+        # URL marketplace 3P en Ripley (-pmp...)
+        (
+            "Samsung Galaxy S25 Ultra 512GB 12GB RAM",
+            "ripley",
+            "https://simple.ripley.com.pe/celular-galaxy-s25-pmp0000123456",
+        ),
+    ]
+    for canon_t, st_id, cand_u in contradictory_empty_title_cases:
+        assert validate_product_identity(
+            canonical_title=canon_t,
+            scraped_title="",
+            scraped_url=cand_u,
+            store_id=st_id,
+        ) is False, f"Debió rechazar URL contradictoria '{cand_u}' contra '{canon_t}'"
+
+    # Con scraped_title NO vacío, el modo estricto completo sí exige 'Ultra' si el canónico es Ultra
+    assert validate_product_identity(
+        canonical_title="Samsung Galaxy S25 Ultra 512GB 12GB RAM",
+        scraped_title="Celular Samsung Galaxy S25 512GB",
+        scraped_url="https://www.falabella.com.pe/falabella-pe/product/21099999/celular-samsung-galaxy-s25/21099999",
+        store_id="falabella",
+    ) is False
+
+
+
 
 
 

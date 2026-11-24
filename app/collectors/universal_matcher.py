@@ -30,7 +30,16 @@ from app.collectors.query_builder import (
     TV_SCREEN_INCHES,
     VALID_RAM_GB,
     VALID_STORAGE_GB,
+    build_clean_catalog_queries,
     build_search_queries,
+)
+from app.collectors.tech_normalizer import (
+    DEFAULT_NEUTRAL_TOKENS,
+    evaluate_strict_guardrails,
+    expand_retail_abbreviations,
+    extract_product_codes,
+    has_exact_code_match,
+    normalize_tech_text,
 )
 from app.collectors.url_utils import (
     build_store_search_url,
@@ -104,6 +113,7 @@ STRICT_SUBMODEL_TIERS: Tuple[str, ...] = (
     "plus",
     "fe",
     "lite",
+    "essential",
     "fold",
     "flip",
     "neo",
@@ -126,63 +136,20 @@ CONFLICTING_TABLET_LAPTOP_SIZES: Set[str] = {
 
 def _normalize_corpus_text(text: str) -> str:
     """
-    Normaliza texto eliminando tildes, expandiendo códigos de modelo compuestos de retail
-    (ej. 'oled55c6psaotb' -> 'oled 55 c6 psaotb', 'note15pro' -> 'note 15 pro', '128gb' <-> '128 gb')
-    y convirtiendo puntuación en espacios.
+    Normaliza texto eliminando tildes, unificando memoria/almacenamiento (12 GB -> 12gb, 12+512GB -> 12gb 512gb),
+    expandiendo abreviaturas retail Perú (r5 -> ryzen 5, ci5/c5 -> core i5, ips3 -> ideapad slim 3, + -> plus)
+    y códigos compuestos de modelos/TVs.
     """
     if not text:
         return ""
-    decomposed = unicodedata.normalize("NFKD", str(text).lower())
-    no_accents = "".join(c for c in decomposed if not unicodedata.combining(c))
-    cleaned = re.sub(r"\.(html?|php|aspx?)\b", " ", no_accents)
-
-    # Expandir combos RAM+Storage ('8+256gb', '12+512gb', '8/256') antes de convertir '+' en ' plus '
-    cleaned = re.sub(
-        r"\b(2|3|4|6|8|12|16|24|32)\s*(?:gb|g)?\s*[\-+/]\s*(32|64|128|256|512|1024|2048)\s*(gb|g|tb)?\b",
-        lambda m: f" {m.group(1)}gb {m.group(2)}{'tb' if (m.group(3) and 'tb' in m.group(3).lower()) else 'gb'} ",
-        cleaned,
-    )
-    # Quitar '+' de siglas de resolución, Copilot+ y conectores de bundle ('+ Funda') para evitar falsos tokens 'plus'
-    cleaned = re.sub(r"(?i)\b(fhd|qhd|uhd|hd|wxga|wqhd|hdr10|hdr|dolby|copilot)\s*\+", r"\1", cleaned)
-    cleaned = re.sub(
-        r"(?i)\+\s*(?=(?:funda|case|folio|cargador|audifonos?|mochila|mouse|cover|soundbar|maletin|teclado|lapiz|pen|stylus|combo|pack|tags?|regalo|hph|watch|buds)\b)",
-        " ",
-        cleaned,
-    )
-    # Convertir explícitamente '+' asociado a modelos/variantes en ' plus ' antes de limpiar puntuación
-    cleaned = re.sub(r"(?i)\b(pro|note|tab|s\d+|a\d+)\s*\+", r"\1 plus ", cleaned)
-    cleaned = re.sub(r"\+", " plus ", cleaned)
-
-    # Conservar decimales de pulgadas temporalmente antes de limpiar signos de puntuación
-    cleaned = re.sub(r"(\d{1,2})\.(\d)\b", r"\1_DEC_\2", cleaned)
-    cleaned = re.sub(r"[/\-_\.+%=&?,:;()\[\]\"'{}]+", " ", cleaned)
-    cleaned = cleaned.replace(" DEC ", ".")
-
-    # Expandir códigos de TVs LG/Samsung pegados: 'oled55c6psaotb' -> 'oled 55 c6 psaotb'
-    cleaned = re.sub(
-        r"\b(oled|qned|nanocell)(\d{2})([bcgmrwz]\d)([a-z0-9]*)\b",
-        r"\1 \2 \3 \4",
-        cleaned,
-    )
-    # Expandir 'note15pro5g' / 'note15proplus5g' / 'a7pro' / 'magic8lite' / 'pad2' / 'loq15' / 'u8000h' / 'ux3407qa'
-    cleaned = re.sub(r"\b(pro)(plus)\b", r"\1 \2", cleaned)
-    cleaned = re.sub(r"\b(note|magic|pad|loq|tab|victus)(\d+)(pro|lite|ultra|plus|fe)?(plus)?(5g)?\b", r"\1 \2 \3 \4 \5", cleaned)
-    cleaned = re.sub(r"\b([a-z]\d+)(pro|plus|ultra|max|fe|lite)\b", r"\1 \2", cleaned)
-    cleaned = re.sub(r"\b(\d+)(pro|plus|ultra|max|fe|lite)(5g)?\b", r"\1 \2 \3", cleaned)
+    cleaned = re.sub(r"\.(html?|php|aspx?)\b", " ", str(text), flags=re.IGNORECASE)
+    cleaned = expand_retail_abbreviations(cleaned)
     cleaned = re.sub(r"\b(u\d{4})([a-z])\b", r"\1 \1\2", cleaned)
     cleaned = re.sub(r"\b(ux\d{4})([a-z]{1,2})\b", r"\1 \1\2 a14", cleaned)
     cleaned = re.sub(r"\b(tb336[a-z0-9]*)\b", r"\1 idea tab 11", cleaned)
     cleaned = re.sub(r"\b(fx607[a-z0-9]*)\b", r"\1 tuf f16 intel", cleaned)
     cleaned = re.sub(r"\b(82xq[a-z0-9]*)\b", r"\1 ideapad slim 3 ryzen 5", cleaned)
     cleaned = re.sub(r"\b(83je[a-z0-9]*)\b", r"\1 loq 15 intel i7", cleaned)
-    cleaned = re.sub(r"\b(rtx)(\d{4})\b", r"\1 \2", cleaned)
-    cleaned = re.sub(r"\b(r)([579])\b", r"ryzen \2", cleaned)
-    cleaned = re.sub(r"\bc5\s+210h\b", "intel core 5 210h", cleaned)
-    cleaned = re.sub(r"\b(i[3579])\b", r"intel \1", cleaned)
-    cleaned = re.sub(r"\b(4|6|8|12|16)\s*[\-+/]\s*(64|128|256|512|1024)\b", r"\1gb \2gb", cleaned)
-    cleaned = re.sub(r"(\d+)\s*(gb|tb)\b", r"\1\2", cleaned)
-    cleaned = re.sub(r"(\d+(?:\.\d+)?)\s*pulgadas\b", r"\1", cleaned)
-    cleaned = re.sub(r"\b(128|256|512|1024)\s*ssd\b", r"\1gb ssd", cleaned)
     cleaned = re.sub(r"\bteclado\s+en\s+(?:espanol|ingles)\b", " ", cleaned)
     return re.sub(r"\s+", " ", cleaned).strip()
 
@@ -219,7 +186,14 @@ def normalize_product_signature(
 def _has_word(token: str, normalized_text: str) -> bool:
     if not token or not normalized_text:
         return False
-    return bool(re.search(rf"\b{re.escape(token.lower())}\b", normalized_text))
+    low = token.lower()
+    if bool(re.search(rf"\b{re.escape(low)}\b", normalized_text)):
+        return True
+    if low in {"3", "5", "7", "9"} and bool(re.search(rf"\bcore\s+i{re.escape(low)}\b", normalized_text)):
+        return True
+    if low in {"i3", "i5", "i7", "i9"} and bool(re.search(rf"\bcore\s+{re.escape(low[1:])}\b", normalized_text)):
+        return True
+    return False
 
 
 def _extract_target_profile(target_product: Any) -> Dict[str, Any]:
@@ -413,61 +387,93 @@ def extract_search_candidate_links(
     limit: int = 5,
 ) -> List[str]:
     """
-    Extrae de la grilla de resultados de búsqueda (.product-item-info a.product-item-link
-    o #__NEXT_DATA__ props.pageProps.results) los links de los primeros `limit` (5)
+    Extrae de la grilla principal de resultados de búsqueda (.search.results / .products.wrapper,
+    #__NEXT_DATA__ props.pageProps.results o findabilityProps.data.products) los links de los primeros `limit` (5)
     productos cuyo título tenga coincidencia parcial con `broad_model_query` y no sean accesorios.
     """
     from urllib.parse import urljoin
     from bs4 import BeautifulSoup
+    from app.collectors.url_utils import is_marketplace_url
 
     if not html:
         return []
 
     soup = BeautifulSoup(html, "lxml")
-    query_tokens = [
+    raw_query_tokens = [
         t
         for t in re.findall(r"\b[a-z0-9]+\b", _normalize_corpus_text(broad_model_query))
-        if len(t) >= 2
+        if len(t) >= 2 and t not in DEFAULT_NEUTRAL_TOKENS
     ]
+    parent_brands_to_skip = {
+        SUBBRAND_LINE_TO_PARENT_BRAND[t]
+        for t in raw_query_tokens
+        if t in SUBBRAND_LINE_TO_PARENT_BRAND
+    }
+    query_tokens = [
+        t for t in raw_query_tokens if t not in parent_brands_to_skip
+    ] or raw_query_tokens
     links: List[str] = []
 
+    # Eliminar banners, nav, sidebars y carruseles promocionales antes de leer tarjetas HTML
+    clean_soup = BeautifulSoup(str(soup), "lxml")
+    for noise in clean_soup.select(
+        "header, nav, aside, footer, .block.upsell, .block.related, .block.crosssell, "
+        "[data-content-type='products'], .widget, .block-products-list, "
+        ".owl-carousel, .slick-slider, .swiper, [class*='carousel'], [class*='banner']"
+    ):
+        noise.decompose()
+
+    has_page_layout = bool(clean_soup.select_one("main, #maincontent, .column.main, .page-wrapper, .columns"))
+    if has_page_layout:
+        grid_scopes = clean_soup.select(
+            "main .search.results, #maincontent .search.results, .column.main .search.results, "
+            ".search.results, main#maincontent .column.main > .products.wrapper, "
+            "main .column.main > .products.wrapper, #maincontent .column.main > .products.wrapper, "
+            ".column.main > .products.wrapper"
+        )
+    else:
+        grid_scopes = [clean_soup]
+
     # 1. Grilla Magento 2 (Tiendas Efe, La Curacao, Hiraoka)
-    for card in soup.select(".product-item-info, li.product-item"):
-        anchors = card.select("a.product-item-link")
-        best_title = ""
-        best_href = ""
-        for a in anchors:
-            txt = a.get_text(" ", strip=True)
-            if len(txt) > len(best_title):
-                best_title = txt
-                best_href = str(a.get("href") or "")
-        if not best_title or not best_href:
-            continue
+    for scope in grid_scopes:
+        cards = scope.select("li.product-item") or scope.select(".product-item-info")
+        for card in cards:
+            anchors = card.select("a.product-item-link")
+            best_title = ""
+            best_href = ""
+            for a in anchors:
+                txt = a.get_text(" ", strip=True)
+                if len(txt) > len(best_title):
+                    best_title = txt
+                    best_href = str(a.get("href") or "")
+            if not best_title or not best_href:
+                continue
 
-        norm_t = _normalize_corpus_text(best_title)
-        if any(_has_word(acc, norm_t) for acc in UNIVERSAL_ACCESSORY_KEYWORDS):
-            continue
+            norm_t = _normalize_corpus_text(best_title)
+            if any(_has_word(acc, norm_t) for acc in UNIVERSAL_ACCESSORY_KEYWORDS):
+                continue
 
-        if query_tokens and not all(_has_word(qt, norm_t) for qt in query_tokens):
-            continue
+            if query_tokens and not all(_has_word(qt, norm_t) for qt in query_tokens):
+                continue
 
-        full_url = urljoin(search_url, best_href)
-        det_store, _ = canonicalize_store_url(full_url)
-        from app.collectors.url_utils import is_marketplace_url
-        if is_marketplace_url(det_store, full_url):
-            continue
-        if full_url not in links:
-            links.append(full_url)
-        if len(links) >= limit:
-            return links
+            full_url = urljoin(search_url, best_href)
+            det_store, clean_full = canonicalize_store_url(full_url)
+            eff_url = clean_full or full_url
+            if is_marketplace_url(det_store, eff_url):
+                continue
+            if eff_url not in links:
+                links.append(eff_url)
+            if len(links) >= limit:
+                return links
 
-    # 2. Resultados Next.js (Falabella, Tottus)
+    # 2. Resultados Next.js (Falabella, Tottus y Ripley findabilityProps)
     nd = soup.find("script", id="__NEXT_DATA__")
     if nd and nd.string:
         try:
             data = json.loads(nd.string)
-            results = data.get("props", {}).get("pageProps", {}).get("results") or []
-            if isinstance(results, list):
+            page_props = data.get("props", {}).get("pageProps", {})
+            results = page_props.get("results") or []
+            if isinstance(results, list) and results:
                 det_search_store, _ = canonicalize_store_url(search_url)
                 expected_seller_tok = "tottus" if det_search_store == "tottus" else "falabella"
                 for item in results:
@@ -486,8 +492,69 @@ def extract_search_candidate_links(
                     if query_tokens and not all(_has_word(qt, norm_t) for qt in query_tokens):
                         continue
                     full_u = urljoin(search_url, item_url)
-                    if full_u not in links:
-                        links.append(full_u)
+                    _, clean_u = canonicalize_store_url(full_u)
+                    eff_u = clean_u or full_u
+                    if eff_u not in links:
+                        links.append(eff_u)
+                    if len(links) >= limit:
+                        return links
+
+            ripley_prods = ((page_props.get("findabilityProps") or {}).get("data") or {}).get("products") or []
+            if isinstance(ripley_prods, list) and ripley_prods:
+                dom_url_by_sku: Dict[str, str] = {}
+                for a in clean_soup.find_all("a", href=True):
+                    href = str(a.get("href") or "").strip()
+                    if not href or "/search" in href.lower():
+                        continue
+                    full_href = urljoin(search_url, href)
+                    _, clean_href = canonicalize_store_url(full_href)
+                    eff_href = clean_href or full_href
+                    m_sku = re.search(r"-(\d{6,15}p?)$", eff_href.rstrip("/"), flags=re.IGNORECASE)
+                    if m_sku:
+                        tok_sku = m_sku.group(1).lower()
+                        dom_url_by_sku.setdefault(tok_sku, eff_href)
+                        dom_url_by_sku.setdefault(tok_sku.rstrip("p"), eff_href)
+
+                for item in ripley_prods:
+                    if not isinstance(item, dict):
+                        continue
+                    if item.get("isMarketplaceProduct") is True:
+                        continue
+                    part_id = str(item.get("parentProductID") or item.get("sku") or "").strip()
+                    if part_id.upper().startswith("PMP"):
+                        continue
+                    seller_val = str(item.get("seller") or "").strip().lower()
+                    if seller_val and ("marketplace" in seller_val or "ripley" not in seller_val):
+                        continue
+                    item_title = str(item.get("name") or item.get("displayName") or "").strip()
+                    item_brand = str(item.get("brand") or "").strip()
+                    full_title = (
+                        f"{item_brand} {item_title}".strip()
+                        if item_brand and item_brand.lower() not in item_title.lower()
+                        else item_title
+                    )
+                    if not full_title:
+                        continue
+                    norm_t = _normalize_corpus_text(full_title)
+                    if any(_has_word(acc, norm_t) for acc in UNIVERSAL_ACCESSORY_KEYWORDS):
+                        continue
+                    if query_tokens and not all(_has_word(qt, norm_t) for qt in query_tokens):
+                        continue
+
+                    raw_u = str(item.get("url") or "").strip()
+                    if raw_u:
+                        eff_u = canonicalize_store_url(urljoin(search_url, raw_u))[1] or urljoin(search_url, raw_u)
+                    else:
+                        tok_low = part_id.lower()
+                        eff_u = dom_url_by_sku.get(tok_low) or dom_url_by_sku.get(tok_low.rstrip("p"))
+                        if not eff_u and part_id:
+                            slug = re.sub(r"[^a-z0-9]+", "-", item_title.lower()).strip("-") or "producto"
+                            p_suffix = tok_low if tok_low.endswith("p") else f"{tok_low}p"
+                            eff_u = f"https://simple.ripley.com.pe/{slug}-{p_suffix}"
+                    if not eff_u or is_marketplace_url("ripley", eff_u):
+                        continue
+                    if eff_u not in links:
+                        links.append(eff_u)
                     if len(links) >= limit:
                         return links
         except Exception:
@@ -584,6 +651,34 @@ def match_product_universal(target_product: Any, candidate_page_data: Any) -> bo
             return False
 
     # --------------------------------------------------------------------------
+    # REGLA 0.5: Guardrails Estrictos + Señal Exacta EAN / GTIN / MPN
+    # --------------------------------------------------------------------------
+    if isinstance(target_product, dict):
+        t_specs_ref = target_product.get("tech_specs") or target_product.get("techSpecs") or {}
+    elif not isinstance(target_product, str):
+        t_specs_ref = getattr(target_product, "tech_specs", None) or {}
+    else:
+        t_specs_ref = {}
+    target_codes = extract_product_codes(tech_specs=t_specs_ref, title=profile["title"])
+    cand_codes = extract_product_codes(
+        tech_specs=cand_specs,
+        title=raw_cand_title,
+        url=cand_url,
+    )
+    exact_code_matched = has_exact_code_match(target_codes, cand_codes)
+
+    if not evaluate_strict_guardrails(
+        canonical_title=profile["title"],
+        scraped_title=raw_cand_title,
+        scraped_url=cand_url,
+        cand_specs=cand_specs,
+        cand_description=cand_desc,
+        target_specs=t_specs_ref,
+        exact_code_matched=exact_code_matched,
+    ):
+        return False
+
+    # --------------------------------------------------------------------------
     # REGLA 1: Ignorar Colores y Palabras de Marketing
     # (Los colores jamás descartan un candidato del mismo SKU técnico)
     # --------------------------------------------------------------------------
@@ -606,6 +701,10 @@ def match_product_universal(target_product: Any, candidate_page_data: Any) -> bo
         if not any(_has_word(alias, full_corpus) for alias in brand_aliases):
             return False
 
+    # Si hay coincidencia exacta de EAN/GTIN/MPN y pasó guardrails y marca, aceptar sin falsos rechazos de título
+    if exact_code_matched:
+        return True
+
     # Todos los tokens de línea/modelo/chip (ej. ['ipad', 'a16'], ['oled', 'c6'], ['redmi', 'note', '15', 'pro'])
     # deben estar presentes en title + tech_specs (o en la URL cuando es un Part Number como oled55b6psa)
     optional_subline_words = {"pixma", "ecotank", "uhd", "crystal", "vision", "tizen", "webos", "evo", "neo"}
@@ -614,6 +713,8 @@ def match_product_universal(target_product: Any, candidate_page_data: Any) -> bo
         for t in profile["model_tokens"]
     )
     for m_tok in profile["model_tokens"]:
+        if m_tok in DEFAULT_NEUTRAL_TOKENS:
+            continue
         if _has_word(m_tok, identity_zone):
             continue
         if not clean_title_norm and _has_word(m_tok, clean_url_norm):
@@ -772,9 +873,10 @@ def match_product_universal(target_product: Any, candidate_page_data: Any) -> bo
             return False
 
     if profile["requires_5g"]:
-        if _has_word("4g", title_norm) and not _has_word("5g", title_norm):
-            return False
-        if not _has_word("5g", full_corpus):
+        # '5g' puede omitirse en el título retail (token neutro), pero se rechaza si declara 4G o LTE sin 5G
+        primary_net = f"{title_norm} {url_norm}"
+        has_4g_or_lte = _has_word("4g", primary_net) or _has_word("lte", primary_net)
+        if has_4g_or_lte and not _has_word("5g", full_corpus):
             return False
 
     return True
@@ -899,8 +1001,11 @@ class UniversalProductResolver:
         if not enable_cascade_search:
             return None
 
-        # Paso 2: Búsqueda en cascada (specific_query -> broad_model_query)
-        queries = build_search_queries(canonical_title, tech_specs)
+        # Paso 2: Búsqueda en cascada (specific_query -> broad_model_query -> clean_catalog_queries)
+        queries = list(build_search_queries(canonical_title, tech_specs))
+        for cq in build_clean_catalog_queries(target_product, tech_specs):
+            if cq and cq.lower() not in {x.lower() for x in queries}:
+                queries.append(cq)
         for query in queries:
             search_url = build_store_search_url(store_id, query)
             if not search_url:

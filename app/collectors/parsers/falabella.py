@@ -5,12 +5,13 @@ aislando el nodo del producto principal y validando resultados si proviene de b�
 """
 import json
 import re
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
+from urllib.parse import urljoin
 from bs4 import BeautifulSoup
 
 from app.core.logging import get_logger
 from app.collectors.spec_extractor import extract_product_specs
-from app.collectors.url_utils import canonicalize_store_url, is_valid_product_image_url
+from app.collectors.url_utils import canonicalize_store_url, is_marketplace_url, is_valid_product_image_url
 from app.collectors.validators import check_is_in_stock, is_official_store_seller, validate_product_identity
 
 logger = get_logger("parsers.falabella")
@@ -58,13 +59,21 @@ def extract_falabella_prices(prices_list: List[Dict[str, Any]]) -> Tuple[Optiona
         is_crossed = bool(p_item.get("crossed", False))
 
         p_val = p_item.get("price", [])
-        raw = p_val[0] if isinstance(p_val, list) and p_val else p_val
-        num = clean_number(raw)
+        if isinstance(p_val, list):
+            parsed_nums = [clean_number(x) for x in p_val]
+            valid_nums = [n for n in parsed_nums if n is not None]
+            num = min(valid_nums) if valid_nums else None
+        else:
+            num = clean_number(p_val)
         if not num:
             continue
 
         all_prices.append(num)
-        if "normal" in p_type or is_crossed or "lista" in p_label:
+        if (
+            is_crossed
+            or any(tok in p_type for tok in ("normal", "list", "regular"))
+            or any(tok in p_label for tok in ("lista", "normal", "antes", "regular"))
+        ):
             regular_prices.append(num)
         else:
             active_prices.append(num)
@@ -78,6 +87,65 @@ def extract_falabella_prices(prices_list: List[Dict[str, Any]]) -> Tuple[Optiona
     return best_p, list_p
 
 
+def _is_falabella_item_official(item: Dict[str, Any], eff_store: str) -> bool:
+    """
+    Valida el vendedor directamente desde los campos estructurados del ítem o variante
+    (`sellerName`, `sellerId`, `seller`, `offerings`), sin contaminarse con filtros laterales.
+    """
+    if not isinstance(item, dict):
+        return False
+    if item.get("isMarketplace") is True:
+        return False
+
+    expected_tok = "tottus" if eff_store == "tottus" else "falabella"
+    direct_sellers: List[str] = []
+    for key in ("sellerName", "sellerId"):
+        val = item.get(key)
+        if val is not None and str(val).strip():
+            direct_sellers.append(str(val).strip().lower())
+
+    seller_obj = item.get("seller")
+    if isinstance(seller_obj, dict):
+        for key in ("name", "sellerName", "id", "sellerId"):
+            val = seller_obj.get(key)
+            if val is not None and str(val).strip():
+                direct_sellers.append(str(val).strip().lower())
+    elif isinstance(seller_obj, str) and seller_obj.strip():
+        direct_sellers.append(seller_obj.strip().lower())
+
+    if direct_sellers:
+        return any(expected_tok in s for s in direct_sellers)
+
+    offering_sellers: List[str] = []
+    for off in item.get("offerings") or item.get("offers") or []:
+        if not isinstance(off, dict):
+            continue
+        for key in ("sellerName", "sellerId"):
+            val = off.get(key)
+            if val is not None and str(val).strip():
+                offering_sellers.append(str(val).strip().lower())
+    if offering_sellers:
+        return any(expected_tok in s for s in offering_sellers)
+
+    return True
+
+
+def _is_falabella_variant_available(v_obj: Dict[str, Any]) -> bool:
+    """Verifica disponibilidad comercial de una variante cuando el payload declara flags de stock."""
+    if not isinstance(v_obj, dict):
+        return False
+    if v_obj.get("isPurchaseable") is False:
+        return False
+    delivery_flags = [
+        v_obj.get("isOnlineSellable"),
+        v_obj.get("isHDAvailable"),
+        v_obj.get("isCCAvailable"),
+    ]
+    if all(flag is False for flag in delivery_flags):
+        return False
+    return True
+
+
 FORBIDDEN_ERROR_PHRASES_FALABELLA = (
     "¡uy! no hemos encontrado resultados",
     "no hemos encontrado resultados para tu búsqueda",
@@ -89,8 +157,106 @@ FORBIDDEN_ERROR_PHRASES_FALABELLA = (
 )
 
 
+def _parse_falabella_dom_search_cards(
+    soup: BeautifulSoup,
+    offer_url: str,
+    eff_store: str,
+    canonical_title: Optional[str],
+    local_seen: Set[str],
+) -> Optional[Dict[str, Any]]:
+    """Fallback de tarjetas DOM en búsquedas de Falabella/Tottus evaluando vendedor solo dentro de cada pod."""
+    if not canonical_title:
+        return None
+
+    clean_soup = BeautifulSoup(str(soup), "lxml")
+    for noise in clean_soup.select(
+        "aside, nav, header, footer, [class*='filter'], [class*='facet'], [id*='filter'], [class*='sidebar']"
+    ):
+        noise.decompose()
+
+    pods = clean_soup.select(
+        ".search-results--products .pod, [data-pod='catalyst-pod'], div.pod, article.pod-item"
+    )
+    best_candidate: Optional[Dict[str, Any]] = None
+    for pod in pods:
+        link_el = pod.select_one("a[href*='/product/'], a[href*='/articulo/'], a[href]")
+        if not link_el:
+            continue
+        raw_href = str(link_el.get("href") or "").strip()
+        if not raw_href:
+            continue
+        full_href = urljoin(offer_url, raw_href)
+        _, clean_item_url = canonicalize_store_url(full_href)
+        item_url = clean_item_url or full_href
+        if is_marketplace_url(eff_store, item_url):
+            continue
+
+        dedup_key = f"{eff_store}:{item_url.rstrip('/').lower()}"
+        if dedup_key in local_seen:
+            continue
+        local_seen.add(dedup_key)
+
+        seller_el = pod.select_one(".pod-sellerText, [id*='displaySellerText'], [class*='seller']")
+        if seller_el:
+            seller_txt = seller_el.get_text(" ", strip=True).lower()
+            if seller_txt and not is_official_store_seller(eff_store, seller_txt, item_url):
+                continue
+        elif not is_official_store_seller(eff_store, str(pod), item_url):
+            continue
+
+        title_el = pod.select_one(".pod-subTitle, [class*='subTitle'], [data-testid='pod-title'], b.title, h2, h3")
+        brand_el = pod.select_one(".pod-title, [class*='brand']")
+        item_title = title_el.get_text(" ", strip=True) if title_el else link_el.get_text(" ", strip=True)
+        item_brand = brand_el.get_text(" ", strip=True) if brand_el else ""
+        full_title = (
+            f"{item_brand} {item_title}".strip()
+            if item_brand and item_brand.lower() not in item_title.lower()
+            else item_title
+        )
+        if not full_title or not validate_product_identity(canonical_title, full_title, item_url, store_id=eff_store):
+            continue
+
+        active_p_list: List[float] = []
+        reg_p_list: List[float] = []
+        for p_el in pod.select("[data-cmr-price], [data-internet-price], [data-event-price], .prices-0 span, .copy10"):
+            p_num = clean_number(
+                p_el.get("data-cmr-price")
+                or p_el.get("data-internet-price")
+                or p_el.get("data-event-price")
+                or p_el.get_text(" ", strip=True)
+            )
+            if p_num:
+                cls_str = " ".join(p_el.get("class") or []).lower()
+                if "crossed" in cls_str or "normal" in cls_str:
+                    reg_p_list.append(p_num)
+                else:
+                    active_p_list.append(p_num)
+        if not active_p_list:
+            continue
+        best_p = min(active_p_list)
+        list_p = max(reg_p_list) if reg_p_list else best_p
+        img_el = pod.select_one("img")
+        img_u = (img_el.get("src") or img_el.get("data-src")) if img_el else None
+        cand = {
+            "title": full_title,
+            "brand": item_brand,
+            "price": best_p,
+            "original_price": list_p if list_p > best_p else best_p,
+            "image_url": img_u,
+            "offer_url": item_url,
+            "in_stock": True,
+        }
+        if best_candidate is None or best_p < best_candidate["price"]:
+            best_candidate = cand
+
+    return best_candidate
+
+
 def parse_falabella(
-    html: str, offer_url: str, canonical_title: Optional[str] = None
+    html: str,
+    offer_url: str,
+    canonical_title: Optional[str] = None,
+    seen_candidate_urls: Optional[Set[str]] = None,
 ) -> Optional[Dict[str, Any]]:
     """
     Extrae título real, precio más bajo vigente (incluyendo CMR/Internet), precio de lista e imagen oficial desde el HTML de Falabella.
@@ -110,9 +276,8 @@ def parse_falabella(
     detected_store, clean_offer_url = canonicalize_store_url(offer_url)
     offer_url = clean_offer_url or offer_url
     eff_store = "tottus" if detected_store == "tottus" else "falabella"
-
-    if not is_official_store_seller(eff_store, html, offer_url):
-        return None
+    is_search_url = any(seg in offer_url.lower() for seg in ("/search", "/buscar", "ntt="))
+    local_seen = seen_candidate_urls if seen_candidate_urls is not None else set()
 
     soup = BeautifulSoup(html, "lxml")
     h1_el = soup.select_one("h1.jsx-product-name, .product-name h1, h1")
@@ -125,7 +290,7 @@ def parse_falabella(
             data = json.loads(next_script.string)
             props = data.get("props", {}).get("pageProps", {})
 
-            # Si es una página de resultados de búsqueda en __NEXT_DATA__, evaluar todos los colores/resultados válidos y elegir el más barato
+            # Si es una página de resultados de búsqueda en __NEXT_DATA__, validar vendedor por ítem y elegir el menor precio vigente
             search_results = props.get("results")
             if isinstance(search_results, list) and search_results and not props.get("productData"):
                 if not canonical_title:
@@ -134,8 +299,7 @@ def parse_falabella(
                 for item in search_results:
                     if not isinstance(item, dict):
                         continue
-                    item_seller = str(item.get("sellerName") or item.get("sellerId") or "").strip().lower()
-                    if item_seller and eff_store not in item_seller:
+                    if not _is_falabella_item_official(item, eff_store):
                         continue
                     item_brand = str(item.get("brand") or "").strip()
                     item_title = str(item.get("displayName") or item.get("name") or "").strip()
@@ -145,8 +309,23 @@ def parse_falabella(
                         else item_title
                     )
                     raw_item_url = str(item.get("url") or offer_url).strip()
+                    item_sku_id = str(item.get("skuId") or "").strip()
+                    if item_sku_id and re.match(
+                        r"^https?://[^/]+/(?:falabella-pe|tottus-pe)/(?:product|articulo)/[^/]+/[^/?#]+/?$",
+                        raw_item_url,
+                        flags=re.IGNORECASE,
+                    ):
+                        raw_item_url = f"{raw_item_url.rstrip('/')}/{item_sku_id}"
                     _, clean_item_url = canonicalize_store_url(raw_item_url)
                     item_url = clean_item_url or raw_item_url
+                    if is_marketplace_url(eff_store, item_url):
+                        continue
+
+                    dedup_key = f"{eff_store}:{item_url.rstrip('/').lower()}"
+                    if dedup_key in local_seen:
+                        continue
+                    local_seen.add(dedup_key)
+
                     if not validate_product_identity(
                         canonical_title, full_item_title, item_url, store_id=eff_store
                     ):
@@ -160,7 +339,7 @@ def parse_falabella(
                             "title": full_item_title,
                             "brand": item_brand,
                             "price": best_p,
-                            "original_price": list_p if list_p > best_p else best_p,
+                            "original_price": list_p if (list_p and list_p > best_p) else best_p,
                             "image_url": img_u,
                             "offer_url": item_url,
                             "in_stock": True,
@@ -170,13 +349,21 @@ def parse_falabella(
                 return best_search_candidate
 
             prod = props.get("productData", {}) or props.get("product", {})
+            if is_search_url and not prod:
+                return _parse_falabella_dom_search_cards(
+                    soup, offer_url, eff_store, canonical_title, local_seen
+                )
+
+            if not is_official_store_seller(eff_store, html, offer_url):
+                return None
+
             prod_brand = str(prod.get("brandName") or prod.get("brand") or "").strip()
             prod_title = str(prod.get("name") or prod.get("displayName") or h1_title).strip()
             if prod_brand and prod_title and prod_brand.lower() not in prod_title.lower():
                 prod_title = f"{prod_brand} {prod_title}".strip()
 
             # Si offer_url era una URL de búsqueda que redirigió directamente a la ficha del producto, extraer la URL canónica real
-            if any(seg in offer_url.lower() for seg in ("/search", "/buscar", "ntt=")):
+            if is_search_url:
                 canon_link = soup.find("link", rel="canonical")
                 og_url_meta = soup.find("meta", property="og:url")
                 redirected_u = (
@@ -207,7 +394,7 @@ def parse_falabella(
 
             if variants and isinstance(variants, list):
                 # Multi-SKU & Multi-Color Variant Resolution:
-                # Evaluar TODAS las variantes (todos los colores) que cumplan la capacidad buscada
+                # Evaluar TODAS las variantes (todos los colores) oficiales y disponibles que cumplan la capacidad buscada
                 # y seleccionar la que tenga el PRECIO MÁS BARATO.
                 url_parts = [p for p in offer_url.split("/") if p]
                 url_tail_sku = url_parts[-1] if len(url_parts) >= 6 else ""
@@ -224,8 +411,18 @@ def parse_falabella(
                     b_p, _ = extract_falabella_prices(v_obj.get("prices", []) or [])
                     return b_p
 
+                official_variants = [
+                    v_c for v_c in variants if isinstance(v_c, dict) and _is_falabella_item_official(v_c, eff_store)
+                ]
+                available_variants = [v_c for v_c in official_variants if _is_falabella_variant_available(v_c)]
+                if official_variants and not available_variants and all(
+                    v_c.get("isPurchaseable") is False for v_c in official_variants
+                ):
+                    return None
+                candidate_variants = available_variants or official_variants
+
                 priced_variants = [
-                    v_c for v_c in variants if isinstance(v_c, dict) and _variant_min_price(v_c) is not None
+                    v_c for v_c in candidate_variants if _variant_min_price(v_c) is not None
                 ]
 
                 matching_capacity_variants = []
@@ -264,6 +461,8 @@ def parse_falabella(
                     selected_v = matching_capacity_variants[0]
                 elif priced_variants:
                     selected_v = priced_variants[0]
+                elif candidate_variants:
+                    selected_v = candidate_variants[0]
                 else:
                     selected_v = variants[0]
 
@@ -290,7 +489,7 @@ def parse_falabella(
                     )
                     if m_url:
                         offer_url = f"{m_url.group(1)}/{variant_id}"
-                    elif any(seg in offer_url.lower() for seg in ("/search", "/buscar", "ntt=")):
+                    elif is_search_url:
                         prod_id = str(prod.get("id") or variant_id).strip()
                         slug = re.sub(r"[^a-z0-9]+", "-", prod_title.lower()).strip("-") or "producto"
                         if eff_store == "tottus":
@@ -320,7 +519,7 @@ def parse_falabella(
                 return {
                     "title": prod_title,
                     "price": variant_best_p,
-                    "original_price": variant_list_p if variant_list_p > variant_best_p else variant_best_p,
+                    "original_price": variant_list_p if (variant_list_p and variant_list_p > variant_best_p) else variant_best_p,
                     "image_url": official_img,
                     "offer_url": offer_url,
                     "brand": extracted_meta["brand"] or prod_brand,
@@ -332,6 +531,14 @@ def parse_falabella(
                 }
         except Exception as e:
             logger.debug(f"Error parseando __NEXT_DATA__ en Falabella: {e}")
+
+    if is_search_url:
+        return _parse_falabella_dom_search_cards(
+            soup, offer_url, eff_store, canonical_title, local_seen
+        )
+
+    if not is_official_store_seller(eff_store, html, offer_url):
+        return None
 
     # 2. Estrategia JSON-LD
     for s in soup.find_all("script", type="application/ld+json"):

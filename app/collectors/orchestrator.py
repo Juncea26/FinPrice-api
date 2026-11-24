@@ -12,7 +12,7 @@ import re
 import time
 from datetime import date, datetime, timedelta, timezone
 from enum import Enum
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 from zoneinfo import ZoneInfo
 
 from sqlalchemy import select
@@ -197,6 +197,26 @@ SPANISH_MONTHS_SHORT = {
 # 4 ventanas diarias de actualización programada en hora oficial de Perú (America/Lima, UTC-5)
 SCHEDULE_WINDOWS = [(0, 59), (6, 59), (12, 59), (18, 59)]
 SCHEDULE_WINDOWS_LABELS = ["00:59", "06:59", "12:59", "18:59"]
+
+
+def calculate_seconds_until_next_window(
+    tz_name: str = "America/Lima",
+) -> Tuple[float, str]:
+    """
+    Calcula los segundos exactos restantes hasta el próximo corte programado
+    entre las 4 ventanas diarias: 00:59, 06:59, 12:59 y 18:59 (America/Lima).
+    Retorna (segundos_restantes, etiqueta_ventana).
+    """
+    tz = ZoneInfo(tz_name)
+    now = datetime.now(tz)
+    candidates = []
+    for hour, minute in SCHEDULE_WINDOWS:
+        candidate = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+        if candidate <= now:
+            candidate += timedelta(days=1)
+        candidates.append((candidate, f"{hour:02d}:{minute:02d}"))
+    next_dt, label = min(candidates, key=lambda item: item[0])
+    return max(1.0, (next_dt - now).total_seconds()), label
 
 
 def get_today_peru() -> date:
@@ -537,7 +557,7 @@ class CollectorOrchestrator:
                     scraped_title="",
                     scraped_url=off.offer_url,
                     store_id=off.store_id,
-                    tech_specs=tech_specs,
+                    target_tech_specs=tech_specs,
                 )
                 if is_valid_id:
                     if off.price and float(off.price) > 0:
@@ -867,6 +887,7 @@ class CollectorOrchestrator:
         session: AsyncSession,
         on_cache_invalidate: Optional[Callable[[], None]] = None,
         discover_missing_stores: bool = False,
+        only_stores: Optional[Sequence[str]] = None,
     ) -> Dict[str, Any]:
         """
         Ejecuta la recolección en vivo de precios reales aplicando:
@@ -877,6 +898,14 @@ class CollectorOrchestrator:
         """
         if self._is_syncing:
             return {"status": "in_progress", "message": "Sincronización en ejecución."}
+
+        allowed_stores_set: Optional[set] = None
+        if only_stores is not None:
+            allowed_stores_set = {
+                s.strip().lower()
+                for s in only_stores
+                if isinstance(s, str) and s.strip().lower() in STORES_INFO
+            }
 
         self._is_syncing = True
         start_time = time.time()
@@ -890,9 +919,15 @@ class CollectorOrchestrator:
 
             is_real_live_network = (fetch_page is default_fetch_page)
             enable_discovery = discover_missing_stores or is_real_live_network
-            logger.info(
-                f"Iniciando recolección REAL en vivo (discover_missing_stores={enable_discovery})..."
-            )
+            if allowed_stores_set is not None:
+                logger.info(
+                    f"Iniciando recolección REAL en vivo (discover_missing_stores={enable_discovery}, "
+                    f"only_stores={sorted(allowed_stores_set)})..."
+                )
+            else:
+                logger.info(
+                    f"Iniciando recolección REAL en vivo (discover_missing_stores={enable_discovery})..."
+                )
 
             # Primero sanear cualquier oferta inválida existente en BD y poblar caché de URLs verificadas
             await self.sanitize_database_offers(session=session)
@@ -942,13 +977,24 @@ class CollectorOrchestrator:
                             store_urls[db_off.store_id] = db_off.offer_url
 
                 target_item = dict(item)
-                target_item["store_urls"] = store_urls
-
-                stores_to_query = (
-                    list(ALL_8_PERU_STORES)
-                    if enable_discovery
-                    else list(store_urls.keys())
-                )
+                if allowed_stores_set is None:
+                    target_item["store_urls"] = store_urls
+                    stores_to_query = (
+                        list(ALL_8_PERU_STORES)
+                        if enable_discovery
+                        else list(store_urls.keys())
+                    )
+                else:
+                    target_item["store_urls"] = {
+                        k: v for k, v in store_urls.items() if k in allowed_stores_set
+                    }
+                    stores_to_query = (
+                        [s for s in ALL_8_PERU_STORES if s in allowed_stores_set]
+                        if enable_discovery
+                        else [s for s in store_urls.keys() if s in allowed_stores_set]
+                    )
+                    if not stores_to_query:
+                        stores_to_query = [s for s in ALL_8_PERU_STORES if s in allowed_stores_set]
 
                 state = await self.graph.execute_state(
                     target_product=target_item,
@@ -1070,6 +1116,29 @@ class CollectorOrchestrator:
 
                 for s_id, prev_off in existing_offers_by_store.items():
                     if s_id in verified_store_ids:
+                        continue
+
+                    if allowed_stores_set is not None and s_id not in allowed_stores_set:
+                        if (
+                            prev_off.price
+                            and float(prev_off.price) > 0
+                            and getattr(prev_off, "in_stock", True) is not False
+                        ):
+                            retained_offers.append(
+                                {
+                                    "store_id": prev_off.store_id,
+                                    "store_name": prev_off.store_name,
+                                    "title": canonical_title,
+                                    "price": float(prev_off.price),
+                                    "original_price": float(prev_off.original_price or prev_off.price),
+                                    "offer_url": prev_off.offer_url,
+                                    "image_url": existing_prod.image_url if existing_prod else None,
+                                    "in_stock": True,
+                                    "tech_specs": tech_specs,
+                                    "features": item.get("features") or [],
+                                    "_retained": True,
+                                }
+                            )
                         continue
 
                     prev_url = prev_off.offer_url
@@ -1336,7 +1405,13 @@ class CollectorOrchestrator:
             )
             max_days_tracked = max((getattr(p, "days_tracked", 1) or 1 for p in all_prods_after), default=1)
 
-            for s_id, st in store_stats.items():
+            stores_to_report = (
+                [s for s in ALL_8_PERU_STORES if s in allowed_stores_set]
+                if allowed_stores_set is not None
+                else list(ALL_8_PERU_STORES)
+            )
+            for s_id in stores_to_report:
+                st = store_stats[s_id]
                 logger.info(
                     f"[SYNC_STORE_SUMMARY] tienda={s_id} | 200_OK={st['ok_200']} | "
                     f"conservadas_error_temporal={st['retained_error']} | sin_stock(in_stock=False)={st['out_of_stock']}"
@@ -1478,6 +1553,7 @@ class CollectorOrchestrator:
         self,
         session: AsyncSession,
         on_cache_invalidate: Optional[Callable[[], None]] = None,
+        only_stores: Optional[Sequence[str]] = None,
     ) -> Dict[str, Any]:
         """
         Rutina programada ejecutada 4 veces al día (00:59, 06:59, 12:59 y 18:59 America/Lima)
@@ -1491,6 +1567,7 @@ class CollectorOrchestrator:
         result = await self.sync_all_catalog_products(
             session=session,
             on_cache_invalidate=on_cache_invalidate,
+            only_stores=only_stores,
         )
         gc.collect()
         logger.info(f"Actualización programada completada exitosamente: {result}")
@@ -1500,11 +1577,13 @@ class CollectorOrchestrator:
         self,
         session: AsyncSession,
         on_cache_invalidate: Optional[Callable[[], None]] = None,
+        only_stores: Optional[Sequence[str]] = None,
     ) -> Dict[str, Any]:
         """Alias compatible que delega a run_scheduled_price_update."""
         return await self.run_scheduled_price_update(
             session=session,
             on_cache_invalidate=on_cache_invalidate,
+            only_stores=only_stores,
         )
 
 
