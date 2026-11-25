@@ -27,6 +27,7 @@ from app.collectors.category_registry import (
     get_category_spec,
     get_store_category_sources,
     infer_tech_category,
+    is_valid_storage_or_network_item,
 )
 from app.collectors.http_client import fetch_page
 from app.collectors.parsers.falabella import (
@@ -396,10 +397,15 @@ def _finalize_candidate_listing(
     inferred = infer_tech_category(title=title, url=eff_url, default_category=category_spec.slug)
     if is_broad_category:
         final_category = inferred if inferred != "otros_tech" else category_spec.slug
+    elif category_spec.slug == "almacenamiento_redes" and inferred not in {"almacenamiento_redes", "otros_tech"}:
+        final_category = inferred
     else:
         if _is_search_like_url(page_url) and inferred not in {category_spec.slug, "otros_tech"}:
             return (None, "filtered")
         final_category = category_spec.slug
+
+    if final_category == "almacenamiento_redes" and not is_valid_storage_or_network_item(title, eff_url):
+        return (None, "filtered")
 
     if not is_strict_tech_product(title=title, category=final_category, url=eff_url, brand=raw_brand):
         return (None, "filtered")

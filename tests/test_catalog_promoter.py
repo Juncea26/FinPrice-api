@@ -831,11 +831,16 @@ async def test_promoter_auto_pruning_preserves_seed_products_and_cleans_invalid_
 
 
 @pytest.mark.asyncio
-async def test_api_products_gzip_and_60s_cache_invalidation(tmp_path):
+async def test_api_products_gzip_and_1800s_cache_prewarm_invalidation(tmp_path):
     from httpx import ASGITransport, AsyncClient
     from main import app
     from app.core.database import get_read_db
-    from app.services.catalog_service import catalog_service
+    from app.services.catalog_service import (
+        _PRODUCTS_RESPONSE_CACHE_TTL_SECONDS,
+        catalog_service,
+    )
+
+    assert _PRODUCTS_RESPONSE_CACHE_TTL_SECONDS == 1800.0
 
     db_file = tmp_path / "api_cache_gzip.db"
     test_engine = create_async_engine(f"sqlite+aiosqlite:///{db_file}", future=True)
@@ -862,6 +867,17 @@ async def test_api_products_gzip_and_60s_cache_invalidation(tmp_path):
             )
         )
         await s.commit()
+
+        catalog_service.invalidate_cache()
+        warmed_bytes = await catalog_service.prewarm_default_products_cache(session=s)
+        assert warmed_bytes > 100
+        default_key = catalog_service._build_products_cache_key(
+            search=None, category=None, brand=None, processor=None, ram=None,
+            storage=None, tv_resolution=None, connectivity=None, screen=None,
+            os_filter=None, dynamic_specs=None, enabled_stores=None,
+            sort_order=None, limit=None, offset=0, store=None, min_stores=None, sort=None,
+        )
+        assert default_key in catalog_service._products_json_cache
 
     async def _override_read_db():
         async with SessionMaker() as s:
@@ -912,3 +928,212 @@ async def test_api_products_gzip_and_60s_cache_invalidation(tmp_path):
         app.dependency_overrides.pop(get_read_db, None)
         catalog_service.invalidate_cache()
         await test_engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_structured_laptop_matching_and_variant_protection(tmp_path):
+    from app.collectors.category_crawler import ScrapedListing
+    from app.collectors.tech_normalizer import build_structured_match_key, extract_inline_manufacturer_mpns
+
+    assert "x1504vabq523w" in extract_inline_manufacturer_mpns(
+        'Laptop Asus Vivobook 15 de 15.6", Intel Core 3 304, 8GB RAM, disco sólido de 256GB, modelo X1504VA-BQ523W'
+    )
+    k_fal = build_structured_match_key('Acer Laptop Aspire Lite AMD Ryzen 5 8GB 512GB 15.6" FHD', "Acer", category="laptops")
+    k_rip = build_structured_match_key("LAPTOP ACER ASPIRE LITE AMD RYZEN 5 8GB RAM 512GB SSD 15.6”", "Acer", category="laptops")
+    assert k_fal is not None and k_fal == k_rip
+
+    db_file = tmp_path / "structured_laptops.db"
+    test_engine = create_async_engine(f"sqlite+aiosqlite:///{db_file}", future=True)
+    SessionMaker = async_sessionmaker(bind=test_engine, class_=AsyncSession, expire_on_commit=False)
+
+    async with test_engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
+    listings = [
+        # Par 1: Acer Aspire Lite R5 8GB 512GB 15.6" (Falabella + Ripley) -> DEBE FUSIONAR
+        ScrapedListing(
+            store="falabella",
+            store_sku="AC_FAL",
+            category="laptops",
+            title='Acer Laptop Aspire Lite AMD Ryzen 5 8GB 512GB 15.6" FHD',
+            brand="Acer",
+            price=1949.0,
+            original_price=2299.0,
+            currency="PEN",
+            url="https://www.falabella.com.pe/falabella-pe/product/11/acer-lite/11",
+            image_url="https://media.falabella.com.pe/acer1.jpg",
+            in_stock=True,
+        ),
+        ScrapedListing(
+            store="ripley",
+            store_sku="AC_RIP",
+            category="laptops",
+            title="LAPTOP ACER ASPIRE LITE AMD RYZEN 5 8GB RAM 512GB SSD 15.6”",
+            brand="Acer",
+            price=1799.0,
+            original_price=2199.0,
+            currency="PEN",
+            url="https://simple.ripley.com.pe/laptop-acer-aspire-lite-r5-2004111p",
+            image_url="https://home.ripley.com.pe/acer1.webp",
+            in_stock=True,
+        ),
+        # Par 2: Asus Vivobook 15 Core 3 304 8GB 256GB 15.6" (Falabella + Hiraoka con MPN largo) -> DEBE FUSIONAR
+        ScrapedListing(
+            store="falabella",
+            store_sku="VV_FAL",
+            category="laptops",
+            title='Asus Vivobook 15 Intel Core 3 304 8GB 256SSD 15.6" FHD',
+            brand="Asus",
+            price=1899.0,
+            original_price=2199.0,
+            currency="PEN",
+            url="https://www.falabella.com.pe/falabella-pe/product/22/vv-c3/22",
+            image_url="https://media.falabella.com.pe/vv1.jpg",
+            in_stock=True,
+        ),
+        ScrapedListing(
+            store="hiraoka",
+            store_sku="VV_HIR",
+            category="laptops",
+            title='Laptop Asus Vivobook 15 de 15.6", Intel Core 3 304, 8GB RAM, disco sólido de 256GB, modelo X1504VA-BQ523W',
+            brand="Asus",
+            price=1949.0,
+            original_price=2249.0,
+            currency="PEN",
+            url="https://hiraoka.com.pe/laptop-asus-vivobook-15-core-3-304-x1504va-bq523w",
+            image_url="https://hiraoka.com.pe/media/vv1.jpg",
+            in_stock=True,
+        ),
+        # Variantes distintas que NUNCA deben mezclarse: 16GB RAM, 512GB SSD, Core 5, RTX 4050
+        ScrapedListing(
+            store="tottus",
+            store_sku="VV_16_512",
+            category="laptops",
+            title='Asus Vivobook 15 Intel Core 3 304 16RAM 512SSD 15.6" FHD',
+            brand="Asus",
+            price=2199.0,
+            original_price=2499.0,
+            currency="PEN",
+            url="https://www.tottus.com.pe/tottus-pe/articulo/33/vv-16/33",
+            image_url="https://media.falabella.com.pe/vv16.jpg",
+            in_stock=True,
+        ),
+        ScrapedListing(
+            store="efe",
+            store_sku="VV_C5_RTX",
+            category="laptops",
+            title='Laptop Gamer Asus Vivobook 15 Intel Core 5 8GB 512GB RTX 4050 15.6"',
+            brand="Asus",
+            price=3299.0,
+            original_price=3699.0,
+            currency="PEN",
+            url="https://www.efe.com.pe/vv-c5-rtx4050.html",
+            image_url="https://www.efe.com.pe/media/vvrtx.jpg",
+            in_stock=True,
+        ),
+    ]
+
+    async with SessionMaker() as session:
+        summary = await promote_store_listings(
+            session=session,
+            dry_run=False,
+            in_memory_listings=listings,
+            today_peru=date(2026, 4, 21),
+        )
+        assert summary.new_multi_store_groups == 2
+        assert summary.new_single_store_products == 2
+        assert summary.total_promoted_products == 4
+
+        multi_titles = {ex.title: ex for ex in summary.multi_store_examples}
+        assert any("Aspire Lite" in t and ex.stores_count == 2 for t, ex in multi_titles.items())
+        assert any("Vivobook 15" in t and ex.stores_count == 2 for t, ex in multi_titles.items())
+
+    await test_engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_toy_karaoke_rejection_and_strict_category_reclassification(tmp_path):
+    db_file = tmp_path / "reclass_toys.db"
+    test_engine = create_async_engine(f"sqlite+aiosqlite:///{db_file}", future=True)
+    SessionMaker = async_sessionmaker(bind=test_engine, class_=AsyncSession, expire_on_commit=False)
+
+    async with test_engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
+    async with SessionMaker() as session:
+        session.add_all(
+            [
+                # Juguetes infantiles -> DEBEN rechazarse/podarse
+                StoreListing(
+                    store="tottus",
+                    store_sku="TOY_WOODY",
+                    category="almacenamiento_redes",
+                    title="Disney Micrófono Karaoke Woody",
+                    brand="Disney",
+                    price=39.9,
+                    original_price=49.9,
+                    url="https://www.tottus.com.pe/tottus-pe/articulo/151402787/microfono-karaoke-woody/151402789",
+                    image_url="https://media.falabella.com.pe/woody.jpg",
+                    in_stock=True,
+                ),
+                StoreListing(
+                    store="tottus",
+                    store_sku="TOY_JESSIE",
+                    category="almacenamiento_redes",
+                    title="Disney Micrófono Karaoke Jessie",
+                    brand="Disney",
+                    price=39.9,
+                    original_price=49.9,
+                    url="https://www.tottus.com.pe/tottus-pe/articulo/151402869/microfono-karaoke-jessie/151402871",
+                    image_url="https://media.falabella.com.pe/jessie.jpg",
+                    in_stock=True,
+                ),
+                # Smartphone que cayó en almacenamiento_redes -> DEBE reclasificarse a celulares (Smartphones)
+                StoreListing(
+                    store="falabella",
+                    store_sku="OPPO_X10",
+                    category="almacenamiento_redes",
+                    title="Oppo Find X10 5G 12GB + 512GB",
+                    brand="Oppo",
+                    price=5999.0,
+                    original_price=6499.0,
+                    url="https://www.falabella.com.pe/falabella-pe/product/80226828/oppo-find-x10-5g-12gb-512gb/80226830",
+                    image_url="https://media.falabella.com.pe/oppo.jpg",
+                    in_stock=True,
+                ),
+                # Equipo de audio real con palabra Karaoke -> DEBE conservarse en Audio
+                StoreListing(
+                    store="ripley",
+                    store_sku="LG_XBOOM",
+                    category="audio",
+                    title="TORRE DE SONIDO LG XBOOM RNC9 MULTI-BLUETOOTH KARAOKE STAR",
+                    brand="LG",
+                    price=1099.0,
+                    original_price=1499.0,
+                    url="https://simple.ripley.com.pe/torre-de-sonido-lg-xboom-rnc9-20041234p",
+                    image_url="https://home.ripley.com.pe/xboom.webp",
+                    in_stock=True,
+                ),
+            ]
+        )
+        await session.commit()
+
+        summary = await promote_store_listings(
+            session=session,
+            dry_run=False,
+            in_memory_listings=None,
+            today_peru=date(2026, 4, 21),
+        )
+        assert summary.pruned_non_tech_listings == 2
+        assert summary.reclassified_listings >= 1
+        assert summary.total_promoted_products == 2
+
+        prods = list((await session.execute(select(ProductEntity))).scalars().all())
+        by_title = {p.title: p for p in prods}
+        assert len(prods) == 2
+        oppo_prod = next(p for t, p in by_title.items() if "Oppo" in t)
+        lg_prod = next(p for t, p in by_title.items() if "XBOOM" in t or "Xboom" in t)
+        assert oppo_prod.category == "Smartphones"
+        assert lg_prod.category == "Audio"
+
+    await test_engine.dispose()

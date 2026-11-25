@@ -28,6 +28,7 @@ from app.core.database import (
     get_db,
     get_read_db,
     init_db,
+    is_test,
 )
 from app.core.logging import get_logger
 from app.core.security import (
@@ -50,6 +51,22 @@ logger = get_logger("entrypoint")
 
 _background_task: Optional[asyncio.Task] = None
 _keep_alive_task: Optional[asyncio.Task] = None
+_warmup_task: Optional[asyncio.Task] = None
+
+
+async def _background_prewarm_catalog() -> None:
+    """Pre-calienta en segundo plano la caché JSON en memoria de `GET /api/v1/products`."""
+    try:
+        t0 = time.perf_counter()
+        payload_bytes = await catalog_service.prewarm_default_products_cache()
+        elapsed_ms = (time.perf_counter() - t0) * 1000.0
+        logger.info(
+            f"Pre-calentamiento de caché de catálogo completado en RAM ({payload_bytes} bytes en {elapsed_ms:.1f}ms)."
+        )
+    except asyncio.CancelledError:
+        pass
+    except Exception as exc:
+        logger.warning(f"No se pudo pre-calentar caché del catálogo en startup: {exc}")
 
 
 def calculate_seconds_until_target(
@@ -93,6 +110,7 @@ async def daily_scheduler_loop():
                     session=session,
                     on_cache_invalidate=catalog_service.invalidate_cache,
                 )
+            await catalog_service.prewarm_default_products_cache()
             # Pausa de seguridad para no disparar dos veces en el mismo minuto
             await asyncio.sleep(65)
         except asyncio.CancelledError:
@@ -132,7 +150,7 @@ async def lifespan(app: FastAPI):
     3. Verifica Catch-Up on Wakeup: si aún no existe el punto de hoy (today_peru) en price_history, lanza run_daily_price_update().
     4. Inicia el programador diario automático a las 00:59 AM (America/Lima) y el keep-alive cada 12 minutos.
     """
-    global _background_task, _keep_alive_task
+    global _background_task, _keep_alive_task, _warmup_task
     logger.info("Encendiendo FinPrice API Standalone...", extra={"env": settings.ENVIRONMENT})
 
     # 1. Crear y verificar tablas en Neon PostgreSQL
@@ -153,6 +171,11 @@ async def lifespan(app: FastAPI):
     logger.info(
         f"Catálogo oficial de FinPrice sincronizado ({synced_count} productos en Neon con >= 1 tienda). Arranque instantáneo listo."
     )
+    if not is_test:
+        _warmup_task = asyncio.create_task(_background_prewarm_catalog())
+    else:
+        _warmup_task = None
+
     if settings.ENABLE_INTERNAL_SCHEDULER:
         logger.info(
             "Scheduler interno ACTIVADO (ENABLE_INTERNAL_SCHEDULER=true): "
@@ -172,7 +195,7 @@ async def lifespan(app: FastAPI):
 
     # Apagado limpio
     logger.info("Deteniendo FinPrice API...")
-    for task_ref in (_background_task, _keep_alive_task):
+    for task_ref in (_background_task, _keep_alive_task, _warmup_task):
         if task_ref and not task_ref.done():
             task_ref.cancel()
             try:

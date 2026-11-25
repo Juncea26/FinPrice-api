@@ -133,9 +133,33 @@ COLOR_NEUTRAL_TOKENS: Set[str] = set(SINGLE_COLOR_TOKENS) | {
     "dorado",
     "verde",
     "morado",
+    "violeta",
     "rojo",
     "grafito",
     "medianoche",
+    "indigo",
+    "bone",
+    "sierra",
+    "burgundy",
+    "tidal",
+    "meteor",
+    "sunrise",
+    "misty",
+    "lunar",
+    "glaciar",
+    "oscuro",
+    "claro",
+    "deep",
+    "stellar",
+    "nebula",
+    "luna",
+    "polar",
+    "eclipse",
+    "arena",
+    "lavanda",
+    "celeste",
+    "naranja",
+    "orange",
     "silver",
     "black",
     "white",
@@ -333,7 +357,19 @@ NON_MPN_TECH_WORDS: Set[str] = {
 def strip_accents_lower(text: str) -> str:
     if not text:
         return ""
-    decomposed = unicodedata.normalize("NFKD", str(text).lower())
+    cleaned = (
+        str(text)
+        .replace("\u201c", '"')
+        .replace("\u201d", '"')
+        .replace("\u2033", '"')
+        .replace("\u201f", '"')
+        .replace("\u2018", "'")
+        .replace("\u2019", "'")
+        .replace("\u2032", "'")
+        .replace("\u2122", " ")
+        .replace("\u00ae", " ")
+    )
+    decomposed = unicodedata.normalize("NFKD", cleaned.lower())
     return "".join(c for c in decomposed if not unicodedata.combining(c))
 
 
@@ -347,27 +383,39 @@ def _word_in_text(token: str, normalized_text: str) -> bool:
 # 2. NORMALIZACIÓN DE MEMORIA / ALMACENAMIENTO Y ABREVIATURAS RETAIL
 # ==============================================================================
 
+def _strip_gpu_vram_tokens(text: str) -> str:
+    """Elimina la capacidad VRAM pegada tras GPU dedicada (ej. 'RTX 3050 6GB' -> 'RTX 3050')."""
+    if not text:
+        return ""
+    return re.sub(
+        r"\b((?:rtx|gtx)\s*\d{4}(?:\s*(?:ti|super))?)\s+\d{1,2}\s*(?:gb|g)\b",
+        r"\1",
+        text,
+        flags=re.IGNORECASE,
+    )
+
+
 def normalize_memory_and_storage(text: str) -> str:
     """
     Unifica notaciones de RAM y almacenamiento:
     - '12 GB' -> '12gb', '512 GB' -> '512gb', '1 TB' -> '1tb'
-    - '12/512GB', '12+512 GB', '12+512Gb' -> '12gb 512gb'
+    - '12/512GB', '12+512 GB', '12Gb Ram + 512Gb Rom' -> '12gb 512gb'
     - '16/1TB', '16+1 TB' -> '16gb 1tb'
-    - '512SSD', '512 SSD' -> '512gb ssd'
-    - '8G RAM 256G ROM' -> '8gb ram 256gb rom'
+    - '256SSD', '512SSD', '1TBSSD' -> '256gb ssd', '512gb ssd', '1tb ssd'
+    - '8RAM', '16RAM', '8G RAM 256G ROM' -> '8gb ram', '16gb ram', '8gb ram 256gb rom'
     """
     if not text:
         return ""
     out = strip_accents_lower(text)
 
-    # 1. Combos RAM/Storage con '+' o '/' o '-' antes de expandir '+' a 'plus'
+    # 1. Combos RAM/Storage con '+', '/' o '-' antes de expandir '+' a 'plus'
     out = re.sub(
-        r"\b(\d{1,2})\s*(?:gb|g)?\s*[+/]\s*(\d{2,4})\s*(gb|g|tb)\b",
+        r"\b(\d{1,2})\s*(?:gb|g)?(?:\s*ram)?\s*[+/]\s*(\d{2,4})\s*(gb|g|tb)(?:\s*(?:rom|ssd|ufs))?\b",
         lambda m: f" {m.group(1)}gb {m.group(2)}{'tb' if 'tb' in m.group(3) else 'gb'} ",
         out,
     )
     out = re.sub(
-        r"\b(\d{1,2})\s*(?:gb|g)?\s*[+/]\s*(\d)\s*(tb)\b",
+        r"\b(\d{1,2})\s*(?:gb|g)?(?:\s*ram)?\s*[+/]\s*(\d)\s*(tb)(?:\s*(?:rom|ssd))?\b",
         lambda m: f" {m.group(1)}gb {m.group(2)}tb ",
         out,
     )
@@ -382,15 +430,26 @@ def normalize_memory_and_storage(text: str) -> str:
         out,
     )
 
-    # 2. Notación compacta de almacenamiento SSD y RAM/ROM en G
+    # 2. Notación compacta SSD y RAM ('256SSD', '1TBSSD', '8RAM', '16RAM', '8G RAM 256G ROM')
     out = re.sub(
-        r"\b(128|256|512|1024)\s*(?:gb)?\s*ssd\b",
+        r"\b(32|64|128|256|480|500|512|960|1000|1024|2048)\s*(?:gb|g)?\s*ssd\b",
         r"\1gb ssd",
         out,
     )
-    out = re.sub(r"\b(\d)\s*tb\s*ssd\b", r"\1tb ssd", out)
+    out = re.sub(r"\b([1248])\s*(?:tb|t)?\s*ssd\b", r"\1tb ssd", out)
     out = re.sub(
-        r"\b(\d{1,4})\s*g\b(?=\s*(?:ram|rom|ssd|blue|black|green|white|gray|gris|negro|azul|plata)\b)",
+        r"\b(2|3|4|6|8|12|16|18|24|32|36|48|64)\s*(?:gb|g)?\s*ram\b",
+        r"\1gb ram",
+        out,
+    )
+    out = re.sub(
+        r"\b(2|3|4|6|8|12|16|24|32|64|128|256|512|1024)\s*g\b(?=\s*(?:ram|rom|ssd|blue|black|green|white|gray|gris|negro|azul|plata)\b)",
+        r"\1gb",
+        out,
+    )
+    # Capacidades estándar abreviadas como '/8G' o '512G' sin confundir '4G'/'5G' móviles
+    out = re.sub(
+        r"\b(8|12|16|24|32|64|128|256|512|1024)g\b",
         r"\1gb",
         out,
     )
@@ -511,7 +570,7 @@ def normalize_tech_text(
     raw = str(text)
     # Preservar decimales de pantalla al limpiar unidades tipo pulgadas
     raw = re.sub(
-        r"\b(\d{1,2}(?:\.\d)?)\s*(?:\"|''|pulgadas|pulg|inch|inches)\b",
+        r"\b(\d{1,3}(?:\.\d{1,2})?)\s*(?:\"|''|pulgadas|pulg|inch|inches)\b",
         r"\1 ",
         raw,
         flags=re.IGNORECASE,
@@ -602,45 +661,69 @@ def _get_tablet_laptop_screen_group(inches: float) -> Set[str]:
 
 def extract_cpu_and_gpu_signatures(normalized_text: str) -> Dict[str, Optional[str]]:
     """
-    Extrae arquitectura/nivel de CPU y GPU de forma genérica:
+    Extrae arquitectura/nivel de CPU, SKU de procesador y GPU de forma genérica:
     - cpu_vendor: 'amd' | 'intel' | 'apple' | 'qualcomm'
-    - cpu_tier: e.g. 'ryzen_5', 'intel_5', 'intel_ultra_7', 'apple_m5', 'apple_a16'
+    - cpu_tier: e.g. 'ryzen_5', 'ryzen_ai_7', 'intel_3', 'intel_5', 'intel_ultra_7', 'apple_m5', 'apple_a18_pro'
+    - cpu_sku: e.g. '304', '120u', '7520u', '205h'
     - gpu_model: e.g. 'rtx_4050', 'rtx_5050'
     """
     if not normalized_text:
-        return {"cpu_vendor": None, "cpu_tier": None, "gpu_model": None}
+        return {"cpu_vendor": None, "cpu_tier": None, "cpu_sku": None, "gpu_model": None}
 
     t = normalized_text
     cpu_vendor: Optional[str] = None
     cpu_tier: Optional[str] = None
+    cpu_sku: Optional[str] = None
     gpu_model: Optional[str] = None
 
+    m_ryzen_ai = re.search(r"\bryzen\s+(?:ai|ia)\s*([579])\b", t)
     m_ryzen = re.search(r"\bryzen\s*([3579])\b", t)
-    m_intel_ultra = re.search(r"\bcore\s+ultra\s*([579])\b", t)
+    m_intel_ultra = re.search(r"\bcore\s+(?:ultra|u)\s*([579])\b", t)
     m_intel = re.search(r"\b(?:intel\s+)?core\s*i?([3579])\b", t) or re.search(r"\bi([3579])\b", t)
+    m_athlon = re.search(r"\bathlon\b", t)
+    m_celeron = re.search(r"\bceleron\b", t)
     m_apple_m = re.search(r"\b(m[1-5])\b", t)
+    m_apple_a18_pro = re.search(r"\ba18\s*pro\b", t)
     m_apple_a = re.search(r"\b(a1[4-9])\b", t)
     m_snap = re.search(r"\bsnapdragon\b", t)
 
-    if m_ryzen or _word_in_text("ryzen", t) or _word_in_text("amd", t):
+    if m_ryzen_ai:
+        cpu_vendor = "amd"
+        cpu_tier = f"ryzen_ai_{m_ryzen_ai.group(1)}"
+    elif m_ryzen or _word_in_text("ryzen", t) or _word_in_text("amd", t):
         cpu_vendor = "amd"
         if m_ryzen:
             cpu_tier = f"ryzen_{m_ryzen.group(1)}"
+        elif m_athlon:
+            cpu_tier = "amd_athlon"
     elif m_intel_ultra:
         cpu_vendor = "intel"
         cpu_tier = f"intel_ultra_{m_intel_ultra.group(1)}"
-    elif m_intel or _word_in_text("intel", t):
+    elif m_intel or _word_in_text("intel", t) or m_celeron:
         cpu_vendor = "intel"
         if m_intel:
             cpu_tier = f"intel_{m_intel.group(1)}"
+        elif m_celeron:
+            cpu_tier = "intel_celeron"
     elif m_apple_m:
         cpu_vendor = "apple"
         cpu_tier = f"apple_{m_apple_m.group(1)}"
+    elif m_apple_a18_pro:
+        cpu_vendor = "apple"
+        cpu_tier = "apple_a18_pro"
     elif m_apple_a:
         cpu_vendor = "apple"
         cpu_tier = f"apple_{m_apple_a.group(1)}"
     elif m_snap:
         cpu_vendor = "qualcomm"
+
+    m_sku = (
+        re.search(r"\bcore\s+(?:ultra\s+|u\s+|i)?[3579]\s+(\d{3}[uh]?\b|\d{4,5}[a-z]{1,2}\b)", t)
+        or re.search(r"\bi[3579]\s+(\d{3,5}[a-z]{1,2})\b", t)
+        or re.search(r"\bryzen\s+(?:(?:ai|ia)\s+)?[3579]\s+(\d{3,4}[a-z]{0,2})\b", t)
+    )
+    if m_sku and m_sku.group(1) not in {"8gb", "12gb", "16gb", "32gb", "256gb", "512gb", "1000", "2024", "2025", "2026"}:
+        cpu_sku = m_sku.group(1).lower()
 
     m_gpu = re.search(r"\b(rtx|gtx)\s*(\d{4})\b", t)
     if m_gpu:
@@ -649,6 +732,7 @@ def extract_cpu_and_gpu_signatures(normalized_text: str) -> Dict[str, Optional[s
     return {
         "cpu_vendor": cpu_vendor,
         "cpu_tier": cpu_tier,
+        "cpu_sku": cpu_sku,
         "gpu_model": gpu_model,
     }
 
@@ -968,10 +1052,10 @@ def evaluate_strict_guardrails(
                     return False
 
     # RAM (solo si el candidato declara otra RAM explícita en título o URL o campo Memoria RAM)
-    req_rams = extract_ram_tokens(canon_norm)
+    req_rams = extract_ram_tokens(_strip_gpu_vram_tokens(canon_norm))
     if req_rams:
-        title_rams = extract_ram_tokens(cand_title_norm)
-        url_rams = extract_ram_tokens(cand_url_norm)
+        title_rams = extract_ram_tokens(_strip_gpu_vram_tokens(cand_title_norm))
+        url_rams = extract_ram_tokens(_strip_gpu_vram_tokens(cand_url_norm))
         if title_rams and not (title_rams & req_rams):
             return False
         if url_rams and not (url_rams & req_rams):
@@ -1104,12 +1188,54 @@ def _normalize_mpn(raw_val: Any) -> Optional[str]:
         return None
     if compact in NON_MPN_TECH_WORDS:
         return None
+    if re.match(r"^(?:rtx|gtx)\d{3,4}[a-z0-9]*$", compact):
+        return None
     if re.match(r"^(?:19|20)\d{2}[a-z]*$", compact):
         return None
     # Evitar tokens puramente descriptivos como 128gb, 60hz, 5000mah, 108mp
     if re.match(r"^\d+(?:gb|tb|mb|mah|mp|hz|w|cm|mm|kg|pulg)$", compact):
         return None
     return compact
+
+
+_INLINE_MPN_PATTERNS: Tuple[str, ...] = (
+    r"\bmodelo\s*[:#]?\s*([a-z0-9]{2,8}(?:-[a-z0-9]{2,8}){1,3}|8[0-9][a-z0-9]{8})\b",
+    r"\b([a-z]{1,3}\d{3,4}[a-z]{1,3}-[a-z]{2}\d{3,4}[a-z]?)\b",
+    r"\b((?:al|an|sf|phn?)\d{2,3}-\d{2}[a-z]?-[a-z0-9]{4})\b",
+    r"\b((?:\d{2}[a-z]{3}\d{2}-)?8[0-9][a-z0-9]{6}(?:lm|pe|us|sp))\b",
+    r"\b(zaf\d{5}[a-z]{2})\b",
+    r"\b(1[34567]-[a-z]{2}\d{4}la)\b",
+    r"\b((?:lbu|lab|alt|rea|brp|any|crt|rmo|mgk|bvl)-lx\d)\b",
+    r"\b(sm-[a-z]\d{3}[a-z0-9]{2,8})\b",
+    r"\b(tb\d{3}[a-z]{2})\b",
+)
+
+_URL_TRAILING_GIFT_OR_SKU_RE = re.compile(
+    r"(?:-(?:mochila|mouse|funda|maletin|backpack|intel|amd|cover|keyboard|\d{6,}p?))+/?$",
+    flags=re.IGNORECASE,
+)
+
+
+def extract_inline_manufacturer_mpns(title: str, url: str = "") -> List[str]:
+    """
+    Extrae códigos de fabricante/SKU largos presentes en título o URL (ej. 'X1504MA-BQ523W',
+    '82XQ00LTLM', '15-FB3021LA', 'AL15-46P-R4UJ') normalizados para `mpn` sin colas de regalo.
+    """
+    found: List[str] = []
+    for raw_src in (title or "", url or ""):
+        if not raw_src:
+            continue
+        clean_src = re.sub(r"\.(html?|php|aspx?)\b", " ", str(raw_src), flags=re.IGNORECASE)
+        if "://" in clean_src or clean_src.startswith("/"):
+            clean_src = _URL_TRAILING_GIFT_OR_SKU_RE.sub("", clean_src)
+        for pat in _INLINE_MPN_PATTERNS:
+            for match in re.findall(pat, clean_src, flags=re.IGNORECASE):
+                cand = match if isinstance(match, str) else match[0]
+                cand = _URL_TRAILING_GIFT_OR_SKU_RE.sub("", cand)
+                norm = _normalize_mpn(cand)
+                if norm and norm not in found:
+                    found.append(norm)
+    return found
 
 
 def _walk_json_for_codes(node: Any, gtin_out: List[str], mpn_out: List[str], depth: int = 0) -> None:
@@ -1271,6 +1397,10 @@ def extract_product_codes(
     # 3. Patrones inequívocos de MPN de fabricante en título o URL
     #    (ej. Samsung 'SM-S938B...', Apple 'MD3Y4CL/A' / 'md3y4cl-a', Asus/Lenovo 'UX3407QA-QD289W', 'FX607VU-RL030W',
     #     TV part codes 'OLED55B6PSA', '55QN85D')
+    for m_in in extract_inline_manufacturer_mpns(title=title, url=url):
+        if m_in not in mpns:
+            mpns.append(m_in)
+
     high_conf_mpn_patterns = (
         r"\b(SM-[A-Z0-9]{5,14})\b",
         r"\b([A-Z]{2,3}\d[A-Z0-9]{3,5}[/-][A-Z]{1,2})\b",
@@ -1281,9 +1411,12 @@ def extract_product_codes(
         if not text_src:
             continue
         clean_src = re.sub(r"\.(html?|php|aspx?)\b", " ", str(text_src), flags=re.IGNORECASE)
+        if "://" in clean_src or clean_src.startswith("/"):
+            clean_src = _URL_TRAILING_GIFT_OR_SKU_RE.sub("", clean_src)
         for pat in high_conf_mpn_patterns:
             for match in re.findall(pat, clean_src, flags=re.IGNORECASE):
                 cand = match if isinstance(match, str) else match[0]
+                cand = _URL_TRAILING_GIFT_OR_SKU_RE.sub("", cand)
                 if not re.match(r"^ip3\d+$", cand, flags=re.IGNORECASE):
                     _add_mpn(cand)
 
@@ -1713,6 +1846,7 @@ _GLOBAL_SIGNATURE_FILLER_TOKENS: Set[str] = COLOR_NEUTRAL_TOKENS | {
     "pulg",
     "inch",
     "inches",
+    "pantalla",
     "libre",
     "liberado",
     "liberada",
@@ -1726,8 +1860,12 @@ _GLOBAL_SIGNATURE_FILLER_TOKENS: Set[str] = COLOR_NEUTRAL_TOKENS | {
     "memoria",
     "interna",
     "unificada",
+    "almacenamiento",
     "estado",
     "solido",
+    "solide",
+    "disco",
+    "duro",
     "unidad",
     "orig",
     "original",
@@ -1739,6 +1877,14 @@ _GLOBAL_SIGNATURE_FILLER_TOKENS: Set[str] = COLOR_NEUTRAL_TOKENS | {
     "version",
     "edicion",
     "color",
+    "ia",
+    "ai",
+    "copilot",
+    "windows",
+    "w11",
+    "win11",
+    "freedos",
+    "espanol",
     "cla",
     "bes",
     "lep",
@@ -1746,9 +1892,21 @@ _GLOBAL_SIGNATURE_FILLER_TOKENS: Set[str] = COLOR_NEUTRAL_TOKENS | {
 }
 
 _CATEGORY_SIGNATURE_FILLER_TOKENS: Dict[str, Set[str]] = {
-    "celulares": {"celular", "celulares", "smartphone", "smartphones", "movil", "telefono", "5g", "chip", "procesador", "amoled", "fhd", "hd"},
-    "laptops": {"laptop", "laptops", "notebook", "notebooks", "portatil", "gamer", "gaming", "wuxga", "fhd", "ssd", "disco", "procesador"},
-    "tablets": {"tablet", "tablets", "tableta", "wifi", "wi", "fi", "wlan", "wuxga", "fhd"},
+    "celulares": {
+        "celular", "celulares", "smartphone", "smartphones", "movil", "telefono",
+        "5g", "4g", "lte", "chip", "procesador", "amoled", "oled", "ips", "fhd", "hd",
+        "ram", "rom", "ssd", "bundle",
+    },
+    "laptops": {
+        "laptop", "laptops", "notebook", "notebooks", "portatil", "gamer", "gaming",
+        "wuxga", "fhd", "hd", "ips", "ssd", "ram", "disco", "procesador",
+        "home", "single", "language", "pc", "teclado", "nvidia", "geforce",
+        "qualcomm", "lpddr5", "lpddr4x", "ddr4", "ddr5", "by", "games", "lenvo",
+    },
+    "tablets": {
+        "tablet", "tablets", "tableta", "wifi", "wi", "fi", "wlan", "wuxga", "fhd",
+        "hd", "ips", "ufs", "emmc", "octa", "core", "mediatek", "helio", "qualcomm",
+    },
     "televisores": {
         "tv", "televisor", "televisores", "smart", "ai", "thinq", "dolby", "atmos",
         "vision", "hdr", "hdr10", "uhd", "nanocell", "4k", "fhd", "hd",
@@ -2047,18 +2205,45 @@ def _preprocess_canonical_text(raw_text: str, category: str = "") -> str:
 
     # Compactar modelos con guión intermedio inconsistente (WH-1000XM5 == WH1000XM5, SRS-ULT1000 == SRSULT1000)
     out = re.sub(r"\busb[\s\-]*c\b", "usbc", out)
-    out = re.sub(r"\bwh[\s\-]*(\d{3,4}[a-z0-9]*)\b", r"wh\1", out)
-    out = re.sub(r"\bwf[\s\-]*(\d{3,4}[a-z0-9]*)\b", r"wf\1", out)
+    out = re.sub(r"\bwh[\s\-]*(\d{3,4}[a-z0-9]*)(?:/[a-z]{3,5})?\b", r"wh\1", out)
+    out = re.sub(r"\bwf[\s\-]*(\d{3,4}[a-z0-9]*)(?:/[a-z]{3,5})?\b", r"wf\1", out)
     out = re.sub(r"\b((?:wh|wf|srs|ult)[\s\-]*[a-z]{0,3}\d{3,4}[n]?)[bwlpc]\b", r"\1", out)
     out = re.sub(r"\bsrs[\s\-]*([a-z]+\d+[a-z0-9]*)\b", r"srs\1", out)
     out = re.sub(r"\btp[\s\-]*link\b", "tplink", out)
 
-    # Limpiar ruido comercial común que fragmenta firmas idénticas
-    out = re.sub(r"\b(?:hp\s+app|sistema\s+continuo|todo[\s\-]+en[\s\-]+uno|all[\s\-]+in[\s\-]+one|a\s+color)\b", " ", out)
+    # Limpiar ruido comercial común que fragmenta firmas idénticas entre tiendas
+    out = re.sub(
+        r"\b(?:hp\s+app|sistema\s+continuo|todo[\s\-]+en[\s\-]+uno|all[\s\-]+in[\s\-]+one|a\s+color|"
+        r"windows\s+1[01](?:\s+home)?(?:\s+single\s+language)?|free\s*dos|teclado\s+(?:en\s+)?espanol|"
+        r"disco\s+(?:duro\s+)?solid[oe]|full\s+hd|series?\s+[123]|serie\s+[123]00|1[1234](?:va|ra|ta|th))\b",
+        " ",
+        out,
+    )
     if cat_low == "televisores":
-        out = re.sub(r"\b(?:un|qn)(\d{2})([a-z]\d{3,4}[a-z]?)(?:f?gxpe|agxpe|gxpe|pe)?\b", r"\1 \2", out)
+        out = re.sub(r"\b(?:un|qn)(\d{2,3})([a-z]{1,2}\d{2,4}[a-z]?)(?:[aefh]?gxpe|[ae]xpe|pe)?\b", r"\1 \2", out)
+        out = re.sub(r"\boled(\d{2})([bcgmrwz]\d)(?:ps[abcd]|bs[abcd])?\b", r"oled \1 \2", out)
+        out = re.sub(r"\b(\d{2})qned(\d{2,3})[a-z]{2,4}\b", r"\1 qned\2", out)
+        out = re.sub(r"\bqd[\s\-]*mini[\s\-]*led\b", "qd miniled", out)
     elif cat_low == "impresoras" and re.search(r"\b[lg]\d{3,4}\b", out):
         out = re.sub(r"\b(?:ecotank|pixma)\b", " ", out)
+    elif cat_low == "laptops":
+        out = re.sub(r"\bcore\s+u([579])\b", r"core ultra \1", out)
+        out = re.sub(r"\bryzen\s+ia\s+([579])\b", r"ryzen ai \1", out)
+        out = re.sub(r"\bntel\b", "intel", out)
+        out = re.sub(r"\bideapad\s+slim\s+([35])i\b", r"ideapad slim \1", out)
+        out = _strip_gpu_vram_tokens(out)
+    elif cat_low == "celulares":
+        out = re.sub(r"\b\d{2,3}\s*mp\b", " ", out)
+        out = re.sub(r"\b[567]\.\d{1,2}\s*(?:\"|''|pulgadas|pulg|inch|inches)?\b", " ", out)
+        out = re.sub(r"\bgalaxy\s+([aszmf])[\s\-]+(\d{1,2})\b", r"galaxy \1\2", out)
+        out = re.sub(r"\breno\s*(\d{1,2})\b", r"reno \1", out)
+        out = re.sub(r"\bmotorola\s+moto\b", "motorola", out)
+        out = re.sub(r"\bxiaomi\s+note\s+(1[4-9])\b", r"xiaomi redmi note \1", out)
+    elif cat_low == "tablets":
+        out = re.sub(r"\bsamsung\s+(?:tablet\s+)?(?:galaxy\s+)?tab\s+", "samsung tab ", out)
+        out = re.sub(r"\bsamsung\s+(?:tablet\s+)?(s\d{1,2}\s+(?:lite|fe|plus|ultra))\b", r"samsung tab \1", out)
+    elif cat_low == "audifonos":
+        out = re.sub(r"\bnoise\s+cancelling\b", "anc", out)
 
     # Normalizar Wi-Fi, paneles, resoluciones, tamaños de reloj, tasas de refresco y vatios
     out = re.sub(r"\bwi[\s\-]?fi\s*(5|6e|6|7)\b", r"wifi\1", out)
@@ -2085,7 +2270,7 @@ def _preprocess_canonical_text(raw_text: str, category: str = "") -> str:
 
     # Quitar símbolos de pulgadas manteniendo decimales (23.8" -> 23.8, 15.6 pulgadas -> 15.6)
     out = re.sub(
-        r"\b(\d{1,2}(?:\.\d)?)\s*(?:\"|''|”|pulgadas|pulg|inch|inches)\b",
+        r"\b(\d{1,3}(?:\.\d{1,2})?)\s*(?:\"|''|pulgadas|pulg|inch|inches)\b",
         r"\1 ",
         out,
     )
@@ -2136,6 +2321,9 @@ def build_canonical_product_signature(
     pre = _preprocess_canonical_text(raw_clean, category=cat_low)
     pre = strip_color_tokens(normalize_memory_and_storage(pre))
     expanded = expand_retail_abbreviations(pre)
+
+    # Extraer MPNs largos (p.ej. 'X1504MA-BQ523W', '82XQ00LTLM', '15-FB3021LA') para evaluar firma limpia
+    inline_mpns = set(extract_inline_manufacturer_mpns(title=raw_clean, url=url))
 
     if not expanded and url:
         path_txt = re.sub(r"\.(html?|php|aspx?)\b", " ", urlparse(url).path or "", flags=re.I)
@@ -2206,7 +2394,6 @@ def build_canonical_product_signature(
     final_tokens: List[str] = []
     if brand_tok_raw:
         final_tokens.extend(brand_tok_raw.split())
-    final_tokens.extend(_dedupe_adjacent_phrases(model_tokens))
     # Mantener orden estable: RAM (< 64GB) antes que almacenamiento, luego pantalla/mm/hz/w/res/panel/redes
     def _spec_sort_key(st: str) -> Tuple[int, float, str]:
         m_gb = re.match(r"^(\d+)gb$", st)
@@ -2231,6 +2418,39 @@ def build_canonical_product_signature(
         return (6, 0.0, st)
 
     spec_tokens.sort(key=_spec_sort_key)
+    dedup_models = _dedupe_adjacent_phrases(model_tokens)
+
+    # Si existen MPNs largos en `inline_mpns`, omitirlos de la firma solo cuando quedan otros tokens de modelo específicos
+    if inline_mpns and len(dedup_models) >= 2:
+        stripped_models: List[str] = []
+        skip_next = False
+        for idx_m, m_tok in enumerate(dedup_models):
+            if skip_next:
+                skip_next = False
+                continue
+            compact_single = re.sub(r"[^a-z0-9]", "", m_tok)
+            if compact_single in inline_mpns:
+                continue
+            if idx_m + 1 < len(dedup_models):
+                compact_pair = re.sub(r"[^a-z0-9]", "", f"{m_tok}{dedup_models[idx_m + 1]}")
+                if compact_pair in inline_mpns:
+                    skip_next = True
+                    continue
+            if idx_m + 2 < len(dedup_models):
+                compact_triple = re.sub(r"[^a-z0-9]", "", f"{m_tok}{dedup_models[idx_m + 1]}{dedup_models[idx_m + 2]}")
+                if compact_triple in inline_mpns:
+                    dedup_models[idx_m + 1] = ""
+                    dedup_models[idx_m + 2] = ""
+                    continue
+            if m_tok:
+                stripped_models.append(m_tok)
+        stripped_models = [t for t in stripped_models if t]
+        if stripped_models:
+            cand_sig_no_mpn = " ".join(_dedupe_adjacent_phrases(final_tokens + stripped_models + spec_tokens))[:500].strip()
+            if is_signature_specific_enough(cand_sig_no_mpn, brand=resolved_brand, category=cat_low):
+                return cand_sig_no_mpn
+
+    final_tokens.extend(dedup_models)
     final_tokens.extend(spec_tokens)
 
     return " ".join(_dedupe_adjacent_phrases(final_tokens))[:500].strip()
@@ -2310,11 +2530,21 @@ def extract_variant_profile(
         w in norm_text for w in ("ssd", "microsd", "pendrive", "flash drive", "usb")
     )
     storages = extract_storage_tokens(norm_text, allow_small_external=allow_small)
-    rams = extract_ram_tokens(norm_text) if cat_low in {"celulares", "laptops", "tablets", ""} else set()
+    rams = (
+        extract_ram_tokens(_strip_gpu_vram_tokens(norm_text))
+        if cat_low in {"celulares", "laptops", "tablets", ""}
+        else set()
+    )
 
     modifiers = {m for m in STRICT_MODEL_MODIFIERS if _word_in_text(m, norm_text)}
+    if cat_low in {"laptops", ""} and _word_in_text("go", norm_text) and "vivobook" in norm_text:
+        modifiers.add("go")
     is_audio_cat = cat_low in {"audifonos", "audio"}
-    has_anc = bool(re.search(r"\b(?:anc|cancelacion\s+activa|noise\s+cancelling)\b", norm_text)) if is_audio_cat else False
+    inherent_anc_re = r"\b(?:wh\s*1000\s*xm[456]|wh\s*ch720n|wf\s*c710n|wf\s*1000\s*xm[45]|wh\s*ult900n)[a-z]*\b"
+    has_anc = (
+        bool(re.search(r"\b(?:anc|cancelacion\s+activa|noise\s+cancelling)\b", norm_text))
+        or bool(re.search(inherent_anc_re, norm_text))
+    ) if is_audio_cat else False
     raw_audio_low = strip_accents_lower(clean_title or "")
     wired_audio = (
         bool(
@@ -2375,7 +2605,11 @@ def extract_variant_profile(
     pack_count = extract_pack_count(title or clean_title)
     peripheral_kind = _extract_peripheral_kind(clean_title, cat_low)
     storage_medium = _extract_storage_medium(clean_title, cat_low)
-    hw_cpu_gpu = extract_cpu_and_gpu_signatures(norm_text) if cat_low in {"laptops", ""} else {"cpu_vendor": None, "cpu_tier": None, "gpu_model": None}
+    hw_cpu_gpu = extract_cpu_and_gpu_signatures(norm_text) if cat_low in {"laptops", ""} else {"cpu_vendor": None, "cpu_tier": None, "cpu_sku": None, "gpu_model": None}
+    laptop_screen_bucket = _canonical_laptop_screen_bucket(clean_title, norm_text) if cat_low == "laptops" else None
+    is_touch = bool(re.search(r"\b(?:touch|tactil)\b", norm_text)) if cat_low == "laptops" else False
+    is_2in1 = bool(re.search(r"\b(?:2\s+en\s+1|x360)\b", norm_text)) if cat_low == "laptops" else False
+    is_oled_laptop = bool(re.search(r"\bp?oled\b", norm_text)) if cat_low == "laptops" else False
     model_shapes = _extract_expanded_model_shapes(sig.split(), brand_words)
 
     return {
@@ -2407,6 +2641,10 @@ def extract_variant_profile(
         "peripheral_kind": peripheral_kind,
         "storage_medium": storage_medium,
         "hw": hw_cpu_gpu,
+        "laptop_screen_bucket": laptop_screen_bucket,
+        "is_touch": is_touch,
+        "is_2in1": is_2in1,
+        "is_oled_laptop": is_oled_laptop,
         "model_shapes": model_shapes,
     }
 
@@ -2466,7 +2704,7 @@ def are_listings_variant_compatible(prof_a: Dict[str, Any], prof_b: Dict[str, An
     pan_a, pan_b = prof_a.get("panel"), prof_b.get("panel")
     if (pan_a == "oled") != (pan_b == "oled") and (cat_a in {"monitores", "televisores"} or cat_b in {"monitores", "televisores"}):
         return False
-    if (pan_a == "miniled") != (pan_b == "miniled") and (cat_a in {"monitores", "televisores"} or cat_b in {"monitores", "televisores"}):
+    if (pan_a == "miniled") != (pan_b == "miniled") and (cat_a == "monitores" or cat_b == "monitores"):
         return False
     if pan_a and pan_b and pan_a != pan_b:
         return False
@@ -2527,9 +2765,21 @@ def are_listings_variant_compatible(prof_a: Dict[str, Any], prof_b: Dict[str, An
         return False
 
     hw_a, hw_b = prof_a.get("hw") or {}, prof_b.get("hw") or {}
-    for hw_k in ("cpu_vendor", "cpu_tier", "gpu_model"):
+    for hw_k in ("cpu_vendor", "cpu_tier", "cpu_sku", "gpu_model"):
         if hw_a.get(hw_k) and hw_b.get(hw_k) and hw_a[hw_k] != hw_b[hw_k]:
             return False
+    if (hw_a.get("gpu_model") is not None) != (hw_b.get("gpu_model") is not None) and (cat_a == "laptops" or cat_b == "laptops"):
+        return False
+
+    sb_a, sb_b = prof_a.get("laptop_screen_bucket"), prof_b.get("laptop_screen_bucket")
+    if sb_a and sb_b and sb_a != sb_b:
+        return False
+    if bool(prof_a.get("is_touch")) != bool(prof_b.get("is_touch")):
+        return False
+    if bool(prof_a.get("is_2in1")) != bool(prof_b.get("is_2in1")):
+        return False
+    if bool(prof_a.get("is_oled_laptop")) != bool(prof_b.get("is_oled_laptop")):
+        return False
 
     # 10. Códigos alfanuméricos de modelo con misma forma (ej. mk470 vs mk270, 520bt vs 720bt, xm4 vs xm5)
     shapes_a = prof_a.get("model_shapes") or {}
@@ -2661,8 +2911,23 @@ _STRICT_NON_TECH_BLACKLIST_RE = re.compile(
     r"botella\s+de\s+tinta|toner|cartucho\s+de\s+tinta|tinta\s+(?:epson|canon|hp|brother)|"
     r"mica\s+protectora|vidrio\s+templado|carcasa|protector\s+de\s+pantalla|"
     r"book\s*cover|keyboard\s*cover|smart\s*cover|\bcover\b|"
-    r"rack\s+(?:para\s+|de\s+)?tv|soporte\s+(?:para\s+|de\s+)?tv|estuche"
+    r"rack\s+(?:para\s+|de\s+|con\s+)?(?:tv|brazo)|brazo\s+para\s+tv|soporte\s+(?:para\s+|de\s+)?tv|"
+    r"lector\s+de\s+disco\s+para|estuche|"
+    # Juguetes y merchandising infantil (no confundir con electrónica real)
+    r"disney|pixar|toy\s+story|woody|jessie|buzz\s+lightyear|barbie|hot\s+wheels|"
+    r"fisher\s+price|paw\s+patrol|patrulla\s+canina|peppa\s+pig|stitch|frozen|elsa|"
+    r"minnie|mickey|hello\s+kitty|bluey|gabby|sakar|lexibook|ekids|kiddesigns|"
+    r"infantil|infantiles|para\s+ninos|de\s+juguete"
     r")\b",
+    re.I,
+)
+
+_STRICT_KARAOKE_TOY_RE = re.compile(
+    r"\b(?:mini\s+karaoke|microfono\s+(?:de\s+|con\s+)?karaoke|karaoke\s+con\s+microfono|karaoke\s+(?:woody|jessie|disney|frozen|barbie|infantil))\b",
+    re.I,
+)
+_STRICT_REAL_AUDIO_CARRIER_RE = re.compile(
+    r"\b(?:torre\s+de\s+sonido|equipo\s+de\s+sonido|minicomponente|partybox|xboom|boombox|soundbar|barra\s+de\s+sonido)\b",
     re.I,
 )
 
@@ -2722,10 +2987,20 @@ def is_strict_tech_product(
     if _STRICT_PRIMARY_TECH_PREFIX_RE.search(low_title):
         title_for_blacklist = _strip_bundles_and_colors(low_title, category=cat_low)
 
-    # Candado 1: Blacklist estricta
-    if _STRICT_NON_TECH_BLACKLIST_RE.search(title_for_blacklist):
-        # Permitir fundas con teclado explícito únicamente si entran como accesorios_pc en stock; en tablets/otros NO
+    # Candado 1: Blacklist estricta (sobre título sin cola de regalo, marca y slug del producto)
+    brand_low = strip_accents_lower(brand or "").strip()
+    if _STRICT_NON_TECH_BLACKLIST_RE.search(f"{title_for_blacklist} {brand_low}".strip()):
         return False
+
+    if "karaoke" in low_title and not _STRICT_REAL_AUDIO_CARRIER_RE.search(low_title):
+        w_match = re.search(r"\b(\d{2,4})\s*(?:w|watts?|rms)\b", low_title)
+        high_power = bool(w_match and int(w_match.group(1)) >= 50)
+        if not high_power and (
+            _STRICT_KARAOKE_TOY_RE.search(low_title)
+            or "microfono" in low_title
+            or "mini" in low_title
+        ):
+            return False
 
     if "cooler" in title_for_blacklist and not _STRICT_EXPLICIT_PC_COOLER_RE.search(title_for_blacklist):
         if _STRICT_NON_PC_COOLER_RE.search(title_for_blacklist) or cat_low != "accesorios_pc":
@@ -2750,3 +3025,187 @@ def is_strict_tech_product(
 
     evidence = f"{low_title} {url_slug}".strip()
     return bool(_STRICT_TECH_WHITELIST_RE.search(evidence))
+
+
+def _canonical_laptop_screen_bucket(raw_title: str, norm_text: str) -> Optional[str]:
+    """Devuelve el bucket exacto de pulgadas en laptops sin confundir 15.3\" con 15.6\" o 16\"."""
+    inches = extract_screen_inches_from_text(raw_title)
+    if inches is None:
+        m = re.search(
+            r"\b(13(?:\.[036])?|14(?:\.[02])?|15(?:\.[036])?|16(?:\.[012])?|17(?:\.[03])?|18(?:\.0)?)\b",
+            norm_text,
+        )
+        if m:
+            tok = m.group(1)
+            # Evitar falsos números cuando es '15' en 'Windows 15'? No existe, pero 'vivobook 15' == 15.6"
+            if tok == "15" and any(w in norm_text for w in ("vivobook 15", "aspire 15", "hp 15", "victus 15", "v15", "nitro 15", "loq 15")):
+                inches = 15.6
+            elif tok == "15" and "15.3" in norm_text:
+                inches = 15.3
+            elif "." in tok or tok in {"13", "14", "16", "17", "18"}:
+                if tok != "16" or any(w in norm_text for w in ("16", "v16", "f16", "a16", "g16", "vivobook 16", "omnibook 3 16", "legion pro 5i 16")):
+                    inches = float(tok)
+    if inches is None:
+        if "macbook neo" in norm_text:
+            return "13"
+        if any(w in norm_text for w in ("zenbook a14", "zenbook 14")):
+            return "14"
+        if any(w in norm_text for w in ("tuf f16", "tuf 16", "tuf a16", "v16", "vivobook 16", "rog strix g16")):
+            return "16"
+        if any(w in norm_text for w in ("vivobook 15", "victus 15")):
+            return "15.6"
+        return None
+    if 12.8 <= inches <= 13.7:
+        return "13"
+    if 13.8 <= inches <= 14.5:
+        return "14"
+    if 14.8 <= inches <= 15.35:
+        return "15.3"
+    if 15.4 <= inches <= 15.8:
+        return "15.6"
+    if 15.9 <= inches <= 16.3:
+        return "16"
+    if 16.8 <= inches <= 17.5:
+        return "17"
+    if 17.8 <= inches <= 18.5:
+        return "18"
+    return f"{inches:.1f}".rstrip("0").rstrip(".")
+
+
+def _extract_laptop_product_line(norm_text: str, brand_low: str) -> Optional[str]:
+    """Extrae la línea/familia canónica de laptop (ej. 'aspire_lite', 'vivobook_15', 'ideapad_slim_3')."""
+    patterns: Tuple[Tuple[str, str], ...] = (
+        (r"\baspire\s+lite\b", "aspire_lite"),
+        (r"\baspire\s+(\d{1,2})\b", r"aspire_\1"),
+        (r"\bnitro\s+v\b", "nitro_v"),
+        (r"\bnitro\s+(\d{1,2})\b", r"nitro_\1"),
+        (r"\bpredator\b", "predator"),
+        (r"\bvivobook\s+go(?:\s+(1[456]))?\b", "vivobook_go"),
+        (r"\bvivobook\s+s\s*(1[456])\b", r"vivobook_s_\1"),
+        (r"\bvivobook\s+(1[456])\b", r"vivobook_\1"),
+        (r"\bzenbook\s+duo\b", "zenbook_duo"),
+        (r"\bzenbook\s+s\s*(1[46])\b", r"zenbook_s_\1"),
+        (r"\bzenbook\s+(a14|14)\b", r"zenbook_\1"),
+        (r"\btuf\s+(?:gaming\s+)?([fa]?1[56])\b", r"tuf_\1"),
+        (r"\btuf\s+gaming\b", "tuf_gaming"),
+        (r"\brog\s+strix\s+(g1[68])\b", r"rog_strix_\1"),
+        (r"\b(?:gaming\s+)?v16\b", "asus_v16"),
+        (r"\bideapad\s+slim\s+([135])i?\b", r"ideapad_slim_\1"),
+        (r"\bideapad\s+([135])\b", r"ideapad_\1"),
+        (r"\bloq\s+essential\b", "loq_essential"),
+        (r"\bloq\b", "loq"),
+        (r"\blegion\s+pro\s+([579])i?\b", r"legion_pro_\1"),
+        (r"\blegion\b", "legion"),
+        (r"\byoga\s+slim\s+([79])i?\b", r"yoga_slim_\1"),
+        (r"\byoga\s+([79])i?\b", r"yoga_\1"),
+        (r"\bvictus\b", "victus"),
+        (r"\bomnibook\s+([35x])\b", r"omnibook_\1"),
+        (r"\bomen\b", "omen"),
+        (r"\bpavilion\b", "pavilion"),
+        (r"\bmacbook\s+(neo|air|pro)\b", r"macbook_\1"),
+        (r"\bv15\s+g\d\b", "v15"),
+        (r"\bathlon\s+v15\b", "v15"),
+        (r"\binspiron\s+(\d{2})\b", r"inspiron_\1"),
+    )
+    line: Optional[str] = None
+    for pat, repl in patterns:
+        m = re.search(pat, norm_text)
+        if m:
+            line = m.expand(repl) if "\\" in repl else repl
+            break
+    if line is None and brand_low == "hp":
+        if re.search(r"\b1[456]-[a-z]{2}\d{4}la\b", norm_text) or _word_in_text("15", norm_text):
+            line = "hp_series"
+    if line == "tuf_16":
+        line = "tuf_f16"
+    if line is None:
+        return None
+    flags: List[str] = [line]
+    if re.search(r"\b(?:2\s+en\s+1|x360)\b", norm_text):
+        flags.append("2in1")
+    if re.search(r"\b(?:touch|tactil)\b", norm_text):
+        flags.append("touch")
+    if re.search(r"\bp?oled\b", norm_text):
+        flags.append("oled")
+    return "_".join(flags)
+
+
+def _extract_tv_series_code(norm_text: str) -> Optional[str]:
+    """Extrae el identificador de serie/modelo en TVs (p.ej. 'u8000h', 'm70h', 'qned70', 'nu80', 'c6', 'c6k')."""
+    m_lg_oled = re.search(r"\b(?:oled\s*\d{2}\s*)?([bcgmrwz]\d)\b", norm_text)
+    if m_lg_oled and "oled" in norm_text:
+        return f"oled_{m_lg_oled.group(1)}"
+    m_sam = re.search(r"\b(?:un|qn)?(?:\d{2,3})?([umsq]\d{2,4}[fh]|qn\d{2}[fh]|ls\d{2}[fh]|s\d{2}[fh])\b", norm_text)
+    if m_sam:
+        return m_sam.group(1)
+    for pat in (
+        r"\b(qned\d{2,3}|nu\d{2})\b",
+        r"\b(?:\d{2,3})([cpqt]\d[klg]|\d{2}[uq]\d[a-z]{2,4}|qd\d{2}[a-z]{2}|u\d[a-z]{3}|a\d{3}u?|du\d{4})\b",
+        r"\b\d{2,3}([a-z]\d{1,3}[a-z]{1,4})\b",
+    ):
+        m = re.search(pat, norm_text)
+        if m:
+            return m.group(1)
+    return None
+
+
+def build_structured_match_key(
+    title: str,
+    brand: str = "",
+    url: str = "",
+    category: str = "",
+) -> Optional[Tuple[str, ...]]:
+    """
+    Construye una clave de Huella Estructurada determinística por categoría para unir
+    productos idénticos entre tiendas con formatos de título distintos, sin mezclar variantes:
+    - Laptops: (category, brand, product_line, cpu_tier, ram_gb, storage_gb, screen_inches_bucket, gpu_or_none)
+    - TVs / Monitores / Smartphones / Tablets / Consolas / Audífonos: claves estructuradas + firma limpia.
+    """
+    from app.collectors.spec_extractor import normalize_brand
+
+    cat_low = strip_accents_lower(category or "").strip()
+    if not cat_low or not title:
+        return None
+
+    clean_title = _strip_bundles_and_colors(title, category=cat_low)
+    resolved_brand = normalize_brand(brand, clean_title or title)
+    brand_low = strip_accents_lower(resolved_brand).strip()
+    if not brand_low:
+        return None
+
+    pre = _preprocess_canonical_text(clean_title, category=cat_low)
+    norm_text = normalize_tech_text(pre, expand_abbrevs=True, strip_colors=True)
+    sig = build_canonical_product_signature(clean_title, resolved_brand, url, cat_low)
+
+    if cat_low == "laptops":
+        line = _extract_laptop_product_line(norm_text, brand_low)
+        hw = extract_cpu_and_gpu_signatures(norm_text)
+        cpu_tier = hw.get("cpu_tier")
+        if line == "macbook_neo" and not cpu_tier:
+            cpu_tier = "apple_a18_pro"
+        rams = sorted(extract_ram_tokens(_strip_gpu_vram_tokens(norm_text)))
+        storages = sorted(extract_storage_tokens(norm_text))
+        screen_bucket = _canonical_laptop_screen_bucket(clean_title, norm_text)
+        gpu_tok = hw.get("gpu_model") or "none"
+        if line and cpu_tier and len(rams) == 1 and len(storages) == 1 and screen_bucket:
+            return ("laptops", brand_low, line, cpu_tier, rams[0], storages[0], screen_bucket, gpu_tok)
+        return None
+
+    if cat_low == "televisores":
+        tv_inch = extract_screen_inches_from_text(clean_title)
+        if tv_inch is None:
+            for sz in TV_STANDARD_INCHES:
+                if _word_in_text(str(sz), norm_text):
+                    tv_inch = float(sz)
+                    break
+        series = _extract_tv_series_code(norm_text)
+        if series and tv_inch is not None:
+            return ("televisores", brand_low, series, str(int(round(tv_inch))))
+        return None
+
+    if cat_low in {"celulares", "tablets", "consolas", "monitores", "audifonos"}:
+        if sig and is_signature_specific_enough(sig, brand=resolved_brand, category=cat_low):
+            return (cat_low, brand_low, sig)
+        return None
+
+    return None

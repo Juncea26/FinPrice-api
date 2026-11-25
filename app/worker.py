@@ -521,13 +521,14 @@ def format_catalog_promotion_summary(summary: CatalogPromotionSummary) -> str:
     ]
 
     prune_verb = "por podar (dry-run)" if summary.dry_run else "podados"
-    if summary.pruned_auto_products_total or summary.pruned_non_tech_listings:
+    if summary.pruned_auto_products_total or summary.pruned_non_tech_listings or summary.reclassified_listings:
         reasons_str = ", ".join(
             f"{k}={v}" for k, v in sorted(summary.pruned_by_reason.items())
         ) or "ninguno"
         lines.append(
             f"Auto_* {prune_verb:<20}: {summary.pruned_auto_products_total} "
-            f"({reasons_str}) | store_listings_no_tech={summary.pruned_non_tech_listings}"
+            f"({reasons_str}) | store_listings_no_tech={summary.pruned_non_tech_listings} "
+            f"| reclasificados={summary.reclassified_listings}"
         )
 
     if summary.by_category:

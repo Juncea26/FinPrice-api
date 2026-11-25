@@ -19,8 +19,10 @@ from fastapi import HTTPException, status
 from pydantic import TypeAdapter
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import noload
 
 from app.core.config import settings
+from app.core.database import ReaderSessionLocal
 from app.core.logging import get_logger
 from app.core.security import sanitize_input_text
 from app.collectors.catalog_urls import PERU_DEPARTMENTS
@@ -41,7 +43,9 @@ from app.models.entities import (
     CommunityOfferEntity,
     CommunityPostEntity,
     ComplaintEntity,
+    PriceHistoryEntity,
     ProductEntity,
+    StoreOfferEntity,
 )
 from app.models.schemas import (
     CancellationSuggestionCreateSchema,
@@ -120,7 +124,7 @@ def _capacity_sort_key(val: str) -> float:
 
 
 _PRODUCTS_LIST_ADAPTER = TypeAdapter(List[ProductSchema])
-_PRODUCTS_RESPONSE_CACHE_TTL_SECONDS = 60.0
+_PRODUCTS_RESPONSE_CACHE_TTL_SECONDS = 1800.0
 
 
 class CatalogService:
@@ -182,17 +186,60 @@ class CatalogService:
         )
 
     async def _get_base_products(self, session: AsyncSession) -> List[ProductSchema]:
-        """Retorna la lista de productos base desde la caché en memoria o desde la base de datos."""
+        """Retorna la lista de productos base desde caché TTL 1800s o mediante 3 consultas planas `noload`."""
         now = time.time()
         if (
             self._cached_products is not None
-            and (now - self._cache_timestamp) < settings.CACHE_TTL_SECONDS
+            and (now - self._cache_timestamp) < _PRODUCTS_RESPONSE_CACHE_TTL_SECONDS
         ):
             return self._cached_products
 
-        stmt = select(ProductEntity)
-        result = await session.execute(stmt)
-        entities = result.scalars().all()
+        prod_res = await session.execute(
+            select(ProductEntity).options(
+                noload(ProductEntity.store_offers),
+                noload(ProductEntity.price_history),
+                noload(ProductEntity.community_offers),
+                noload(ProductEntity.community_posts),
+            )
+        )
+        entities = prod_res.scalars().all()
+
+        offers_res = await session.execute(
+            select(
+                StoreOfferEntity.product_id,
+                StoreOfferEntity.store_id,
+                StoreOfferEntity.store_name,
+                StoreOfferEntity.price,
+                StoreOfferEntity.original_price,
+                StoreOfferEntity.offer_url,
+                StoreOfferEntity.is_best_price,
+            ).where(StoreOfferEntity.price > 0)
+        )
+        offers_by_prod: Dict[str, List[StorePriceSchema]] = {}
+        for prod_id, store_id, store_name, price_val, orig_val, offer_url, is_best in offers_res.all():
+            offers_by_prod.setdefault(prod_id, []).append(
+                StorePriceSchema(
+                    store_id=store_id,
+                    store_name=store_name,
+                    price=price_val,
+                    original_price=orig_val,
+                    offer_url=offer_url,
+                    is_best_price=is_best,
+                )
+            )
+
+        hist_res = await session.execute(
+            select(
+                PriceHistoryEntity.product_id,
+                PriceHistoryEntity.day_offset,
+                PriceHistoryEntity.date_label,
+                PriceHistoryEntity.price,
+                PriceHistoryEntity.recorded_date,
+            ).where(PriceHistoryEntity.day_offset >= -30)
+        )
+        history_by_prod: Dict[str, List[Tuple[int, str, float, Optional[str]]]] = {}
+        for prod_id, day_off, date_lbl, h_price, rec_date in hist_res.all():
+            history_by_prod.setdefault(prod_id, []).append((day_off, date_lbl, h_price, rec_date))
 
         schemas: List[ProductSchema] = []
         for p in entities:
@@ -217,18 +264,7 @@ class CatalogService:
                 existing_features=raw_features,
             )
 
-            raw_store_prices: List[StorePriceSchema] = [
-                StorePriceSchema(
-                    store_id=sp.store_id,
-                    store_name=sp.store_name,
-                    price=sp.price,
-                    original_price=sp.original_price,
-                    offer_url=sp.offer_url,
-                    is_best_price=sp.is_best_price,
-                )
-                for sp in p.store_offers
-                if sp.price and sp.price > 0
-            ]
+            raw_store_prices = offers_by_prod.get(p.id, [])
             store_prices = validate_cross_store_prices(raw_store_prices)
             store_prices.sort(key=lambda x: x.price)
             for idx, sp_item in enumerate(store_prices):
@@ -257,13 +293,13 @@ class CatalogService:
 
             price_history: List[PricePointSchema] = [
                 PricePointSchema(
-                    day_offset=hp.day_offset,
-                    date_label=hp.date_label,
-                    price=hp.price,
-                    recorded_date=getattr(hp, "recorded_date", None),
+                    day_offset=day_off,
+                    date_label=date_lbl,
+                    price=h_price,
+                    recorded_date=rec_date,
                 )
-                for hp in p.price_history
-                if hp.price >= (eff_best_price * 0.55)
+                for day_off, date_lbl, h_price, rec_date in history_by_prod.get(p.id, [])
+                if h_price >= (eff_best_price * 0.55)
             ]
             price_history.sort(key=lambda x: x.day_offset)
 
@@ -706,8 +742,7 @@ class CatalogService:
         min_stores: Optional[int] = None,
         sort: Optional[str] = None,
     ) -> bytes:
-        """Retorna el JSON UTF-8 pre-serializado de `get_products` usando caché en memoria de 60s."""
-        await self._get_base_products(session)
+        """Retorna el JSON UTF-8 pre-serializado de `get_products` usando caché en memoria de 1800s."""
         cache_key = self._build_products_cache_key(
             search=search,
             category=category,
@@ -728,6 +763,17 @@ class CatalogService:
             min_stores=min_stores,
             sort=sort,
         )
+        now = time.time()
+        cached_json = self._products_json_cache.get(cache_key)
+        if (
+            self._cached_products is not None
+            and cached_json is not None
+            and cached_json[1] == self._cache_timestamp
+            and (now - cached_json[0]) < _PRODUCTS_RESPONSE_CACHE_TTL_SECONDS
+        ):
+            return cached_json[2]
+
+        await self._get_base_products(session)
         now = time.time()
         cached_json = self._products_json_cache.get(cache_key)
         if (
@@ -763,6 +809,18 @@ class CatalogService:
             self._products_json_cache.clear()
         self._products_json_cache[cache_key] = (time.time(), self._cache_timestamp, payload_bytes)
         return payload_bytes
+
+    async def prewarm_default_products_cache(
+        self,
+        session: Optional[AsyncSession] = None,
+    ) -> int:
+        """Pre-calienta en RAM el JSON completo por defecto de `GET /api/v1/products` (sin filtros)."""
+        if session is not None:
+            payload = await self.get_products_serialized_json(session=session)
+            return len(payload)
+        async with ReaderSessionLocal() as read_session:
+            payload = await self.get_products_serialized_json(session=read_session)
+            return len(payload)
 
     async def get_product_by_id(
         self, product_id: str, session: AsyncSession

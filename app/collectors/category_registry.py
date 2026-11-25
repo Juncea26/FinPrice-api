@@ -861,6 +861,29 @@ def _classify_clean_text(clean_text: str) -> Optional[str]:
 
     has_acc_lead = clean_text.startswith(_ACCESSORY_LEAD_PREFIXES)
     has_consumable = bool(_CONSUMABLE_WORDS_RE.search(clean_text))
+    starts_with_acc_noun = clean_text.startswith(
+        (
+            "cargador ", "mini cargador ", "power bank", "powerbank", "bateria ",
+            "adaptador ", "cooler ", "base ", "soporte ", "rack ", "hub ", "docking ",
+            "teclado ", "mouse ", "raton ", "webcam ", "pendrive ", "memoria ",
+            "disco ", "ssd ", "hdd ", "router ", "modem ", "repetidor ", "extensor ",
+        )
+    )
+    has_primary_device = (
+        not starts_with_acc_noun
+        and not bool(re.search(r"\b(?:para|compatible\s+con)\s+(?:laptop|notebook|macbook|pc|tv|televisor|tablet|ipad|celular|ps5|xbox|monitor)\b", clean_text))
+        and _contains_any_term(
+            clean_text,
+            (
+                "laptop", "notebook", "macbook", "ultrabook", "chromebook",
+                "vivobook", "zenbook", "ideapad", "thinkpad", "victus", "loq",
+                "tuf", "aspire", "nitro", "predator", "omnibook", "pavilion", "omen",
+                "tablet", "tableta", "ipad", "galaxy tab", "matepad", "redmi pad",
+                "televisor", "smart tv", "celular", "smartphone", "iphone",
+                "galaxy s", "galaxy a", "galaxy z", "oppo find", "oppo reno",
+            ),
+        )
+    )
 
     # 1. Audífonos
     if not has_acc_lead and _contains_any_term(
@@ -877,6 +900,8 @@ def _classify_clean_text(clean_text: str) -> Optional[str]:
             "freebuds",
             "headset",
             "headphone",
+            "pulse elite",
+            "pulse explore",
             "wh-1000xm",
             "wf-1000xm",
         ),
@@ -907,33 +932,49 @@ def _classify_clean_text(clean_text: str) -> Optional[str]:
     ):
         return "smartwatches"
 
-    # 3. Almacenamiento y Redes
-    if _contains_any_term(
+    # 3. Almacenamiento y Redes (sin capturar laptops/tablets/celulares que mencionan su SSD/RAM)
+    if not has_primary_device and _contains_any_term(
         clean_text,
         (
             "router",
             "modem",
             "repetidor",
             "access point",
+            "punto de acceso",
             "wifi mesh",
             "deco ",
             "switch de red",
+            "switch ethernet",
+            "switch gigabit",
             "adaptador usb wifi",
+            "adaptador wifi",
+            "adaptador ethernet",
+            "adaptador de red",
+            "extensor wifi",
+            "extensor de rango",
+            "archer ",
             "disco duro externo",
+            "disco externo",
             "ssd externo",
-            "disco solido externo",
+            "ssd interno",
+            "disco solido",
+            "estado solido",
+            "nvme",
             "memoria usb",
             "pendrive",
             "flash drive",
             "microsd",
+            "micro sd",
+            "sdxc",
+            "sdhc",
             "tarjeta de memoria",
             "nas",
         ),
     ):
         return "almacenamiento_redes"
 
-    # 4. Accesorios y Periféricos PC
-    if _contains_any_term(
+    # 4. Accesorios y Periféricos PC (sin capturar laptops/TVs que mencionan 'teclado en español' o 'con mouse')
+    if not has_primary_device and _contains_any_term(
         clean_text,
         (
             "mouse",
@@ -942,6 +983,19 @@ def _classify_clean_text(clean_text: str) -> Optional[str]:
             "keyboard",
             "webcam",
             "camara web",
+            "logitech brio",
+            "power bank",
+            "powerbank",
+            "bateria externa",
+            "bateria portatil",
+            "cargador portatil",
+            "mini cargador",
+            "cargador gan",
+            "cargador usb",
+            "cargador tipo c",
+            "estabilizador",
+            "supresor",
+            "apple pencil",
             "cooler para laptop",
             "base para laptop",
             "soporte para laptop",
@@ -1169,42 +1223,100 @@ def _classify_clean_text(clean_text: str) -> Optional[str]:
     ):
         return "televisores"
 
-    # 14. Celulares
-    if not has_acc_lead and _contains_any_term(
-        clean_text,
-        (
-            "celular",
-            "smartphone",
-            "iphone",
-            "galaxy s",
-            "galaxy a",
-            "galaxy z",
-            "galaxy m",
-            "redmi note",
-            "redmi 1",
-            "redmi a",
-            "poco x",
-            "poco f",
-            "poco m",
-            "poco c",
-            "moto g",
-            "motorola edge",
-            "razr",
-            "honor magic",
-            "honor x",
-            "honor 200",
-            "honor 400",
-            "huawei pura",
-            "xiaomi 14",
-            "xiaomi 15",
-            "realme",
-            "oppo reno",
-            "oppo a",
-        ),
+    # 14. Celulares (por marca/línea conocida o patrón genérico '5G + RAM + Almacenamiento')
+    if not has_acc_lead and (
+        _contains_any_term(
+            clean_text,
+            (
+                "celular",
+                "smartphone",
+                "iphone",
+                "galaxy s",
+                "galaxy a",
+                "galaxy z",
+                "galaxy m",
+                "galaxy f",
+                "redmi note",
+                "redmi 1",
+                "redmi a",
+                "redmi c",
+                "poco ",
+                "moto g",
+                "moto e",
+                "moto edge",
+                "motorola edge",
+                "motorola g",
+                "motorola razr",
+                "razr",
+                "honor magic",
+                "honor x",
+                "honor 200",
+                "honor 400",
+                "honor 600",
+                "honor h600",
+                "honor play",
+                "huawei pura",
+                "huawei nova",
+                "xiaomi 13",
+                "xiaomi 14",
+                "xiaomi 15",
+                "xiaomi 16",
+                "xiaomi 17",
+                "realme",
+                "oppo find",
+                "oppo reno",
+                "oppo a",
+                "vivo v",
+                "vivo y",
+                "vivo x",
+                "pixel ",
+                "oneplus",
+                "infinix",
+                "tecno ",
+                "zte blade",
+                "zte a",
+                "nubia",
+            ),
+        )
+        or (
+            bool(re.search(r"\b5g\b", clean_text))
+            and bool(
+                re.search(
+                    r"\b(?:4|6|8|12|16|24)\s*(?:gb|g)?(?:\s*ram)?\s*[+/ ]\s*(?:64|128|256|512|1024)\s*(?:gb|g)\b"
+                    r"|\b(?:64|128|256|512|1024)\s*(?:gb|g)\s*[+/ ]\s*(?:4|6|8|12|16|24)\s*(?:gb|g)\b",
+                    clean_text,
+                )
+            )
+            and not _contains_any_term(
+                clean_text,
+                ("tablet", "tableta", "ipad", "tab ", "pad ", "laptop", "notebook", "macbook", "router", "modem", "cpe"),
+            )
+        )
     ):
         return "celulares"
 
     return None
+
+
+_STORAGE_NETWORK_VALID_RE = re.compile(
+    r"\b(?:"
+    r"ssd|hdd|nvme|m\.2|sata|disco\s+(?:duro|externo|solido)|estado\s+solido|"
+    r"pendrive|memoria\s+usb|flash\s+drive|micro\s*sd|sdxc|sdhc|tarjeta\s+(?:de\s+memoria|sd)|"
+    r"router|mesh|deco|repetidor|extensor\s+(?:wifi|rango)|switch\s+(?:de\s+red|ethernet|gigabit)|"
+    r"access\s+point|punto\s+de\s+acceso|nas|modem|"
+    r"adaptador\s+(?:wifi|usb\s+wifi|ethernet|de\s+red)|tarjeta\s+de\s+red|antena\s+wifi"
+    r")\b",
+    re.I,
+)
+
+
+def is_valid_storage_or_network_item(title: str, url: str = "") -> bool:
+    """Valida que un producto en `almacenamiento_redes` sea hardware real de almacenamiento o redes."""
+    raw = f"{title or ''} {url or ''}".strip()
+    if not raw:
+        return False
+    clean = re.sub(r"[/\-_\.]+", " ", strip_accents_lower(raw))
+    return bool(_STORAGE_NETWORK_VALID_RE.search(clean))
 
 
 def infer_tech_category(

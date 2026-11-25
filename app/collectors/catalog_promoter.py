@@ -27,6 +27,7 @@ from app.collectors.category_registry import (
     CATEGORY_REGISTRY,
     get_category_spec,
     infer_tech_category,
+    is_valid_storage_or_network_item,
     resolve_category_display_name,
 )
 from app.collectors.color_stripper import strip_color_tokens
@@ -42,6 +43,7 @@ from app.collectors.tech_normalizer import (
     _strip_bundles_and_colors,
     are_listings_variant_compatible,
     build_canonical_product_signature,
+    build_structured_match_key,
     evaluate_strict_guardrails,
     extract_product_codes,
     extract_variant_profile,
@@ -124,6 +126,7 @@ class _EnrichedListing:
     is_specific_sig: bool
     variant_profile: Dict[str, Any]
     existing_canonical_product_id: Optional[str]
+    structured_key: Optional[Tuple[str, ...]] = None
 
 
 @dataclass
@@ -166,6 +169,8 @@ class CatalogPromotionSummary:
     history_points_upserted: int = 0
     pruned_auto_products_total: int = 0
     pruned_non_tech_listings: int = 0
+    reclassified_listings: int = 0
+    reclassified_auto_products: int = 0
     pruned_by_reason: Dict[str, int] = field(default_factory=dict)
     dry_run: bool = False
     by_category: Dict[str, Dict[str, int]] = field(default_factory=dict)
@@ -370,6 +375,9 @@ def _enrich_raw_listing(
     else:
         return None
 
+    if effective_category == "almacenamiento_redes" and not is_valid_storage_or_network_item(title, eff_url):
+        return None
+
     raw_brand = str(getattr(row, "brand", "") or "").strip()
     if not is_strict_tech_product(
         title=title,
@@ -400,13 +408,13 @@ def _enrich_raw_listing(
             eans.add(ng)
 
     mpns: Set[str] = set()
-    db_mpn = _normalize_mpn(getattr(row, "mpn", None))
-    if db_mpn:
-        mpns.add(db_mpn)
     for m in codes.get("mpn") or []:
         nm = _normalize_mpn(m)
         if nm:
             mpns.add(nm)
+    db_mpn = _normalize_mpn(getattr(row, "mpn", None))
+    if db_mpn and not re.search(r"(?:mouse|mochila|intel|amd|funda)$", db_mpn):
+        mpns.add(db_mpn)
 
     sig = build_canonical_product_signature(
         title=title,
@@ -423,6 +431,12 @@ def _enrich_raw_listing(
         url=eff_url,
         category=effective_category,
         brand=brand,
+    )
+    structured_key = build_structured_match_key(
+        title=title,
+        brand=brand,
+        url=eff_url,
+        category=effective_category,
     )
     clean_title = _prettify_title_casing(
         strip_color_tokens(_strip_bundles_and_colors(title, category=effective_category) or title)
@@ -453,6 +467,7 @@ def _enrich_raw_listing(
         is_specific_sig=is_spec,
         variant_profile=profile,
         existing_canonical_product_id=existing_canon,
+        structured_key=structured_key,
     )
 
 
@@ -540,6 +555,8 @@ def _cluster_remaining_listings(
         for ma in members_a:
             prof_a = items[ma].variant_profile
             for mb in members_b:
+                if items[ma].eans and items[mb].eans and not (items[ma].eans & items[mb].eans):
+                    return
                 if not are_listings_variant_compatible(prof_a, items[mb].variant_profile):
                     return
 
@@ -559,6 +576,7 @@ def _cluster_remaining_listings(
     ean_buckets: Dict[Tuple[str, str], List[int]] = {}
     mpn_buckets: Dict[Tuple[str, str], List[int]] = {}
     sig_buckets: Dict[Tuple[str, str], List[int]] = {}
+    structured_buckets: Dict[Tuple[str, ...], List[int]] = {}
 
     for idx, item in enumerate(items):
         for g in sorted(item.eans):
@@ -567,8 +585,10 @@ def _cluster_remaining_listings(
             mpn_buckets.setdefault((item.effective_category, m), []).append(idx)
         if item.is_specific_sig and item.canonical_signature:
             sig_buckets.setdefault((item.effective_category, item.canonical_signature), []).append(idx)
+        if item.structured_key is not None:
+            structured_buckets.setdefault(item.structured_key, []).append(idx)
 
-    for bucket_map in (ean_buckets, mpn_buckets, sig_buckets):
+    for bucket_map in (ean_buckets, mpn_buckets, sig_buckets, structured_buckets):
         for bucket in bucket_map.values():
             if len(bucket) < 2:
                 continue
@@ -803,15 +823,20 @@ async def promote_store_listings(
             row_title = re.sub(r"\s+", " ", str(db_row.title or "")).strip()
             row_cat = str(db_row.category or "").strip().lower() or "otros_tech"
             row_brand = str(db_row.brand or "").strip()
+            row_url = str(db_row.url or "")
+            eff_row_cat = infer_tech_category(title=row_title, url=row_url, default_category=row_cat)
+            if eff_row_cat == "otros_tech":
+                eff_row_cat = row_cat
             is_tech_row = (
                 bool(row_title)
                 and not _NON_HARDWARE_SOFTWARE_RE.search(strip_accents_lower(row_title))
                 and is_strict_tech_product(
                     title=row_title,
-                    category=row_cat,
-                    url=str(db_row.url or ""),
+                    category=eff_row_cat,
+                    url=row_url,
                     brand=row_brand,
                 )
+                and not (eff_row_cat == "almacenamiento_redes" and not is_valid_storage_or_network_item(row_title, row_url))
             )
             if not is_tech_row:
                 summary.pruned_non_tech_listings += 1
@@ -820,6 +845,10 @@ async def promote_store_listings(
                 if bool(db_row.in_stock) and float(db_row.price or 0.0) > 0.0:
                     raw_rows.append(db_row)
                 continue
+            if eff_row_cat != row_cat:
+                summary.reclassified_listings += 1
+                if not dry_run:
+                    db_row.category = eff_row_cat
             if bool(db_row.in_stock) and float(db_row.price or 0.0) > 0.0:
                 raw_rows.append(db_row)
 
@@ -863,7 +892,10 @@ async def promote_store_listings(
         for cand, reason in paired_list:
             if not dry_run and cand.entity is not None:
                 cand.entity.canonical_product_id = prod_id
+                cand.entity.category = cand.effective_category
                 cand.entity.normalized_signature = cand.canonical_signature
+                if cand.mpns and (not cand.entity.mpn or re.search(r"(?:mouse|mochila|intel|amd|funda)$", str(cand.entity.mpn), re.I)):
+                    cand.entity.mpn = sorted(cand.mpns)[0]
             summary.linked_to_existing_products += 1
             summary.existing_links.append(
                 ExistingLinkSummary(
@@ -1046,11 +1078,14 @@ async def promote_store_listings(
         if dry_run:
             continue
 
-        # Enlazar todos los `store_listings` del clúster al `canonical_id` y refrescar firma
+        # Enlazar todos los `store_listings` del clúster al `canonical_id` y refrescar categoría/firma/mpn
         for member in cluster_members:
             if member.entity is not None:
                 member.entity.canonical_product_id = canonical_id
+                member.entity.category = member.effective_category
                 member.entity.normalized_signature = member.canonical_signature
+                if member.mpns and (not member.entity.mpn or re.search(r"(?:mouse|mochila|intel|amd|funda)$", str(member.entity.mpn), re.I)):
+                    member.entity.mpn = sorted(member.mpns)[0]
 
         # Construir ficha técnica + imagen + descripción limpia
         seed_specs: Dict[str, str] = {}
@@ -1084,6 +1119,8 @@ async def promote_store_listings(
 
         existing_prod = products_by_id.get(canonical_id)
         if existing_prod is not None:
+            if existing_prod.category != rep.display_category:
+                summary.reclassified_auto_products += 1
             hist_min, is_hist_min, prev_best, drop_amt, days_tracked = await _upsert_today_price_history(
                 session=session,
                 product=existing_prod,
@@ -1230,6 +1267,11 @@ async def promote_store_listings(
                     category=p_slug,
                     url=p_url,
                     brand=p_brand,
+                )
+                or (
+                    p.category == "Almacenamiento y Redes"
+                    and infer_tech_category(title=p_title, url=p_url, default_category=p_slug) == "almacenamiento_redes"
+                    and not is_valid_storage_or_network_item(p_title, p_url)
                 )
             ):
                 reason = "no_tech"
