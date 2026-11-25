@@ -1749,11 +1749,19 @@ _CATEGORY_SIGNATURE_FILLER_TOKENS: Dict[str, Set[str]] = {
     "celulares": {"celular", "celulares", "smartphone", "smartphones", "movil", "telefono", "5g", "chip", "procesador", "amoled", "fhd", "hd"},
     "laptops": {"laptop", "laptops", "notebook", "notebooks", "portatil", "gamer", "gaming", "wuxga", "fhd", "ssd", "disco", "procesador"},
     "tablets": {"tablet", "tablets", "tableta", "wifi", "wi", "fi", "wlan", "wuxga", "fhd"},
-    "televisores": {"tv", "televisor", "televisores", "smart", "ai", "thinq", "dolby", "atmos", "vision", "hdr", "hdr10", "uhd", "nanocell", "4k", "fhd", "hd"},
-    "impresoras": {"impresora", "impresoras", "multifuncional", "tintas", "tinta", "continua", "wifi", "wi", "fi", "usb", "tanque"},
+    "televisores": {
+        "tv", "televisor", "televisores", "smart", "ai", "thinq", "dolby", "atmos",
+        "vision", "hdr", "hdr10", "uhd", "nanocell", "4k", "fhd", "hd",
+        "crystal", "google", "android", "tizen", "webos", "vidaa",
+    },
+    "impresoras": {
+        "impresora", "impresoras", "multifuncional", "tintas", "tinta", "continua",
+        "sistema", "continuo", "todo", "uno", "app", "impresion", "copia",
+        "escanea", "escaner", "multifuncion", "wifi", "wi", "fi", "usb", "tanque",
+    },
     "consolas": {"consola", "consolas", "videojuego", "videojuegos", "lectora", "lector", "estandar", "standard", "disc", "disco", "solus", "chassis"},
     "monitores": {"monitor", "monitores", "gamer", "gaming", "pantalla", "display", "frameless", "antireflejo"},
-    "audifonos": {"audifono", "audifonos", "auricular", "auriculares", "headset", "headsets", "headphone", "headphones", "inalambrico", "inalambricos", "inalambrica", "bluetooth", "bt", "wireless", "true", "earbuds", "gamer", "gaming", "microfono", "micro", "usbc", "usb", "estuche", "carga"},
+    "audifonos": {"audifono", "audifonos", "auricular", "auriculares", "headset", "headsets", "headphone", "headphones", "inalambrico", "inalambricos", "inalambrica", "bluetooth", "bt", "wireless", "true", "earbuds", "gamer", "gaming", "microfono", "micro", "usbc", "usb", "estuche", "carga", "on", "ear", "diadema", "vincha"},
     "smartwatches": {"smartwatch", "smartwatches", "reloj", "relojes", "inteligente", "wearable", "bluetooth", "bt", "gps", "correa", "deportivo", "sport"},
     "audio": {"parlante", "parlantes", "speaker", "speakers", "altavoz", "altavoces", "bocina", "inalambrico", "inalambricos", "bluetooth", "bt", "portatil", "portable", "equipo", "sonido", "sistema", "wireless"},
     "camaras": {"camara", "camaras", "fotografica", "digital", "mirrorless", "reflex", "instantanea", "kit", "lente"},
@@ -2041,8 +2049,16 @@ def _preprocess_canonical_text(raw_text: str, category: str = "") -> str:
     out = re.sub(r"\busb[\s\-]*c\b", "usbc", out)
     out = re.sub(r"\bwh[\s\-]*(\d{3,4}[a-z0-9]*)\b", r"wh\1", out)
     out = re.sub(r"\bwf[\s\-]*(\d{3,4}[a-z0-9]*)\b", r"wf\1", out)
+    out = re.sub(r"\b((?:wh|wf|srs|ult)[\s\-]*[a-z]{0,3}\d{3,4}[n]?)[bwlpc]\b", r"\1", out)
     out = re.sub(r"\bsrs[\s\-]*([a-z]+\d+[a-z0-9]*)\b", r"srs\1", out)
     out = re.sub(r"\btp[\s\-]*link\b", "tplink", out)
+
+    # Limpiar ruido comercial común que fragmenta firmas idénticas
+    out = re.sub(r"\b(?:hp\s+app|sistema\s+continuo|todo[\s\-]+en[\s\-]+uno|all[\s\-]+in[\s\-]+one|a\s+color)\b", " ", out)
+    if cat_low == "televisores":
+        out = re.sub(r"\b(?:un|qn)(\d{2})([a-z]\d{3,4}[a-z]?)(?:f?gxpe|agxpe|gxpe|pe)?\b", r"\1 \2", out)
+    elif cat_low == "impresoras" and re.search(r"\b[lg]\d{3,4}\b", out):
+        out = re.sub(r"\b(?:ecotank|pixma)\b", " ", out)
 
     # Normalizar Wi-Fi, paneles, resoluciones, tamaños de reloj, tasas de refresco y vatios
     out = re.sub(r"\bwi[\s\-]?fi\s*(5|6e|6|7)\b", r"wifi\1", out)
@@ -2613,3 +2629,124 @@ def _check_extended_category_guardrails(
         return False
 
     return True
+
+
+_STRICT_PRIMARY_TECH_PREFIX_RE = re.compile(
+    r"^\s*(?:laptop|notebook|macbook|ultrabook|chromebook|tablet|tableta|ipad|"
+    r"impresora|multifuncional|monitor|consola|playstation|ps5|xbox|nintendo\s+switch)\b",
+    re.I,
+)
+
+_STRICT_NON_TECH_BLACKLIST_RE = re.compile(
+    r"\b(?:"
+    # Ropa, calzado, moda y bolsos/billeteras
+    r"gorro|gorra|sombrero|polo|polera|casaca|camiseta|camisa|blusa|chompa|"
+    r"pantalon|jean|short|falda|vestido|zapatilla|zapatillas|zapato|zapatos|"
+    r"sandalia|bota|medias|calcetines|ropa|tarjetero|billetera|cartera|bolso|"
+    r"canguro|morral|maletin|correa\s+para\s+reloj|"
+    # Viaje, equipaje e hidratación no-tech
+    r"maleta|mochila|lonchera|tomatodo|termo|cantimplora|"
+    # Cocina, hogar, electrodomésticos y muebles no-tech
+    r"azucarero|taza|tazon|plato|olla|sarten|vaso|copa|tetera|cafetera|licuadora|"
+    r"batidora|freidora|airfryer|horno|microondas|refrigeradora|frigobar|"
+    r"congeladora|lavadora|secadora|cocina|encimera|campana\s+extractora|terma|"
+    r"calentador|hervidor|tostadora|plancha|aire\s+acondicionado|deshumedecedor|"
+    r"purificador|sabana|toalla|almohada|edredon|colchon|mueble|escritorio|"
+    r"estante|repisa|silla|sofa|mesa|velador|cama|linterna|cobertor\s+de\s+auto|"
+    r"herramienta|taladro|bicicleta|trotadora|mancuerna|guitarra|ukelele|"
+    # Librería, juguetes, merch, alimentos y consumibles/fundas sueltas
+    r"agenda|cuaderno|libro|comic|manga|peluche|funko|juguete|rompecabezas|"
+    r"sticker|llavero|poster|chocolate|cafe|cerveza|perfume|maquillaje|crema|"
+    r"shampoo|desodorante|pañal|panal|vitamina|proteina|"
+    r"botella\s+de\s+tinta|toner|cartucho\s+de\s+tinta|tinta\s+(?:epson|canon|hp|brother)|"
+    r"mica\s+protectora|vidrio\s+templado|carcasa|protector\s+de\s+pantalla|"
+    r"book\s*cover|keyboard\s*cover|smart\s*cover|\bcover\b|"
+    r"rack\s+(?:para\s+|de\s+)?tv|soporte\s+(?:para\s+|de\s+)?tv|estuche"
+    r")\b",
+    re.I,
+)
+
+_STRICT_NON_PC_COOLER_RE = re.compile(
+    r"\bcooler\b(?=.*\b(?:\d+(?:\.\d+)?\s*(?:l|lt|lts|litros?|qt|oz)|playa|camping|hielera|termic[oa]|conservadora|basa|coleman|igloo|yeti|rey)\b)",
+    re.I,
+)
+_STRICT_EXPLICIT_PC_COOLER_RE = re.compile(
+    r"\b(?:cooler\s+(?:para\s+)?(?:laptop|notebook|cpu|pc|procesador|gabinete)|liquid\s+cooler|water\s+cooling|disipador)\b",
+    re.I,
+)
+
+_STRICT_TECH_WHITELIST_RE = re.compile(
+    r"\b(?:"
+    r"celular|smartphone|iphone|galaxy\s+(?:s|a|z|m|f|note|tab|buds|watch)\w*|redmi|xiaomi|poco|motorola|honor|realme|oppo|vivo|oneplus|pixel\s+\d|"
+    r"laptop|notebook|macbook|ultrabook|chromebook|vivobook|zenbook|ideapad|thinkpad|legion|loq|victus|pavilion|omen|inspiron|latitude|xps|nitro|predator|aspire|tuf|rog|"
+    r"tablet|tableta|ipad|matepad|redmi\s+pad|lenovo\s+tab|xiaomi\s+pad|galaxy\s+tab|"
+    r"televisor|smart\s+tv|\btv\b|qled|oled|qned|nanocell|mini[\s\-]?led|crystal\s+uhd|"
+    r"impresora|multifuncional|ecotank|smart\s+tank|pixma|laserjet|deskjet|ink\s+tank|neverstop|"
+    r"consola|playstation|ps5|ps4|xbox|nintendo\s+switch|switch\s+(?:2|oled|lite)|steam\s+deck|rog\s+ally|legion\s+go|dualsense|dualshock|joy[\s\-]?con|mando\s+(?:ps5|xbox|switch|gamer|inalambrico)|"
+    r"monitor|ultragear|odyssey|zenscreen|proart|"
+    r"audifono|audifonos|auricular|auriculares|airpods|freebuds|earbuds|earphone|headphone|headset|wh[\s\-]?\d{3,4}\w*|wf[\s\-]?\d{3,4}\w*|"
+    r"smartwatch|reloj\s+inteligente|apple\s+watch|watch\s+fit|watch\s+gt|garmin|amazfit|mi\s+band|smart\s+band|fitbit|"
+    r"parlante|parlantes|soundbar|barra\s+de\s+sonido|minicomponente|torre\s+de\s+sonido|subwoofer|tornamesa|microfono|speaker|altavoz|bocina|"
+    r"camara|gopro|instax|osmo|dron|drone|dji|webcam|camara\s+web|lente|gimbal|"
+    r"disco\s+(?:duro|externo|solido)|estado\s+solido|ssd|hdd|nvme|memoria\s+usb|pendrive|flash\s+drive|micro\s*sd|sdxc|sdhc|tarjeta\s+de\s+memoria|"
+    r"router|mesh|deco|repetidor|extensor\s+(?:wifi|rango)|access\s+point|switch\s+(?:ethernet|gigabit|red)|nas|adaptador\s+(?:wifi|ethernet|red|usb|hdmi)|"
+    r"teclado|keyboard|mouse|raton|hub\s+usb|docking|pad\s+mouse|mouse\s*pad|mousepad|cargador|power\s+bank|powerbank|ups|estabilizador|supresor|tableta\s+grafica|wacom|apple\s+pencil|base\s+enfriadora|"
+    r"alexa|echo\s+(?:dot|pop|show|spot|studio|hub)|google\s+nest|nest\s+(?:mini|hub|audio)|chromecast|apple\s+tv|fire\s+tv|roku|mi\s+tv\s+stick|"
+    r"foco\s+inteligente|ampolleta\s+inteligente|enchufe\s+inteligente|toma\s+inteligente|camara\s+(?:de\s+)?seguridad|camara\s+wifi|tapo|ezviz|imou|timbre\s+inteligente|cerradura\s+(?:digital|inteligente)|aspiradora\s+robot|robot\s+aspirador"
+    r")\b",
+    re.I,
+)
+
+
+def is_strict_tech_product(
+    title: str,
+    category: str = "",
+    url: str = "",
+    brand: str = "",
+) -> bool:
+    """
+    Doble candado obligatorio SOLO TECNOLOGÍA (blacklist + whitelist positiva).
+    Rechaza moda, equipaje, cocina, línea blanca, muebles, librería y coolers de camping,
+    mientras conserva bundles legítimos cuyo dispositivo principal es hardware tech.
+    """
+    raw_title = (title or "").strip()
+    if not raw_title or len(raw_title) < 4:
+        return False
+
+    low_title = strip_accents_lower(raw_title)
+    cat_low = strip_accents_lower(category or "").strip()
+
+    # Si el título declara primero hardware primario (ej. Laptop + Mochila), limpiar la cola de regalo
+    # antes de evaluar la blacklist de mochilas/maletines.
+    title_for_blacklist = low_title
+    if _STRICT_PRIMARY_TECH_PREFIX_RE.search(low_title):
+        title_for_blacklist = _strip_bundles_and_colors(low_title, category=cat_low)
+
+    # Candado 1: Blacklist estricta
+    if _STRICT_NON_TECH_BLACKLIST_RE.search(title_for_blacklist):
+        # Permitir fundas con teclado explícito únicamente si entran como accesorios_pc en stock; en tablets/otros NO
+        return False
+
+    if "cooler" in title_for_blacklist and not _STRICT_EXPLICIT_PC_COOLER_RE.search(title_for_blacklist):
+        if _STRICT_NON_PC_COOLER_RE.search(title_for_blacklist) or cat_low != "accesorios_pc":
+            return False
+
+    if "ventilador" in title_for_blacklist and not _STRICT_EXPLICIT_PC_COOLER_RE.search(title_for_blacklist):
+        if not re.search(r"\b(?:cpu|rgb|pwm|pc|gabinete|laptop|notebook)\b", title_for_blacklist):
+            return False
+
+    if re.search(r"\bfunda\b", title_for_blacklist):
+        return False
+
+    # Candado 2: Whitelist positiva obligatoria (título o slug específico del producto en la URL)
+    url_slug = ""
+    if url:
+        path = (urlparse(url).path or "").strip("/")
+        if path:
+            parts = [p for p in path.split("/") if p and p.lower() != "p"]
+            if parts:
+                # Usar solo el último segmento (slug del producto) para no falsar con la ruta de categoría
+                url_slug = strip_accents_lower(parts[-1].replace("-", " ").replace("_", " "))
+
+    evidence = f"{low_title} {url_slug}".strip()
+    return bool(_STRICT_TECH_WHITELIST_RE.search(evidence))

@@ -48,6 +48,9 @@ FORBIDDEN_ERROR_PHRASES_RIPLEY = (
     "producto que buscas ya no está disponible",
     "no encontramos resultados",
     "producto sin stock",
+    "pronto disponible",
+    "sin stock disponible",
+    "producto agotado",
 )
 
 
@@ -86,7 +89,16 @@ def _is_ripley_node_in_stock(node: Any, _depth: int = 0) -> Optional[bool]:
     if not isinstance(node, dict) or _depth > 3:
         return None
 
-    for neg_bool_key in ("isOutOfStock", "outOfStock", "isUnavailable", "unavailable", "soldOut"):
+    for neg_bool_key in (
+        "isOutOfStock",
+        "outOfStock",
+        "out_of_stock",
+        "isUnavailable",
+        "unavailable",
+        "soldOut",
+        "notBuyable",
+        "notSelectable",
+    ):
         if neg_bool_key in node and node[neg_bool_key] is True:
             return False
 
@@ -113,19 +125,47 @@ def _is_ripley_node_in_stock(node: Any, _depth: int = 0) -> Optional[bool]:
                 except (TypeError, ValueError):
                     pass
 
-    for avail_key in ("availability", "stockStatus", "status"):
+    for avail_key in ("availability", "stockStatus", "status", "statusUI", "badgeText", "stockMessage", "availabilityText"):
         if avail_key in node and isinstance(node[avail_key], str):
             av_low = node[avail_key].strip().lower()
             if any(
                 tok in av_low
-                for tok in ("outofstock", "out_of_stock", "soldout", "discontinued", "unavailable", "sin stock", "agotado")
+                for tok in (
+                    "outofstock",
+                    "out_of_stock",
+                    "soldout",
+                    "discontinued",
+                    "unavailable",
+                    "sin stock",
+                    "agotado",
+                    "pronto disponible",
+                    "no disponible",
+                )
             ):
+                return False
+
+    for list_key in ("badges", "flags", "ribbons", "tags", "labels"):
+        badge_vals = node.get(list_key)
+        if isinstance(badge_vals, list):
+            joined_badges = " ".join(str(b) for b in badge_vals).lower()
+            if any(tok in joined_badges for tok in ("sin stock", "agotado", "pronto disponible", "no disponible", "outofstock")):
                 return False
 
     if "parentpricestock" in node and isinstance(node["parentpricestock"], dict):
         pps_state = _is_ripley_node_in_stock(node["parentpricestock"], _depth + 1)
         if pps_state is False:
             return False
+
+    for var_key in ("variants", "skus"):
+        var_list = node.get(var_key)
+        if isinstance(var_list, list) and var_list and _depth < 2:
+            var_states = [
+                _is_ripley_node_in_stock(v, _depth + 1)
+                for v in var_list
+                if isinstance(v, dict)
+            ]
+            if var_states and all(vs is False for vs in var_states):
+                return False
 
     has_positive = False
     for neg_bool_key in ("isOutOfStock", "outOfStock", "isUnavailable", "unavailable"):

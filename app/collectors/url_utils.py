@@ -189,14 +189,17 @@ def build_vtex_api_url_for_product(url: str) -> Optional[str]:
 
 
 def is_valid_product_image_url(url: Optional[str]) -> bool:
-    """Verifica que una URL de imagen sea válida, rechazando placeholders y logos."""
+    """Verifica que una URL de imagen sea válida y HTTPS, rechazando placeholders y logos."""
     if not url or not isinstance(url, str):
         return False
     u = url.lower().strip()
-    if not u.startswith("http"):
+    if not u.startswith("https://"):
         return False
     forbidden_tokens = (
+        "data:image",
         "placeholder",
+        "img_producto-efe",
+        "img_producto-curacao",
         "default/logo",
         "sin-imagen",
         "no-image",
@@ -206,11 +209,42 @@ def is_valid_product_image_url(url: Optional[str]) -> bool:
         "logo",
         "no_selection",
         "pixel.gif",
+        "spacer.gif",
+        "blank.gif",
+        "loading.gif",
         "orig_",
     )
     if any(bad in u for bad in forbidden_tokens):
         return False
     return True
+
+
+def ensure_https_image_url(raw_url: Optional[str], page_url: str = "") -> Optional[str]:
+    """Normaliza una URL de imagen a https:// absoluto y valida que no sea placeholder."""
+    if not raw_url or not isinstance(raw_url, str):
+        return None
+    img = raw_url.strip()
+    if not img or img.lower().startswith(("data:", "javascript:", "blob:")):
+        return None
+    if img.startswith("//"):
+        img = f"https:{img}"
+    elif img.startswith("/"):
+        if page_url:
+            parsed_page = urlparse(page_url)
+            host = parsed_page.netloc or ""
+            if host:
+                img = f"https://{host}{img}"
+            else:
+                return None
+        else:
+            return None
+    elif img.lower().startswith("http://"):
+        img = "https://" + img[7:]
+    if "media.falabella.com" in img and img.endswith("/public"):
+        img = img[:-7] + "/w=800,h=800,fit=pad"
+    if not is_valid_product_image_url(img):
+        return None
+    return img[:700]
 
 
 def build_vtex_api_url_for_product(url: str) -> Optional[str]:

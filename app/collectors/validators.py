@@ -639,6 +639,7 @@ EXPLICIT_OUT_OF_STOCK_PHRASES: Tuple[str, ...] = (
     "producto sin stock",
     "producto agotado",
     "sin stock disponible",
+    "pronto disponible",
     "¡uy! no hemos encontrado resultados",
     "ups! 404",
 )
@@ -655,6 +656,7 @@ FORBIDDEN_LIVE_PAGE_PHRASES: Tuple[str, ...] = (
     "producto sin stock",
     "producto agotado",
     "sin stock disponible",
+    "pronto disponible",
 )
 
 

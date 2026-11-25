@@ -369,7 +369,7 @@ def _build_default_category_registry() -> Dict[str, CategorySpec]:
             350.0,
             {
                 "falabella": (
-                    "https://www.falabella.com.pe/falabella-pe/search?Ntt=consolas&f.derived.variant.sellerId=FALABELLA",
+                    "https://www.falabella.com.pe/falabella-pe/category/cat40556/consolas?f.derived.variant.sellerId=FALABELLA",
                     False,
                 ),
                 "ripley": (
@@ -380,8 +380,8 @@ def _build_default_category_registry() -> Dict[str, CategorySpec]:
                     "https://www.tottus.com.pe/tottus-pe/buscar?Ntt=consolas",
                     False,
                 ),
-                "efe": ("https://www.efe.com.pe/catalogsearch/result/?q=consolas", False),
-                "curacao": ("https://www.lacuracao.pe/catalogsearch/result/?q=consolas", False),
+                "efe": ("https://www.efe.com.pe/tecnologia/videojuegos/consolas.html", False),
+                "curacao": ("https://www.lacuracao.pe/tecnologia/videojuegos/consolas.html", False),
                 "hiraoka": ("https://hiraoka.com.pe/gaming/consolas", False),
                 "metro": (
                     "https://www.metro.pe/api/catalog_system/pub/products/search/tecnologia/zona-gamer/consolas",
@@ -411,7 +411,7 @@ def _build_default_category_registry() -> Dict[str, CategorySpec]:
                     "https://www.tottus.com.pe/tottus-pe/buscar?Ntt=monitores",
                     False,
                 ),
-                "efe": ("https://www.efe.com.pe/catalogsearch/result/?q=monitores", False),
+                "efe": ("https://www.efe.com.pe/tecnologia/computacion/monitores.html", False),
                 "curacao": ("https://www.lacuracao.pe/catalogsearch/result/?q=monitores", False),
                 "hiraoka": ("https://hiraoka.com.pe/computo-y-tablets/monitores", False),
                 "metro": (
@@ -555,7 +555,7 @@ def _build_default_category_registry() -> Dict[str, CategorySpec]:
             25.0,
             {
                 "falabella": (
-                    "https://www.falabella.com.pe/falabella-pe/search?Ntt=disco+externo+ssd+router&f.derived.variant.sellerId=FALABELLA",
+                    "https://www.falabella.com.pe/falabella-pe/search?Ntt=router+wifi+tp-link&f.derived.variant.sellerId=FALABELLA",
                     True,
                 ),
                 # Ripley SSR no soporta filtro de vendedor 1P en query string (`seller_facet` corre en microfrontend cliente);
@@ -571,15 +571,15 @@ def _build_default_category_registry() -> Dict[str, CategorySpec]:
                     ),
                 ),
                 "tottus": (
-                    "https://www.tottus.com.pe/tottus-pe/buscar?Ntt=disco+externo+usb",
+                    "https://www.tottus.com.pe/tottus-pe/buscar?Ntt=memoria+usb+microsd",
                     True,
                 ),
                 "efe": (
-                    "https://www.efe.com.pe/catalogsearch/result/?q=disco+externo+router",
+                    "https://www.efe.com.pe/catalogsearch/result/?q=router+wifi",
                     True,
                 ),
                 "curacao": (
-                    "https://www.lacuracao.pe/catalogsearch/result/?q=disco+externo+router",
+                    "https://www.lacuracao.pe/catalogsearch/result/?q=router+wifi",
                     True,
                 ),
                 "hiraoka": (
@@ -618,15 +618,15 @@ def _build_default_category_registry() -> Dict[str, CategorySpec]:
                     ),
                 ),
                 "tottus": (
-                    "https://www.tottus.com.pe/tottus-pe/buscar?Ntt=mouse+teclado",
+                    "https://www.tottus.com.pe/tottus-pe/buscar?Ntt=mouse",
                     True,
                 ),
                 "efe": (
-                    "https://www.efe.com.pe/catalogsearch/result/?q=mouse+teclado",
+                    "https://www.efe.com.pe/catalogsearch/result/?q=mouse",
                     True,
                 ),
                 "curacao": (
-                    "https://www.lacuracao.pe/catalogsearch/result/?q=mouse+teclado",
+                    "https://www.lacuracao.pe/catalogsearch/result/?q=mouse",
                     True,
                 ),
                 "hiraoka": ("https://hiraoka.com.pe/computo-y-tablets/accesorios-computo", False),
@@ -657,7 +657,7 @@ def _build_default_category_registry() -> Dict[str, CategorySpec]:
                     False,
                 ),
                 "tottus": (
-                    "https://www.tottus.com.pe/tottus-pe/buscar?Ntt=smart+home",
+                    "https://www.tottus.com.pe/tottus-pe/buscar?Ntt=chromecast+google+nest+alexa",
                     True,
                 ),
                 "efe": ("https://www.efe.com.pe/tecnologia/smart-home-y-domotica.html", False),

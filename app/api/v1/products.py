@@ -6,7 +6,7 @@ import asyncio
 from datetime import datetime
 from typing import Dict, List, Literal, Optional
 from zoneinfo import ZoneInfo
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import WriterSessionLocal, get_read_db, is_test
@@ -120,7 +120,7 @@ async def get_products(
             if await orchestrator.needs_daily_catchup(session):
                 asyncio.create_task(_run_catchup_in_background())
 
-    return await catalog_service.get_products(
+    payload_bytes = await catalog_service.get_products_serialized_json(
         session=session,
         search=clean_search,
         category=clean_category,
@@ -141,6 +141,7 @@ async def get_products(
         min_stores=min_stores,
         sort=sort,
     )
+    return Response(content=payload_bytes, media_type="application/json")
 
 
 @router.get(

@@ -56,11 +56,13 @@ from app.collectors.tech_normalizer import (
     _strip_bundles_and_colors,
     build_canonical_product_signature,
     extract_product_codes,
+    is_strict_tech_product,
     normalize_tech_text,
     strip_accents_lower,
 )
 from app.collectors.url_utils import (
     canonicalize_store_url,
+    ensure_https_image_url,
     is_marketplace_url,
     is_valid_product_image_url,
 )
@@ -87,12 +89,16 @@ _REFURBISHED_MARKERS: Tuple[str, ...] = (
 _MAIN_CATEGORY_ACCESSORY_KEYWORDS: Tuple[str, ...] = (
     "funda",
     "fundas",
+    "cover",
+    "covers",
     "case",
     "cases",
     "carcasa",
     "carcasas",
     "estuche",
     "estuches",
+    "teclado",
+    "teclados",
     "mica",
     "micas",
     "vidrio templado",
@@ -296,17 +302,53 @@ def _is_search_like_url(url: str) -> bool:
     )
 
 
-def _normalize_image_candidate(raw_img: Optional[str]) -> Optional[str]:
-    if not raw_img or not isinstance(raw_img, str):
+def _normalize_image_candidate(raw_img: Optional[str], page_url: str = "") -> Optional[str]:
+    return ensure_https_image_url(raw_img, page_url=page_url)
+
+
+def _extract_best_img_from_element(container: Optional[Tag], page_url: str = "") -> Optional[str]:
+    """Recorre todos los <img> y atributos lazy/srcset de una tarjeta hasta encontrar la primera imagen HTTPS válida."""
+    if container is None:
         return None
-    img = raw_img.strip()
-    if img.startswith("//"):
-        img = f"https:{img}"
-    if "media.falabella.com" in img and img.endswith("/public"):
-        img = img[:-7] + "/w=800,h=800,fit=pad"
-    if not is_valid_product_image_url(img):
-        return None
-    return img[:700]
+    img_tags = container.select("img")
+    for img_el in img_tags:
+        candidates: List[str] = []
+        for attr in ("data-src", "data-original", "data-lazy", "data-zoom-image", "src"):
+            val = img_el.get(attr)
+            if isinstance(val, str) and val.strip():
+                candidates.append(val.strip())
+        for srcset_attr in ("data-srcset", "srcset"):
+            ss = img_el.get(srcset_attr)
+            if isinstance(ss, str) and ss.strip():
+                for part in ss.split(","):
+                    u_tok = part.strip().split(" ", 1)[0].strip()
+                    if u_tok:
+                        candidates.append(u_tok)
+        for cand in candidates:
+            valid = ensure_https_image_url(cand, page_url=page_url)
+            if valid:
+                return valid
+    return None
+
+
+def _is_falabella_listing_in_stock(item: Dict[str, Any]) -> bool:
+    """Verifica disponibilidad real en ítems de listado Falabella/Tottus, rechazando 'Pronto disponible' y agotados."""
+    if item.get("isOutOfStock") is True or item.get("outOfStock") is True:
+        return False
+    for pos_k in ("inStock", "sellable", "hasStock", "isAvailable", "available"):
+        if pos_k in item and item[pos_k] is False:
+            return False
+    avail_str = " ".join(
+        str(item.get(k) or "")
+        for k in ("availability", "stockStatus", "status", "badge", "badgeText", "shippingBadge")
+    ).lower()
+    for b_key in ("badges", "flags", "ribbons"):
+        b_val = item.get(b_key)
+        if isinstance(b_val, list):
+            avail_str += " " + " ".join(str(x) for x in b_val).lower()
+    if any(tok in avail_str for tok in ("outofstock", "out_of_stock", "agotado", "sin stock", "pronto disponible", "no disponible")):
+        return False
+    return True
 
 
 def _finalize_candidate_listing(
@@ -359,6 +401,9 @@ def _finalize_candidate_listing(
             return (None, "filtered")
         final_category = category_spec.slug
 
+    if not is_strict_tech_product(title=title, category=final_category, url=eff_url, brand=raw_brand):
+        return (None, "filtered")
+
     brand = normalize_brand(raw_brand, title)
     if brand and brand.lower() not in title.lower():
         full_title = f"{brand} {title}".strip()
@@ -391,7 +436,7 @@ def _finalize_candidate_listing(
             original_price=orig_val,
             currency="PEN",
             url=eff_url[:700],
-            image_url=_normalize_image_candidate(image_url),
+            image_url=_normalize_image_candidate(image_url, page_url=page_url),
             in_stock=bool(in_stock),
             seller_name=(seller_name or _STORE_DISPLAY_SELLER_NAMES.get(store, store.title()))[:120],
             mpn=mpn_val[:120] if mpn_val else None,
@@ -418,6 +463,12 @@ def _extract_falabella_group_listings(
         try:
             data = json.loads(nd.string)
             props = data.get("props", {}).get("pageProps", {})
+            pagination = props.get("pagination") or {}
+            total_res = props.get("totalResults")
+            if total_res is None:
+                total_res = pagination.get("count")
+            if _is_search_like_url(page_url) and total_res == 0:
+                return result
             results = props.get("results") or (props.get("serverData") or {}).get("results") or []
             if isinstance(results, list) and results:
                 expected_tok = "tottus" if store == "tottus" else "falabella"
@@ -457,7 +508,7 @@ def _extract_falabella_group_listings(
                     if not img_u and isinstance(item.get("media"), dict):
                         img_u = item["media"].get("url")
 
-                    in_stock = not (item.get("isOutOfStock") is True or item.get("inStock") is False)
+                    in_stock = _is_falabella_listing_in_stock(item)
                     listing, reason = _finalize_candidate_listing(
                         store=store,
                         raw_sku=sku_id,
@@ -538,8 +589,12 @@ def _extract_falabella_group_listings(
 
         best_p = min(active_prices) if active_prices else None
         list_p = max(reg_prices) if reg_prices else best_p
-        img_el = pod.select_one("img")
-        img_u = (img_el.get("src") or img_el.get("data-src")) if img_el else None
+        img_u = _extract_best_img_from_element(pod, page_url)
+        pod_text_low = pod.get_text(" ", strip=True).lower()
+        in_stock = not (
+            bool(pod.select_one(".out-of-stock, .pod-out-of-stock"))
+            or any(tok in pod_text_low for tok in ("pronto disponible", "sin stock", "agotado", "no disponible"))
+        )
 
         listing, reason = _finalize_candidate_listing(
             store=store,
@@ -550,7 +605,7 @@ def _extract_falabella_group_listings(
             original_price=list_p,
             raw_url=item_url,
             image_url=img_u,
-            in_stock=True,
+            in_stock=in_stock,
             seller_name=seller_txt or _STORE_DISPLAY_SELLER_NAMES[store],
             category_spec=category_spec,
             page_url=page_url,
@@ -607,12 +662,26 @@ def _extract_ripley_listings(
                 continue
 
             in_stock = item.get("inStock") is not False and _is_ripley_node_in_stock(item) is not False
-            img_u = item.get("primaryImage")
+            img_u = None
+            raw_primary = item.get("primaryImage")
+            if isinstance(raw_primary, str):
+                img_u = ensure_https_image_url(raw_primary, page_url=page_url)
+            elif isinstance(raw_primary, dict):
+                img_u = ensure_https_image_url(
+                    raw_primary.get("src") or raw_primary.get("full") or raw_primary.get("url"),
+                    page_url=page_url,
+                )
             if not img_u:
-                imgs = item.get("images") or []
-                img_u = imgs[0] if isinstance(imgs, list) and imgs else None
-            if isinstance(img_u, dict):
-                img_u = img_u.get("src") or img_u.get("full") or img_u.get("url")
+                for cand_i in item.get("images") or []:
+                    cand_s = (
+                        cand_i.get("src") or cand_i.get("full") or cand_i.get("url")
+                        if isinstance(cand_i, dict)
+                        else cand_i
+                    )
+                    if isinstance(cand_s, str):
+                        img_u = ensure_https_image_url(cand_s, page_url=page_url)
+                        if img_u:
+                            break
 
             raw_sku = str(
                 item.get("partNumber") or item.get("parentProductID") or item.get("sku") or ""
@@ -671,9 +740,12 @@ def _extract_ripley_listings(
         best_p = min(card_prices) if card_prices else None
         list_el = card.select_one(".catalog-prices__list-price")
         list_p = clean_ripley_number(list_el.get_text(" ", strip=True)) if list_el else best_p
-        img_el = card.select_one("img")
-        img_u = (img_el.get("src") or img_el.get("data-src")) if img_el else None
-        in_stock = not bool(card.select_one(".out-of-stock, .product-out-of-stock"))
+        img_u = _extract_best_img_from_element(card, page_url)
+        card_text_low = card.get_text(" ", strip=True).lower()
+        in_stock = not (
+            bool(card.select_one(".out-of-stock, .product-out-of-stock, [class*='out-of-stock']"))
+            or any(tok in card_text_low for tok in ("pronto disponible", "sin stock", "agotado", "no disponible"))
+        )
 
         listing, reason = _finalize_candidate_listing(
             store="ripley",
@@ -849,8 +921,7 @@ def _extract_magento_listings(
             else None
         )
 
-        img_el = card.select_one("img.product-image-photo, img")
-        img_u = (img_el.get("src") or img_el.get("data-src")) if img_el else None
+        img_u = _extract_best_img_from_element(card, page_url)
 
         sku_val = (
             card.get("data-product-sku")
@@ -865,7 +936,11 @@ def _extract_magento_listings(
             if pbox and pbox.get("data-product-id"):
                 sku_val = str(pbox["data-product-id"])
 
-        in_stock = not bool(card.select_one(".stock.unavailable, .out-of-stock"))
+        card_text_low = card.get_text(" ", strip=True).lower()
+        in_stock = not (
+            bool(card.select_one(".stock.unavailable, .out-of-stock, .actions-primary .unavailable, button.tocart[disabled]"))
+            or any(tok in card_text_low for tok in ("agotado", "sin stock", "pronto disponible", "no disponible"))
+        )
 
         listing, reason = _finalize_candidate_listing(
             store=store,
@@ -944,7 +1019,13 @@ def _extract_vtex_listings(
                 if not isinstance(sku_item, dict):
                     continue
                 imgs = sku_item.get("images") or []
-                sku_img = imgs[0].get("imageUrl") if imgs and isinstance(imgs[0], dict) else None
+                sku_img = None
+                for im_obj in imgs:
+                    if isinstance(im_obj, dict):
+                        cand_url = ensure_https_image_url(im_obj.get("imageUrl"), page_url=page_url)
+                        if cand_url:
+                            sku_img = cand_url
+                            break
                 if not chosen_img and sku_img:
                     chosen_img = sku_img
 

@@ -700,3 +700,160 @@ def test_worker_cli_discover_categories_dry_run(monkeypatch, capsys):
     assert "hiraoka" in out
     assert "extraídos_1p=2" in out
     assert "descartados_marketplace=1" in out
+
+
+def test_strict_tech_lock_rejects_non_tech_keeps_laptop_with_gift_mochila():
+    from app.collectors.tech_normalizer import is_strict_tech_product
+
+    # Rechazar no-tech explícito (ropa, equipaje, cocina, librería, coolers de camping)
+    assert is_strict_tech_product("Huntington Gorro Fleece", category="almacenamiento_redes") is False
+    assert is_strict_tech_product("Spal Azucarero Con Tapa", category="smart_home") is False
+    assert is_strict_tech_product("Ziol Tarjetero Ejecutivo", category="accesorios_pc") is False
+    assert is_strict_tech_product('Maleta Dura Bazy 28"', category="accesorios_pc") is False
+    assert is_strict_tech_product("Cooler Basa 50 Qt", category="accesorios_pc") is False
+    assert is_strict_tech_product("Agenda Artesco 2026", category="accesorios_pc") is False
+    assert is_strict_tech_product("Mochila Kuzler Ligera de Viaje", category="accesorios_pc") is False
+    assert is_strict_tech_product("Mochila Porta Laptop 15.6 Pulgadas", category="accesorios_pc") is False
+    assert is_strict_tech_product("Terma Rotoplas 50 Litros", category="smart_home") is False
+    assert is_strict_tech_product("Teclado Tab S10 Lite Cover Samsung", category="tablets") is False
+
+    # Aceptar hardware tech real (incluyendo laptop con mochila de regalo en la cola)
+    assert (
+        is_strict_tech_product(
+            'Laptop ASUS TUF Gaming 16" RTX 4050 + Mochila',
+            category="laptops",
+            url="https://www.lacuracao.pe/laptop-tuf-backpack-x16.html",
+        )
+        is True
+    )
+    assert is_strict_tech_product("Cooler para Laptop DeepCool N9", category="accesorios_pc") is True
+    assert is_strict_tech_product("Mouse Inalámbrico Logitech G305", category="accesorios_pc") is True
+    assert is_strict_tech_product("Google Nest Mini 2da Generación", category="smart_home") is True
+
+    # VTEX mezcla mochila no-tech en /accesorios-de-computo -> crawler debe filtrarla
+    vtex_payload = [
+        {
+            "productId": "501",
+            "productName": "Mochila Kuzler Ligera de Viaje",
+            "brand": "Kuzler",
+            "linkText": "mochila-kuzler-ligera-de-viaje",
+            "items": [
+                {
+                    "itemId": "5011",
+                    "images": [{"imageUrl": "https://metroio.vtexassets.com/mochila.jpg"}],
+                    "sellers": [{"sellerId": "1", "sellerName": "Metro", "commertialOffer": {"Price": 89.9, "ListPrice": 119.9, "AvailableQuantity": 5, "IsAvailable": True}}],
+                }
+            ],
+        },
+        {
+            "productId": "502",
+            "productName": "Mouse Gamer Logitech G203 Lightsync",
+            "brand": "Logitech",
+            "linkText": "mouse-gamer-logitech-g203",
+            "items": [
+                {
+                    "itemId": "5021",
+                    "images": [{"imageUrl": "http://metroio.vtexassets.com/g203.jpg"}],
+                    "sellers": [{"sellerId": "1", "sellerName": "Metro", "commertialOffer": {"Price": 99.0, "ListPrice": 129.0, "AvailableQuantity": 4, "IsAvailable": True}}],
+                }
+            ],
+        },
+    ]
+    import json
+
+    spec_acc = get_category_spec("accesorios_pc")
+    parsed = parse_category_listing_page(
+        store="metro",
+        html_or_json=json.dumps(vtex_payload),
+        page_url="https://www.metro.pe/api/catalog_system/pub/products/search/tecnologia/computo/accesorios-de-computo",
+        category_spec=spec_acc,
+        is_broad_category=False,
+    )
+    assert len(parsed.listings) == 1
+    assert parsed.listings[0].title == "Mouse Gamer Logitech G203 Lightsync"
+    assert parsed.listings[0].image_url == "https://metroio.vtexassets.com/g203.jpg"
+    assert parsed.discarded_filtered == 1
+
+
+def test_stock_and_https_image_extraction_hardening():
+    from app.collectors.parsers.ripley import _is_ripley_node_in_stock
+    from app.collectors.url_utils import is_valid_product_image_url
+
+    # Placeholder Efe / Data URL rechazados, HTTPS real permitido
+    assert is_valid_product_image_url("https://www.efe.com.pe/media/catalog/product/placeholder/websites/1/IMG_PRODUCTO-EFE_1__1.jpg") is False
+    assert is_valid_product_image_url("data:image/gif;base64,R0lGODlhAQAB") is False
+    assert is_valid_product_image_url("http://media.falabella.com.pe/x.jpg") is False
+    assert is_valid_product_image_url("https://media.falabella.com.pe/x.jpg") is True
+
+    # Falabella zero-results search NO debe parsear carruseles recomendados
+    zero_html = """
+    <html><script id="__NEXT_DATA__" type="application/json">
+    {"props":{"pageProps":{"totalResults":0,"results":[
+      {"productId":"999","skuId":"999","displayName":"Router TP-Link Archer AX55","brand":"TP-LINK","sellerName":"Falabella","url":"https://www.falabella.com.pe/falabella-pe/product/999/ax55","prices":[{"type":"internetPrice","price":["299"],"crossed":false}]}
+    ]}}}
+    </script></html>
+    """
+    spec_net = get_category_spec("almacenamiento_redes")
+    res_zero = parse_category_listing_page(
+        store="falabella",
+        html_or_json=zero_html,
+        page_url="https://www.falabella.com.pe/falabella-pe/search?Ntt=algo",
+        category_spec=spec_net,
+        is_broad_category=True,
+    )
+    assert len(res_zero.listings) == 0
+
+    # Falabella "Pronto disponible" => in_stock=False
+    soon_html = """
+    <html><script id="__NEXT_DATA__" type="application/json">
+    {"props":{"pageProps":{"totalResults":1,"results":[
+      {"productId":"888","skuId":"888","displayName":"Consola PlayStation 5 Slim","brand":"SONY","sellerName":"Falabella","badgeText":"Pronto disponible","url":"https://www.falabella.com.pe/falabella-pe/product/888/ps5","mediaUrls":["https://media.falabella.com.pe/ps5.jpg"],"prices":[{"type":"internetPrice","price":["2,199"],"crossed":false}]}
+    ]}}}
+    </script></html>
+    """
+    res_soon = parse_category_listing_page(
+        store="falabella",
+        html_or_json=soon_html,
+        page_url="https://www.falabella.com.pe/falabella-pe/category/cat40556/Consolas",
+        category_spec=get_category_spec("consolas"),
+        is_broad_category=False,
+    )
+    assert len(res_soon.listings) == 1
+    assert res_soon.listings[0].in_stock is False
+
+    # Ripley variants con statusUI='Sin stock' => False
+    assert (
+        _is_ripley_node_in_stock(
+            {
+                "partNumber": "2004362871474P",
+                "inStock": True,
+                "variants": [{"stock": False, "notSelectable": True, "statusUI": "Sin stock"}],
+            }
+        )
+        is False
+    )
+
+    # Ripley DOM card con placeholder.webp primero y data-src real en segundo <img>
+    ripley_dom = """
+    <html><body>
+      <div class="catalog-product-item" data-partnumber="2004999999999P">
+        <a href="/monitor-lg-ultragear-27gs75q-2004999999999p">
+          <img src="/assets/placeholder.webp" />
+          <img data-src="https://home.ripley.com.pe/Attachment/WOP_5/2004999999999/2004999999999_2.webp" />
+          <div class="catalog-product-details__name">Monitor Gamer LG UltraGear 27" 180Hz IPS QHD 27GS75Q</div>
+          <span class="catalog-prices__offer-price">S/ 1,199</span>
+        </a>
+        <span>Pronto disponible</span>
+      </div>
+    </body></html>
+    """
+    res_rip = parse_category_listing_page(
+        store="ripley",
+        html_or_json=ripley_dom,
+        page_url="https://simple.ripley.com.pe/tecnologia/computacion/monitores?s=mdco",
+        category_spec=get_category_spec("monitores"),
+        is_broad_category=False,
+    )
+    assert len(res_rip.listings) == 1
+    assert res_rip.listings[0].image_url == "https://home.ripley.com.pe/Attachment/WOP_5/2004999999999/2004999999999_2.webp"
+    assert res_rip.listings[0].in_stock is False

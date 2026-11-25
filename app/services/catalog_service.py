@@ -13,9 +13,10 @@ import time
 import unicodedata
 import uuid
 from datetime import datetime, timezone
-from typing import Dict, List, Literal, Optional
+from typing import Any, Dict, List, Literal, Optional, Tuple
 
 from fastapi import HTTPException, status
+from pydantic import TypeAdapter
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -118,15 +119,67 @@ def _capacity_sort_key(val: str) -> float:
     return num
 
 
+_PRODUCTS_LIST_ADAPTER = TypeAdapter(List[ProductSchema])
+_PRODUCTS_RESPONSE_CACHE_TTL_SECONDS = 60.0
+
+
 class CatalogService:
     def __init__(self):
         self._cached_products: Optional[List[ProductSchema]] = None
         self._cache_timestamp: float = 0.0
+        self._products_query_cache: Dict[Tuple[Any, ...], Tuple[float, float, List[ProductSchema]]] = {}
+        self._products_json_cache: Dict[Tuple[Any, ...], Tuple[float, float, bytes]] = {}
 
     def invalidate_cache(self) -> None:
         """Invalida la caché en memoria para forzar lectura fresca de BD."""
         self._cached_products = None
         self._cache_timestamp = 0.0
+        self._products_query_cache.clear()
+        self._products_json_cache.clear()
+
+    @staticmethod
+    def _build_products_cache_key(
+        *,
+        search: Optional[str],
+        category: Optional[str],
+        brand: Optional[str],
+        processor: Optional[str],
+        ram: Optional[str],
+        storage: Optional[str],
+        tv_resolution: Optional[str],
+        connectivity: Optional[str],
+        screen: Optional[str],
+        os_filter: Optional[str],
+        dynamic_specs: Optional[Dict[str, str]],
+        enabled_stores: Optional[str],
+        sort_order: Optional[str],
+        limit: Optional[int],
+        offset: int,
+        store: Optional[str],
+        min_stores: Optional[int],
+        sort: Optional[str],
+    ) -> Tuple[Any, ...]:
+        dyn_key = tuple(sorted((str(k), str(v)) for k, v in (dynamic_specs or {}).items()))
+        return (
+            search or "",
+            category or "",
+            brand or "",
+            processor or "",
+            ram or "",
+            storage or "",
+            tv_resolution or "",
+            connectivity or "",
+            screen or "",
+            os_filter or "",
+            dyn_key,
+            enabled_stores or "",
+            sort_order or "",
+            limit,
+            max(0, int(offset or 0)),
+            store or "",
+            min_stores,
+            sort or "",
+        )
 
     async def _get_base_products(self, session: AsyncSession) -> List[ProductSchema]:
         """Retorna la lista de productos base desde la caché en memoria o desde la base de datos."""
@@ -367,6 +420,35 @@ class CatalogService:
     ) -> List[ProductSchema]:
         """Filtra y ordena el catálogo en memoria respondiendo en < 50ms."""
         products = await self._get_base_products(session)
+        cache_key = self._build_products_cache_key(
+            search=search,
+            category=category,
+            brand=brand,
+            processor=processor,
+            ram=ram,
+            storage=storage,
+            tv_resolution=tv_resolution,
+            connectivity=connectivity,
+            screen=screen,
+            os_filter=os_filter,
+            dynamic_specs=dynamic_specs,
+            enabled_stores=enabled_stores,
+            sort_order=sort_order,
+            limit=limit,
+            offset=offset,
+            store=store,
+            min_stores=min_stores,
+            sort=sort,
+        )
+        now = time.time()
+        cached_entry = self._products_query_cache.get(cache_key)
+        if (
+            cached_entry is not None
+            and cached_entry[1] == self._cache_timestamp
+            and (now - cached_entry[0]) < _PRODUCTS_RESPONSE_CACHE_TTL_SECONDS
+        ):
+            return cached_entry[2]
+
         results: List[ProductSchema] = []
 
         allowed_store_ids = set()
@@ -481,14 +563,23 @@ class CatalogService:
                 if not matched_dynamic:
                     continue
 
-            # Recálculo dinámico si se enviaron enabled_stores
-            effective_store_prices = prod.store_prices
-            if allowed_store_ids:
-                effective_store_prices = [
-                    sp for sp in prod.store_prices if sp.store_id.lower() in allowed_store_ids
-                ]
-                if not effective_store_prices:
+            # Recálculo dinámico solo cuando el cliente filtra `enabled_stores`
+            if not allowed_store_ids:
+                if store_term and not any(
+                    sp.store_id.lower() == store_term or sp.store_name.lower() == store_term
+                    for sp in prod.store_prices
+                ):
                     continue
+                if min_stores is not None and len(prod.store_prices) < int(min_stores):
+                    continue
+                results.append(prod)
+                continue
+
+            effective_store_prices = [
+                sp for sp in prod.store_prices if sp.store_id.lower() in allowed_store_ids
+            ]
+            if not effective_store_prices:
+                continue
 
             sorted_stores = sorted(effective_store_prices, key=lambda x: x.price)
             adjusted_stores = [
@@ -583,9 +674,95 @@ class CatalogService:
             )
 
         safe_offset = max(0, int(offset or 0))
-        if limit is not None:
-            return results[safe_offset : safe_offset + int(limit)]
-        return results[safe_offset:]
+        sliced = (
+            results[safe_offset : safe_offset + int(limit)]
+            if limit is not None
+            else results[safe_offset:]
+        )
+        if len(self._products_query_cache) > 128:
+            self._products_query_cache.clear()
+        self._products_query_cache[cache_key] = (now, self._cache_timestamp, sliced)
+        return sliced
+
+    async def get_products_serialized_json(
+        self,
+        session: AsyncSession,
+        search: Optional[str] = None,
+        category: Optional[str] = None,
+        brand: Optional[str] = None,
+        processor: Optional[str] = None,
+        ram: Optional[str] = None,
+        storage: Optional[str] = None,
+        tv_resolution: Optional[str] = None,
+        connectivity: Optional[str] = None,
+        screen: Optional[str] = None,
+        os_filter: Optional[str] = None,
+        dynamic_specs: Optional[Dict[str, str]] = None,
+        enabled_stores: Optional[str] = None,
+        sort_order: Optional[Literal["LOW_TO_HIGH", "HIGH_TO_LOW"]] = None,
+        limit: Optional[int] = None,
+        offset: int = 0,
+        store: Optional[str] = None,
+        min_stores: Optional[int] = None,
+        sort: Optional[str] = None,
+    ) -> bytes:
+        """Retorna el JSON UTF-8 pre-serializado de `get_products` usando caché en memoria de 60s."""
+        await self._get_base_products(session)
+        cache_key = self._build_products_cache_key(
+            search=search,
+            category=category,
+            brand=brand,
+            processor=processor,
+            ram=ram,
+            storage=storage,
+            tv_resolution=tv_resolution,
+            connectivity=connectivity,
+            screen=screen,
+            os_filter=os_filter,
+            dynamic_specs=dynamic_specs,
+            enabled_stores=enabled_stores,
+            sort_order=sort_order,
+            limit=limit,
+            offset=offset,
+            store=store,
+            min_stores=min_stores,
+            sort=sort,
+        )
+        now = time.time()
+        cached_json = self._products_json_cache.get(cache_key)
+        if (
+            cached_json is not None
+            and cached_json[1] == self._cache_timestamp
+            and (now - cached_json[0]) < _PRODUCTS_RESPONSE_CACHE_TTL_SECONDS
+        ):
+            return cached_json[2]
+
+        items = await self.get_products(
+            session=session,
+            search=search,
+            category=category,
+            brand=brand,
+            processor=processor,
+            ram=ram,
+            storage=storage,
+            tv_resolution=tv_resolution,
+            connectivity=connectivity,
+            screen=screen,
+            os_filter=os_filter,
+            dynamic_specs=dynamic_specs,
+            enabled_stores=enabled_stores,
+            sort_order=sort_order,
+            limit=limit,
+            offset=offset,
+            store=store,
+            min_stores=min_stores,
+            sort=sort,
+        )
+        payload_bytes = _PRODUCTS_LIST_ADAPTER.dump_json(items, by_alias=True)
+        if len(self._products_json_cache) > 128:
+            self._products_json_cache.clear()
+        self._products_json_cache[cache_key] = (time.time(), self._cache_timestamp, payload_bytes)
+        return payload_bytes
 
     async def get_product_by_id(
         self, product_id: str, session: AsyncSession

@@ -508,3 +508,407 @@ def test_worker_cli_promote_catalog_dry_run_never_touches_writer(tmp_path, monke
     assert "Nintendo Switch 2" in out
 
     asyncio.run(test_engine.dispose())
+
+
+@pytest.mark.asyncio
+async def test_promoter_rejects_out_of_stock_missing_https_image_and_non_tech(tmp_path):
+    from app.collectors.category_crawler import ScrapedListing
+
+    db_file = tmp_path / "hardening_filters.db"
+    test_engine = create_async_engine(f"sqlite+aiosqlite:///{db_file}", future=True)
+    SessionMaker = async_sessionmaker(bind=test_engine, class_=AsyncSession, expire_on_commit=False)
+
+    async with test_engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
+    items = [
+        ScrapedListing(
+            store="falabella",
+            store_sku="NT_1",
+            category="accesorios_pc",
+            title='Maleta Dura Bazy 28" Cabina',
+            brand="Bazy",
+            price=199.0,
+            original_price=249.0,
+            currency="PEN",
+            url="https://www.falabella.com.pe/falabella-pe/product/1/maleta/1",
+            image_url="https://media.falabella.com.pe/maleta.jpg",
+            in_stock=True,
+        ),
+        ScrapedListing(
+            store="ripley",
+            store_sku="OOS_1",
+            category="monitores",
+            title='Monitor Gamer LG UltraGear 27" 180Hz IPS QHD 27GS75Q',
+            brand="LG",
+            price=1199.0,
+            original_price=1399.0,
+            currency="PEN",
+            url="https://simple.ripley.com.pe/monitor-lg-2004123456p",
+            image_url="https://home.ripley.com.pe/monitor.webp",
+            in_stock=False,
+        ),
+        ScrapedListing(
+            store="efe",
+            store_sku="NOIMG_1",
+            category="monitores",
+            title='Monitor Gamer AOC 24" 180Hz IPS 24G4',
+            brand="AOC",
+            price=649.0,
+            original_price=799.0,
+            currency="PEN",
+            url="https://www.efe.com.pe/monitor-aoc-24g4.html",
+            image_url="https://www.efe.com.pe/media/catalog/product/placeholder/websites/1/IMG_PRODUCTO-EFE_1__1.jpg",
+            in_stock=True,
+        ),
+        ScrapedListing(
+            store="hiraoka",
+            store_sku="OK_1",
+            category="monitores",
+            title='Monitor Gamer LG UltraGear 27" 180Hz IPS QHD 27GS75Q',
+            brand="LG",
+            price=1229.0,
+            original_price=1499.0,
+            currency="PEN",
+            url="https://hiraoka.com.pe/monitor-lg-27gs75q",
+            image_url="https://hiraoka.com.pe/media/27gs75q.jpg",
+            in_stock=True,
+        ),
+    ]
+
+    async with SessionMaker() as session:
+        summary = await promote_store_listings(
+            session=session,
+            dry_run=False,
+            in_memory_listings=items,
+            today_peru=date(2026, 4, 21),
+        )
+        assert summary.total_promoted_products == 1
+        assert summary.discarded_non_tech >= 1
+
+        prods = list((await session.execute(select(ProductEntity))).scalars().all())
+        assert len(prods) == 1
+        assert prods[0].image_url == "https://hiraoka.com.pe/media/27gs75q.jpg"
+        assert prods[0].available_stores_count == 1
+
+    await test_engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_promoter_seed_linking_and_marketing_filler_signatures(tmp_path):
+    from app.collectors.category_crawler import ScrapedListing
+
+    db_file = tmp_path / "seed_and_sony.db"
+    test_engine = create_async_engine(f"sqlite+aiosqlite:///{db_file}", future=True)
+    SessionMaker = async_sessionmaker(bind=test_engine, class_=AsyncSession, expire_on_commit=False)
+
+    async with test_engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
+    async with SessionMaker() as session:
+        session.add(
+            ProductEntity(
+                id="prod_hp_smart_tank_580",
+                title="Impresora Multifuncional HP Smart Tank 580 Wi-Fi",
+                category="Impresoras",
+                brand="HP",
+                best_price=679.0,
+                original_price=799.0,
+                best_store_name="Hiraoka",
+                best_store_url="https://hiraoka.com.pe/impresora-hp-smart-tank-580",
+                available_stores_count=1,
+                image_url="https://hiraoka.com.pe/media/hp580.jpg",
+                tech_specs_json=json.dumps({"Marca": "HP", "Modelo": "Smart Tank 580"}),
+            )
+        )
+        session.add(
+            StoreOfferEntity(
+                product_id="prod_hp_smart_tank_580",
+                store_id="hiraoka",
+                store_name="Hiraoka",
+                price=679.0,
+                original_price=799.0,
+                offer_url="https://hiraoka.com.pe/impresora-hp-smart-tank-580",
+                is_best_price=True,
+            )
+        )
+        await session.commit()
+
+    listings = [
+        ScrapedListing(
+            store="falabella",
+            store_sku="HP580_FAL",
+            category="impresoras",
+            title="Impresora Multifuncional HP Smart Tank 580 Sistema Continuo, Wi-Fi, Color, HP App",
+            brand="HP",
+            price=649.0,
+            original_price=799.0,
+            currency="PEN",
+            url="https://www.falabella.com.pe/falabella-pe/product/12/hp-580/12",
+            image_url="https://media.falabella.com.pe/hp580.jpg",
+            in_stock=True,
+        ),
+        ScrapedListing(
+            store="falabella",
+            store_sku="SONY_B",
+            category="audifonos",
+            title="Audífonos Bluetooth Sony WH-CH520B On-Ear Negro",
+            brand="Sony",
+            price=159.0,
+            original_price=199.0,
+            currency="PEN",
+            url="https://www.falabella.com.pe/falabella-pe/product/52/whch520b/52",
+            image_url="https://media.falabella.com.pe/ch520b.jpg",
+            in_stock=True,
+        ),
+        ScrapedListing(
+            store="hiraoka",
+            store_sku="SONY_L",
+            category="audifonos",
+            title="Audífonos Inalámbricos Sony WH-CH520L Azul",
+            brand="Sony",
+            price=169.0,
+            original_price=199.0,
+            currency="PEN",
+            url="https://hiraoka.com.pe/audifonos-sony-wh-ch520l",
+            image_url="https://hiraoka.com.pe/media/ch520l.jpg",
+            in_stock=True,
+        ),
+    ]
+
+    async with SessionMaker() as session:
+        summary = await promote_store_listings(
+            session=session,
+            dry_run=False,
+            in_memory_listings=listings,
+            today_peru=date(2026, 4, 21),
+        )
+        assert summary.linked_to_existing_products == 1
+        assert summary.new_multi_store_groups == 1
+        assert summary.new_single_store_products == 0
+
+        hp_prod = (
+            await session.execute(select(ProductEntity).where(ProductEntity.id == "prod_hp_smart_tank_580"))
+        ).scalar_one()
+        assert hp_prod.best_price == 649.0
+        assert hp_prod.available_stores_count == 2
+
+    await test_engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_promoter_auto_pruning_preserves_seed_products_and_cleans_invalid_auto(tmp_path):
+    db_file = tmp_path / "pruning_test.db"
+    test_engine = create_async_engine(f"sqlite+aiosqlite:///{db_file}", future=True)
+    SessionMaker = async_sessionmaker(bind=test_engine, class_=AsyncSession, expire_on_commit=False)
+
+    async with test_engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
+    async with SessionMaker() as session:
+        session.add_all(
+            [
+                # Semilla prod_* SIEMPRE intacta
+                ProductEntity(
+                    id="prod_seed_intact",
+                    title="Impresora Multifuncional HP Smart Tank 580 Wi-Fi",
+                    category="Impresoras",
+                    brand="HP",
+                    best_price=679.0,
+                    original_price=799.0,
+                    best_store_name="Hiraoka",
+                    best_store_url="https://hiraoka.com.pe/hp580",
+                    available_stores_count=1,
+                    image_url="https://hiraoka.com.pe/media/hp580.jpg",
+                    tech_specs_json=json.dumps({"Marca": "HP", "Modelo": "Smart Tank 580"}),
+                ),
+                # auto_* contaminado no-tech -> podar (no_tech)
+                ProductEntity(
+                    id="auto_bad_nontech",
+                    title="Huntington Gorro Fleece",
+                    category="Almacenamiento y Redes",
+                    brand="Huntington",
+                    best_price=39.9,
+                    original_price=59.9,
+                    best_store_name="Falabella",
+                    best_store_url="https://www.falabella.com.pe/falabella-pe/product/1/gorro/1",
+                    available_stores_count=1,
+                    image_url="https://media.falabella.com.pe/gorro.jpg",
+                ),
+                # auto_* sin imagen HTTPS -> podar (sin_imagen_https)
+                ProductEntity(
+                    id="auto_bad_noimg",
+                    title='Monitor LG UltraGear 27" 180Hz',
+                    category="Monitores",
+                    brand="LG",
+                    best_price=999.0,
+                    original_price=1199.0,
+                    best_store_name="Tiendas Efe",
+                    best_store_url="https://www.efe.com.pe/monitor.html",
+                    available_stores_count=1,
+                    image_url="",
+                ),
+                # auto_* sin stock / obsoleto -> podar (sin_stock_u_obsoleto)
+                ProductEntity(
+                    id="auto_bad_oos",
+                    title="Mouse Gamer Logitech G502 Hero",
+                    category="Accesorios PC",
+                    brand="Logitech",
+                    best_price=199.0,
+                    original_price=249.0,
+                    best_store_name="Ripley",
+                    best_store_url="https://simple.ripley.com.pe/mouse-g502-2004p",
+                    available_stores_count=1,
+                    image_url="https://home.ripley.com.pe/g502.webp",
+                ),
+                # StoreListing no-tech -> eliminar en live
+                StoreListing(
+                    store="metro",
+                    store_sku="BAD_MOCHILA",
+                    category="accesorios_pc",
+                    title="Mochila Kuzler Ligera de Viaje",
+                    brand="Kuzler",
+                    price=89.0,
+                    original_price=119.0,
+                    url="https://www.metro.pe/mochila-kuzler/p",
+                    image_url="https://metroio.vtexassets.com/mochila.jpg",
+                    in_stock=True,
+                ),
+                # StoreListing tech válido
+                StoreListing(
+                    store="hiraoka",
+                    store_sku="GOOD_SONOS",
+                    category="audio",
+                    title="Parlante Bluetooth JBL Flip 6 Portátil",
+                    brand="JBL",
+                    price=449.0,
+                    original_price=549.0,
+                    url="https://hiraoka.com.pe/parlante-jbl-flip-6",
+                    image_url="https://hiraoka.com.pe/media/flip6.jpg",
+                    in_stock=True,
+                ),
+            ]
+        )
+        await session.commit()
+
+        # Dry-run reporta todo lo que se va a podar SIN borrar nada
+        dry_summary = await promote_store_listings(
+            session=session,
+            dry_run=True,
+            in_memory_listings=None,
+            today_peru=date(2026, 4, 21),
+        )
+        assert dry_summary.pruned_auto_products_total == 3
+        assert dry_summary.pruned_by_reason["no_tech"] == 1
+        assert dry_summary.pruned_by_reason["sin_imagen_https"] == 1
+        assert dry_summary.pruned_by_reason["sin_stock_u_obsoleto"] == 1
+        assert dry_summary.pruned_non_tech_listings == 1
+        assert len(list((await session.execute(select(ProductEntity))).scalars().all())) == 4
+
+        # Live ejecuta la poda manteniendo prod_* y el auto_* válido
+        live_summary = await promote_store_listings(
+            session=session,
+            dry_run=False,
+            in_memory_listings=None,
+            today_peru=date(2026, 4, 21),
+        )
+        assert live_summary.pruned_auto_products_total == 3
+        assert live_summary.pruned_non_tech_listings == 1
+
+        remaining_prods = list((await session.execute(select(ProductEntity))).scalars().all())
+        rem_ids = {p.id for p in remaining_prods}
+        assert "prod_seed_intact" in rem_ids
+        assert "auto_bad_nontech" not in rem_ids
+        assert "auto_bad_noimg" not in rem_ids
+        assert "auto_bad_oos" not in rem_ids
+        assert len(remaining_prods) == 2
+
+        remaining_listings = list((await session.execute(select(StoreListing))).scalars().all())
+        assert len(remaining_listings) == 1
+        assert remaining_listings[0].store_sku == "GOOD_SONOS"
+
+    await test_engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_api_products_gzip_and_60s_cache_invalidation(tmp_path):
+    from httpx import ASGITransport, AsyncClient
+    from main import app
+    from app.core.database import get_read_db
+    from app.services.catalog_service import catalog_service
+
+    db_file = tmp_path / "api_cache_gzip.db"
+    test_engine = create_async_engine(f"sqlite+aiosqlite:///{db_file}", future=True)
+    SessionMaker = async_sessionmaker(bind=test_engine, class_=AsyncSession, expire_on_commit=False)
+
+    async with test_engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
+    async with SessionMaker() as s:
+        s.add(
+            ProductEntity(
+                id="prod_cache_test",
+                title="Laptop ASUS VivoBook 15" + (" Intel Core i5 16GB 512GB" * 5),
+                category="Laptops",
+                brand="ASUS",
+                best_price=2499.0,
+                original_price=2899.0,
+                best_store_name="Hiraoka",
+                best_store_url="https://hiraoka.com.pe/asus-vivobook-15",
+                available_stores_count=1,
+                image_url="https://hiraoka.com.pe/media/vivobook.jpg",
+                description="Laptop ASUS de alto rendimiento para testing de GZip " * 25,
+                tech_specs_json=json.dumps({"Marca": "ASUS"}),
+            )
+        )
+        await s.commit()
+
+    async def _override_read_db():
+        async with SessionMaker() as s:
+            yield s
+
+    catalog_service.invalidate_cache()
+    app.dependency_overrides[get_read_db] = _override_read_db
+    try:
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://testserver") as api_client:
+            r1 = await api_client.get(
+                "/api/v1/products?limit=10",
+                headers={"Accept-Encoding": "gzip"},
+            )
+            assert r1.status_code == 200
+            assert isinstance(r1.json(), list)
+            assert len(r1.json()) == 1
+            assert r1.json()[0]["id"] == "prod_cache_test"
+            assert r1.headers.get("content-encoding") == "gzip"
+            assert len(catalog_service._products_json_cache) >= 1
+
+            # Mutación en BD seguida de hit en caché (antes de invalidar sigue 1) y luego invalidación
+            async with SessionMaker() as s2:
+                s2.add(
+                    ProductEntity(
+                        id="prod_cache_test_2",
+                        title="Tablet Apple iPad 11 A16 128GB",
+                        category="Tablets",
+                        brand="Apple",
+                        best_price=1699.0,
+                        original_price=1899.0,
+                        best_store_name="Falabella",
+                        best_store_url="https://www.falabella.com.pe/falabella-pe/product/9/ipad/9",
+                        available_stores_count=1,
+                        image_url="https://media.falabella.com.pe/ipad.jpg",
+                        tech_specs_json=json.dumps({"Marca": "Apple"}),
+                    )
+                )
+                await s2.commit()
+
+            r_cached = await api_client.get("/api/v1/products?limit=10")
+            assert len(r_cached.json()) == 1
+
+            catalog_service.invalidate_cache()
+            r_fresh = await api_client.get("/api/v1/products?limit=10")
+            assert len(r_fresh.json()) == 2
+    finally:
+        app.dependency_overrides.pop(get_read_db, None)
+        catalog_service.invalidate_cache()
+        await test_engine.dispose()

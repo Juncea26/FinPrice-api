@@ -46,10 +46,12 @@ from app.collectors.tech_normalizer import (
     extract_product_codes,
     extract_variant_profile,
     is_signature_specific_enough,
+    is_strict_tech_product,
     strip_accents_lower,
 )
 from app.collectors.url_utils import (
     canonicalize_store_url,
+    ensure_https_image_url,
     is_marketplace_url,
     is_valid_product_image_url,
 )
@@ -153,6 +155,8 @@ class PromotedGroupPreview:
 class CatalogPromotionSummary:
     active_listings_scanned: int = 0
     discarded_invalid_or_outliers: int = 0
+    discarded_non_tech: int = 0
+    discarded_no_image: int = 0
     linked_to_existing_products: int = 0
     existing_offers_upserted: int = 0
     new_multi_store_groups: int = 0
@@ -160,6 +164,9 @@ class CatalogPromotionSummary:
     total_promoted_products: int = 0
     offers_promoted: int = 0
     history_points_upserted: int = 0
+    pruned_auto_products_total: int = 0
+    pruned_non_tech_listings: int = 0
+    pruned_by_reason: Dict[str, int] = field(default_factory=dict)
     dry_run: bool = False
     by_category: Dict[str, Dict[str, int]] = field(default_factory=dict)
     existing_links: List[ExistingLinkSummary] = field(default_factory=list)
@@ -271,27 +278,16 @@ def _select_clean_canonical_title(candidates: Sequence[_EnrichedListing]) -> str
 
 
 def _select_best_https_image(offers: Sequence[_EnrichedListing]) -> str:
-    """Selecciona la mejor imagen HTTPS válida priorizando retailers oficiales de mayor calidad."""
-    https_candidates = [
-        {"store_id": o.store, "image_url": o.image_url}
-        for o in offers
-        if o.image_url and o.image_url.lower().startswith("https://")
-    ]
+    """Selecciona la mejor imagen HTTPS válida priorizando retailers oficiales; rechaza HTTP plano o placeholders."""
+    https_candidates: List[Dict[str, str]] = []
+    for o in offers:
+        norm_img = ensure_https_image_url(o.image_url)
+        if norm_img and norm_img.lower().startswith("https://") and is_valid_product_image_url(norm_img):
+            https_candidates.append({"store_id": o.store, "image_url": norm_img})
     if https_candidates:
         chosen = select_best_canonical_image(https_candidates)
-        if chosen:
+        if chosen and chosen.lower().startswith("https://") and is_valid_product_image_url(chosen):
             return chosen[:500]
-
-    any_http = [
-        {"store_id": o.store, "image_url": o.image_url}
-        for o in offers
-        if o.image_url and is_valid_product_image_url(o.image_url)
-    ]
-    if any_http:
-        chosen = select_best_canonical_image(any_http)
-        if chosen:
-            return chosen[:500]
-
     return ""
 
 
@@ -374,18 +370,24 @@ def _enrich_raw_listing(
     else:
         return None
 
+    raw_brand = str(getattr(row, "brand", "") or "").strip()
+    if not is_strict_tech_product(
+        title=title,
+        category=effective_category,
+        url=eff_url,
+        brand=raw_brand,
+    ):
+        return None
+
     if price < _min_valid_price_for_category(effective_category):
         return None
 
-    raw_brand = str(getattr(row, "brand", "") or "").strip()
     brand = normalize_brand(raw_brand, title)
 
     raw_orig = getattr(row, "original_price", None)
     orig_val = round(float(raw_orig), 2) if (raw_orig and float(raw_orig) > price) else round(price, 2)
 
-    img = str(getattr(row, "image_url", "") or "").strip()
-    if not is_valid_product_image_url(img):
-        img = ""
+    img = ensure_https_image_url(str(getattr(row, "image_url", "") or "").strip()) or ""
 
     codes = extract_product_codes(title=title, url=eff_url)
     eans: Set[str] = set()
@@ -487,10 +489,7 @@ def _match_existing_product(
                 return (prod, "ean" if exact_ean else "mpn")
 
         if (
-            cand.is_specific_sig
-            and meta["canonical_signature"]
-            and cand.canonical_signature == meta["canonical_signature"]
-            and are_listings_variant_compatible(meta["profile"], cand.variant_profile)
+            are_listings_variant_compatible(meta["profile"], cand.variant_profile)
             and validate_product_identity(
                 canonical_title=prod.title,
                 scraped_title=cand.title,
@@ -499,7 +498,12 @@ def _match_existing_product(
                 target_tech_specs=meta["tech_specs"],
             )
         ):
-            return (prod, "signature")
+            reason = (
+                "signature"
+                if (cand.is_specific_sig and meta["canonical_signature"] and cand.canonical_signature == meta["canonical_signature"])
+                else "identity"
+            )
+            return (prod, reason)
 
     return None
 
@@ -726,12 +730,14 @@ async def promote_store_listings(
     t_peru = today_peru or get_today_peru()
     now_dt = utc_now()
 
-    # 1. Cargar productos actuales con ofertas e historial (populate_existing evita caché obsoleta en misma sesión)
+    # 1. Cargar productos actuales con ofertas, historial y relaciones comunitarias
     prod_res = await session.execute(
         select(ProductEntity)
         .options(
             selectinload(ProductEntity.store_offers),
             selectinload(ProductEntity.price_history),
+            selectinload(ProductEntity.community_offers),
+            selectinload(ProductEntity.community_posts),
         )
         .execution_options(populate_existing=True)
     )
@@ -782,23 +788,57 @@ async def promote_store_listings(
             }
         )
 
-    # 2. Cargar listings activos (`in_stock=True` y `price > 0`)
+    # 2. Cargar listings (en modo BD auditamos todos para detectar no-tech y desactualizados)
+    all_db_listings: List[StoreListing] = []
     if in_memory_listings is not None:
-        raw_rows: List[Any] = list(in_memory_listings)
+        raw_rows: List[Any] = [
+            r for r in in_memory_listings
+            if bool(getattr(r, "in_stock", True)) and float(getattr(r, "price", 0.0) or 0.0) > 0.0
+        ]
     else:
-        listing_res = await session.execute(
-            select(StoreListing).where(
-                StoreListing.in_stock.is_(True),
-                StoreListing.price > 0.0,
+        listing_res = await session.execute(select(StoreListing))
+        all_db_listings = list(listing_res.scalars().all())
+        raw_rows = []
+        for db_row in all_db_listings:
+            row_title = re.sub(r"\s+", " ", str(db_row.title or "")).strip()
+            row_cat = str(db_row.category or "").strip().lower() or "otros_tech"
+            row_brand = str(db_row.brand or "").strip()
+            is_tech_row = (
+                bool(row_title)
+                and not _NON_HARDWARE_SOFTWARE_RE.search(strip_accents_lower(row_title))
+                and is_strict_tech_product(
+                    title=row_title,
+                    category=row_cat,
+                    url=str(db_row.url or ""),
+                    brand=row_brand,
+                )
             )
-        )
-        raw_rows = list(listing_res.scalars().all())
+            if not is_tech_row:
+                summary.pruned_non_tech_listings += 1
+                if not dry_run:
+                    await session.delete(db_row)
+                if bool(db_row.in_stock) and float(db_row.price or 0.0) > 0.0:
+                    raw_rows.append(db_row)
+                continue
+            if bool(db_row.in_stock) and float(db_row.price or 0.0) > 0.0:
+                raw_rows.append(db_row)
 
     enriched: List[_EnrichedListing] = []
     for idx, row in enumerate(raw_rows):
         item = _enrich_raw_listing(row, idx=idx)
         if item is None:
             summary.discarded_invalid_or_outliers += 1
+            row_title = str(getattr(row, "title", "") or "")
+            if row_title and (
+                _NON_HARDWARE_SOFTWARE_RE.search(strip_accents_lower(row_title))
+                or not is_strict_tech_product(
+                    title=row_title,
+                    category=str(getattr(row, "category", "") or ""),
+                    url=str(getattr(row, "url", "") or ""),
+                    brand=str(getattr(row, "brand", "") or ""),
+                )
+            ):
+                summary.discarded_non_tech += 1
             continue
         enriched.append(item)
 
@@ -924,8 +964,16 @@ async def promote_store_listings(
     clusters, cluster_outliers = _cluster_remaining_listings(remaining)
     summary.discarded_invalid_or_outliers += cluster_outliers
 
-    # 5. Paso 3: Promover grupos multi-tienda y 1-tienda de forma idempotente
+    # 5. Paso 3: Promover grupos multi-tienda y 1-tienda de forma idempotente (exigiendo imagen HTTPS válida)
     used_auto_ids: Set[str] = set()
+    promoted_signatures: Set[Tuple[str, str, str]] = set()
+    reassigned_old_auto_ids: Set[str] = {
+        str(cand.existing_canonical_product_id)
+        for paired_list in matched_by_base_prod.values()
+        for cand, _ in paired_list
+        if cand.existing_canonical_product_id
+        and str(cand.existing_canonical_product_id).startswith("auto_")
+    }
     multi_previews: List[PromotedGroupPreview] = []
 
     for cluster_members in clusters:
@@ -933,11 +981,28 @@ async def promote_store_listings(
         if not consolidated_offers:
             continue
 
+        image_url = _select_best_https_image(consolidated_offers)
+        if not image_url or not is_valid_product_image_url(image_url):
+            summary.discarded_no_image += 1
+            summary.discarded_invalid_or_outliers += len(cluster_members)
+            continue
+
         best_offer = consolidated_offers[0]
         canonical_title = _select_clean_canonical_title(cluster_members)
         rep = best_offer
         canonical_id = _build_deterministic_auto_id(rep, cluster_members, used_auto_ids)
         used_auto_ids.add(canonical_id)
+        promoted_signatures.add(
+            (
+                rep.display_category.lower(),
+                strip_accents_lower(rep.brand or ""),
+                rep.canonical_signature,
+            )
+        )
+        for member in cluster_members:
+            old_c = member.existing_canonical_product_id
+            if old_c and str(old_c).startswith("auto_") and old_c != canonical_id:
+                reassigned_old_auto_ids.add(str(old_c))
 
         best_price = round(float(best_offer.price), 2)
         orig_price = round(float(best_offer.original_price or best_price), 2)
@@ -988,7 +1053,6 @@ async def promote_store_listings(
                 member.entity.normalized_signature = member.canonical_signature
 
         # Construir ficha técnica + imagen + descripción limpia
-        image_url = _select_best_https_image(consolidated_offers)
         seed_specs: Dict[str, str] = {}
         if rep.brand:
             seed_specs["Marca"] = rep.brand
@@ -1133,6 +1197,72 @@ async def promote_store_listings(
                 )
             )
             summary.history_points_upserted += 1
+
+    # 6. Paso 4: Auto-poda (prune) de `auto_*` inválidos, sin imagen HTTPS, sin stock o ya fusionados
+    #    Preserva 100% intactos los productos semilla (`prod_*`), su historial y registros comunitarios.
+    if in_memory_listings is None:
+        base_sig_keys: Set[Tuple[str, str, str]] = {
+            (
+                str(m["display_category"]).lower(),
+                str(m["brand_low"]),
+                str(m["canonical_signature"]),
+            )
+            for m in base_products_meta
+            if m.get("canonical_signature")
+        }
+        pruned_ids: Set[str] = set()
+        for p in list(existing_products):
+            pid = str(p.id)
+            if not pid.startswith("auto_") or pid in used_auto_ids:
+                continue
+            if getattr(p, "community_offers", None) or getattr(p, "community_posts", None):
+                continue
+
+            p_slug = _display_to_category_slug(p.category)
+            p_title = str(p.title or "").strip()
+            p_brand = str(p.brand or "").strip()
+            p_url = str(p.best_store_url or "").strip()
+
+            if (
+                _NON_HARDWARE_SOFTWARE_RE.search(strip_accents_lower(p_title))
+                or not is_strict_tech_product(
+                    title=p_title,
+                    category=p_slug,
+                    url=p_url,
+                    brand=p_brand,
+                )
+            ):
+                reason = "no_tech"
+            elif not is_valid_product_image_url(p.image_url):
+                reason = "sin_imagen_https"
+            else:
+                p_sig = build_canonical_product_signature(
+                    title=p_title,
+                    brand=p_brand,
+                    url=p_url,
+                    category=p_slug,
+                )
+                sig_key = (
+                    resolve_category_display_name(p.category).lower(),
+                    strip_accents_lower(normalize_brand(p_brand, p_title)),
+                    p_sig,
+                )
+                if pid in reassigned_old_auto_ids or sig_key in base_sig_keys or sig_key in promoted_signatures:
+                    reason = "duplicado_o_reemplazado"
+                else:
+                    reason = "sin_stock_u_obsoleto"
+
+            summary.pruned_auto_products_total += 1
+            summary.pruned_by_reason[reason] = summary.pruned_by_reason.get(reason, 0) + 1
+            pruned_ids.add(pid)
+            if not dry_run:
+                products_by_id.pop(pid, None)
+                await session.delete(p)
+
+        if not dry_run and pruned_ids:
+            for db_row in all_db_listings:
+                if db_row.canonical_product_id in pruned_ids:
+                    db_row.canonical_product_id = None
 
     multi_previews.sort(
         key=lambda g: (

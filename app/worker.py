@@ -501,7 +501,8 @@ def format_catalog_promotion_summary(summary: CatalogPromotionSummary) -> str:
         f"=== PROMOCIÓN DE CATÁLOGO FINPRICE — FASE 2B ({mode_tag}) ===",
         (
             f"Listings activos analizados : {summary.active_listings_scanned} "
-            f"(descartados/outliers={summary.discarded_invalid_or_outliers})"
+            f"(descartados/outliers={summary.discarded_invalid_or_outliers}, "
+            f"no_tech={summary.discarded_non_tech}, sin_imagen={summary.discarded_no_image})"
         ),
         (
             f"Enlazados a prod_* existentes: {summary.linked_to_existing_products} "
@@ -518,6 +519,16 @@ def format_catalog_promotion_summary(summary: CatalogPromotionSummary) -> str:
             f"(ofertas={summary.offers_promoted}, historial_hoy={summary.history_points_upserted})"
         ),
     ]
+
+    prune_verb = "por podar (dry-run)" if summary.dry_run else "podados"
+    if summary.pruned_auto_products_total or summary.pruned_non_tech_listings:
+        reasons_str = ", ".join(
+            f"{k}={v}" for k, v in sorted(summary.pruned_by_reason.items())
+        ) or "ninguno"
+        lines.append(
+            f"Auto_* {prune_verb:<20}: {summary.pruned_auto_products_total} "
+            f"({reasons_str}) | store_listings_no_tech={summary.pruned_non_tech_listings}"
+        )
 
     if summary.by_category:
         lines.append("Desglose por categoría:")

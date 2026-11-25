@@ -16,6 +16,7 @@ from typing import List, Optional
 
 from fastapi import Depends, FastAPI, Query, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -246,6 +247,7 @@ async def security_and_logging_middleware(request: Request, call_next):
     return response
 
 
+app.add_middleware(GZipMiddleware, minimum_size=1000)
 app.add_middleware(RateLimitAndWAFMiddleware)
 app.add_middleware(
     CORSMiddleware,
