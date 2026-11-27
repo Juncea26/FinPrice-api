@@ -111,80 +111,130 @@ RETAIL_ABBREVIATIONS: Dict[str, str] = {
 }
 
 # Tokens neutros descriptivos que pueden omitirse al comparar identidad
-COLOR_NEUTRAL_TOKENS: Set[str] = set(SINGLE_COLOR_TOKENS) | {
-    "plata",
-    "plateado",
-    "negro",
-    "blanco",
-    "azul",
-    "gris",
-    "rosa",
-    "rosado",
-    "amarillo",
-    "moca",
-    "cafe",
-    "estelar",
-    "espacial",
-    "natural",
-    "titanio",
-    "titanium",
-    "cielo",
-    "oro",
-    "dorado",
-    "verde",
-    "morado",
-    "violeta",
-    "rojo",
-    "grafito",
-    "medianoche",
-    "indigo",
-    "bone",
-    "sierra",
-    "burgundy",
-    "tidal",
-    "meteor",
-    "sunrise",
-    "misty",
-    "lunar",
-    "glaciar",
-    "oscuro",
-    "claro",
-    "deep",
-    "stellar",
-    "nebula",
-    "luna",
-    "polar",
-    "eclipse",
-    "arena",
-    "lavanda",
-    "celeste",
-    "naranja",
-    "orange",
-    "silver",
-    "black",
-    "white",
-    "blue",
-    "gray",
-    "grey",
-    "pink",
-    "yellow",
-    "brown",
-    "gold",
-    "green",
-    "purple",
-    "lilac",
-    "red",
-    "graphite",
-    "midnight",
-    "slv",
-    "blk",
-    "wht",
-    "gry",
-    "blu",
-    "pnk",
-    "ylw",
-    "gld",
-}
+COLOR_NEUTRAL_TOKENS: Set[str] = (
+    set(SINGLE_COLOR_TOKENS)
+    | {
+        "".join(
+            c for c in unicodedata.normalize("NFKD", tok.lower()) if not unicodedata.combining(c)
+        )
+        for tok in SINGLE_COLOR_TOKENS
+    }
+    | {
+        "plata",
+        "plateado",
+        "negro",
+        "blanco",
+        "azul",
+        "gris",
+        "plomo",
+        "rosa",
+        "rosado",
+        "amarillo",
+        "moca",
+        "cafe",
+        "marron",
+        "estelar",
+        "espacial",
+        "natural",
+        "titanio",
+        "titanium",
+        "cielo",
+        "oro",
+        "dorado",
+        "verde",
+        "morado",
+        "purpura",
+        "violeta",
+        "rojo",
+        "grafito",
+        "medianoche",
+        "indigo",
+        "bone",
+        "sand",
+        "cream",
+        "hueso",
+        "ivory",
+        "marfil",
+        "beige",
+        "mint",
+        "menta",
+        "teal",
+        "coral",
+        "peach",
+        "durazno",
+        "blush",
+        "lavender",
+        "lavanda",
+        "sage",
+        "olive",
+        "oliva",
+        "slate",
+        "obsidian",
+        "starlight",
+        "champagne",
+        "cobalt",
+        "cobalto",
+        "cyan",
+        "aqua",
+        "turquoise",
+        "turquesa",
+        "sierra",
+        "burgundy",
+        "vino",
+        "guinda",
+        "mostaza",
+        "fucsia",
+        "nude",
+        "cobre",
+        "copper",
+        "bronce",
+        "bronze",
+        "rose",
+        "tidal",
+        "meteor",
+        "sunrise",
+        "misty",
+        "lunar",
+        "glaciar",
+        "oscuro",
+        "claro",
+        "deep",
+        "stellar",
+        "nebula",
+        "luna",
+        "polar",
+        "eclipse",
+        "arena",
+        "celeste",
+        "naranja",
+        "orange",
+        "silver",
+        "black",
+        "white",
+        "blue",
+        "gray",
+        "grey",
+        "pink",
+        "yellow",
+        "brown",
+        "gold",
+        "green",
+        "purple",
+        "lilac",
+        "red",
+        "graphite",
+        "midnight",
+        "navy",
+        "slv",
+        "blk",
+        "wht",
+        "gry",
+        "blu",
+        "pnk",
+        "ylw",
+        "gld",
+    }
+)
 
 DEFAULT_NEUTRAL_TOKENS: Set[str] = COLOR_NEUTRAL_TOKENS | {
     "celular",
@@ -2458,7 +2508,8 @@ def build_canonical_product_signature(
 
 def is_signature_specific_enough(sig: str, brand: str = "", category: str = "") -> bool:
     """
-    Evita agrupar títulos demasiado genéricos sin identificador de modelo (ej. 'sony audifonos' o 'lg monitor 27').
+    Evita agrupar títulos demasiado genéricos sin identificador de modelo (ej. 'samsung', 'logitech mouse', 'lg monitor 27'),
+    pero permite firmas exactas sin dígitos cuando tienen marca + al menos 2 tokens válidos descriptivos/modelo.
     """
     if not sig:
         return False
@@ -2468,14 +2519,20 @@ def is_signature_specific_enough(sig: str, brand: str = "", category: str = "") 
         return False
 
     cat_low = strip_accents_lower(category or "").strip()
+    generic_cat_tokens: Set[str] = set()
+    if cat_low == "accesorios_pc":
+        generic_cat_tokens = {"mouse", "teclado", "webcam", "pad", "hub", "cooler"}
+    elif cat_low == "televisores":
+        generic_cat_tokens = {"qled", "qned", "oled", "led", "lcd", "miniled", "nanocell", "uhd", "fhd", "hd"}
+
     non_spec = [
         t
         for t in non_brand
         if t not in _SPEC_BUCKET_EXACT_TOKENS
+        and t not in generic_cat_tokens
         and not re.match(r"^\d+(?:gb|tb|hz|mm|w)$", t)
         and not re.match(r"^pack\d+$", t)
         and not (cat_low in {"monitores", "televisores", "laptops", "tablets"} and t in MONITOR_STANDARD_INCHES)
-        and not (cat_low == "accesorios_pc" and t in {"mouse", "teclado", "webcam", "pad", "hub", "cooler"})
     ]
     if not non_spec:
         return False
@@ -2483,9 +2540,13 @@ def is_signature_specific_enough(sig: str, brand: str = "", category: str = "") 
     if any(re.search(r"\d", t) for t in non_spec):
         return True
 
-    # Modelos reconocibles sin dígitos (ej. 'airpods max', 'steam deck', 'rog ally', 'switch oled', 'echo dot', 'pop icon')
+    # Modelos o títulos reconocibles sin dígitos (ej. 'skullcandy jib inear', 'fiddler mouse pilas', 'airpods max')
     significant_words = [t for t in non_spec if len(t) >= 2]
-    return len(significant_words) >= 2
+    if len(significant_words) >= 2:
+        return True
+    if brand_words and len(non_brand) >= 2 and len(significant_words) >= 1:
+        return True
+    return False
 
 
 def _extract_expanded_model_shapes(tokens: Sequence[str], brand_words: Set[str]) -> Dict[str, Set[str]]:

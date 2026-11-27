@@ -14,6 +14,7 @@ import httpx
 import pytest
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.orm import selectinload
 
 from app.collectors.catalog_promoter import promote_store_listings
 from app.collectors.category_registry import (
@@ -1135,5 +1136,253 @@ async def test_toy_karaoke_rejection_and_strict_category_reclassification(tmp_pa
         lg_prod = next(p for t, p in by_title.items() if "XBOOM" in t or "Xboom" in t)
         assert oppo_prod.category == "Smartphones"
         assert lg_prod.category == "Audio"
+
+    await test_engine.dispose()
+
+
+def test_expanded_color_dictionary_and_generic_signature_guard():
+    from app.collectors.color_stripper import strip_color_tokens
+    from app.collectors.tech_normalizer import is_signature_specific_enough
+
+    commercial_samples = [
+        ("Audífonos In Ear Skullcandy Jib Usb C Bone", "Audífonos In Ear Skullcandy Jib Usb C"),
+        ("Mouse Gaming Logitech G305 Mint", "Mouse Gaming Logitech G305"),
+        ("Garmin Venu 3S GPS Wi‑Fi Sage Gray", "Garmin Venu 3S GPS Wi‑Fi"),
+        ("Samsung Galaxy A56 256GB Olive", "Samsung Galaxy A56 256GB"),
+        ("Teclado Logitech MK470 Rose", "Teclado Logitech MK470"),
+        ("Nokia 5G Indigo Slate Burgundy Champagne", "Nokia 5G"),
+        ("Laptop Asus Zenbook 14 Obsidian Sand Cream", "Laptop Asus Zenbook 14"),
+        ("Audífonos Buds Hueso Marfil Durazno Blush Lavender", "Audífonos Buds"),
+        ("Smartwatch Oliva Cobalto Turquesa Guinda Vino Mostaza Fucsia", "Smartwatch"),
+        ("Tablet Cobre Copper Bronce Bronze Plomo Marrón Púrpura Cyan Aqua Turquoise", "Tablet"),
+        ("Apple MacBook Neo 13, color Índigo, 256GB", "Apple MacBook Neo 13, 256GB"),
+    ]
+    for raw_t, expected_t in commercial_samples:
+        assert strip_color_tokens(raw_t) == expected_t
+
+    # Nunca romper tokens reales de hardware ni "Impresora a Color"
+    assert strip_color_tokens("SSD Externo SanDisk Extreme 1TB") == "SSD Externo SanDisk Extreme 1TB"
+    assert strip_color_tokens("Impresora Multifuncional Epson a Color Wi-Fi") == "Impresora Multifuncional Epson a Color Wi-Fi"
+
+    # Firmas sin dígitos pero con marca + tokens descriptivos sí son válidas
+    sig_jib = build_canonical_product_signature(
+        "Audífonos In Ear Skullcandy Jib Usb C Bone", "Skullcandy", category="audifonos"
+    )
+    assert sig_jib == "skullcandy jib inear"
+    assert is_signature_specific_enough(sig_jib, brand="Skullcandy", category="audifonos") is True
+
+    sig_fiddler = build_canonical_product_signature(
+        "Fiddler Mouse Inalámbrico Blanco con Pilas", "Fiddler", category="accesorios_pc"
+    )
+    assert sig_fiddler == "fiddler mouse pilas"
+    assert is_signature_specific_enough(sig_fiddler, brand="Fiddler", category="accesorios_pc") is True
+
+    # Firmas ultra-genéricas siguen estrictamente bloqueadas
+    assert is_signature_specific_enough("samsung", brand="Samsung", category="celulares") is False
+    assert is_signature_specific_enough("hp", brand="HP", category="laptops") is False
+    assert is_signature_specific_enough("logitech mouse", brand="Logitech", category="accesorios_pc") is False
+    assert is_signature_specific_enough("sony overear", brand="Sony", category="audifonos") is False
+    assert is_signature_specific_enough("lg 27 fhd ips", brand="LG", category="monitores") is False
+    assert is_signature_specific_enough("kuzler teclado mouse", brand="Kuzler", category="accesorios_pc") is False
+
+
+@pytest.mark.asyncio
+async def test_color_variant_collapse_and_no_digit_deduplication(tmp_path):
+    db_file = tmp_path / "color_nodigit_dedup.db"
+    test_engine = create_async_engine(f"sqlite+aiosqlite:///{db_file}", future=True)
+    SessionMaker = async_sessionmaker(bind=test_engine, class_=AsyncSession, expire_on_commit=False)
+
+    async with test_engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
+    async with SessionMaker() as session:
+        session.add_all(
+            [
+                # Duplicados auto_* obsoletos por color para comprobar poda automática
+                ProductEntity(
+                    id="auto_skullcandy_jib_black_old",
+                    title="Audífonos In Ear Skullcandy Jib Usb C",
+                    category="Audífonos",
+                    brand="Skullcandy",
+                    best_price=24.9,
+                    original_price=39.9,
+                    best_store_name="La Curacao",
+                    best_store_url="https://www.lacuracao.pe/audifonos-skullcandy-jib-usb-c.html",
+                    available_stores_count=1,
+                    image_url="https://www.lacuracao.pe/media/jib-blk.jpg",
+                ),
+                ProductEntity(
+                    id="auto_skullcandy_jib_bone_old",
+                    title="Audífonos In Ear Skullcandy Jib Usb C Bone",
+                    category="Audífonos",
+                    brand="Skullcandy",
+                    best_price=26.9,
+                    original_price=39.9,
+                    best_store_name="La Curacao",
+                    best_store_url="https://www.lacuracao.pe/audifonos-skullcandy-jib-usb-c-bone.html",
+                    available_stores_count=1,
+                    image_url="https://www.lacuracao.pe/media/jib-bone.jpg",
+                ),
+                # 1) Skullcandy Jib Usb C en Curacao (2 colores) + Efe -> 1 producto, 2 tiendas
+                StoreListing(
+                    store="curacao",
+                    store_sku="JIB_CUR_BLK",
+                    category="audifonos",
+                    title="Audífonos In Ear Skullcandy Jib Usb C",
+                    brand="Skullcandy",
+                    price=24.9,
+                    original_price=39.9,
+                    url="https://www.lacuracao.pe/audifonos-skullcandy-jib-usb-c.html",
+                    image_url="https://www.lacuracao.pe/media/jib-blk.jpg",
+                    in_stock=True,
+                    canonical_product_id="auto_skullcandy_jib_black_old",
+                ),
+                StoreListing(
+                    store="curacao",
+                    store_sku="JIB_CUR_BONE",
+                    category="audifonos",
+                    title="Audífonos In Ear Skullcandy Jib Usb C Bone",
+                    brand="Skullcandy",
+                    price=26.9,
+                    original_price=39.9,
+                    url="https://www.lacuracao.pe/audifonos-skullcandy-jib-usb-c-bone.html",
+                    image_url="https://www.lacuracao.pe/media/jib-bone.jpg",
+                    in_stock=True,
+                    canonical_product_id="auto_skullcandy_jib_bone_old",
+                ),
+                StoreListing(
+                    store="efe",
+                    store_sku="JIB_EFE_BLK",
+                    category="audifonos",
+                    title="Audífonos In Ear Skullcandy Jib Usb C",
+                    brand="Skullcandy",
+                    price=24.9,
+                    original_price=39.9,
+                    url="https://www.efe.com.pe/audifonos-skullcandy-jib-usb-c.html",
+                    image_url="https://www.efe.com.pe/media/jib-blk.jpg",
+                    in_stock=True,
+                ),
+                # 2) Fiddler Mouse Inalámbrico con Pilas en Tottus + Wong (menta y blanco con EANs distintos) -> 1 producto, 2 tiendas
+                StoreListing(
+                    store="tottus",
+                    store_sku="FID_TOT_BLK",
+                    category="accesorios_pc",
+                    title="Fiddler Mouse Inalámbrico con Pilas Negro",
+                    brand="Fiddler",
+                    price=24.9,
+                    original_price=29.9,
+                    url="https://www.tottus.com.pe/tottus-pe/articulo/10/fiddler-mouse/10",
+                    image_url="https://media.falabella.com.pe/fiddler-blk.jpg",
+                    in_stock=True,
+                ),
+                StoreListing(
+                    store="wong",
+                    store_sku="FID_WONG_MINT",
+                    category="accesorios_pc",
+                    title="Fiddler Mouse Inalámbrico con Pilas Menta",
+                    brand="Fiddler",
+                    price=24.9,
+                    original_price=29.9,
+                    url="https://www.wong.pe/fiddler-mouse-pilas-menta/p?utm_source=test",
+                    image_url="https://wongfood.vtexassets.com/fiddler-mint.jpg",
+                    ean="7809601112661",
+                    in_stock=True,
+                ),
+                StoreListing(
+                    store="wong",
+                    store_sku="FID_WONG_WHT",
+                    category="accesorios_pc",
+                    title="Fiddler Mouse Inalámbrico Blanco con Pilas",
+                    brand="Fiddler",
+                    price=24.9,
+                    original_price=29.9,
+                    url="https://www.wong.pe/fiddler-mouse-pilas-blanco/p",
+                    image_url="https://wongfood.vtexassets.com/fiddler-wht.jpg",
+                    ean="7809601112685",
+                    in_stock=True,
+                ),
+                # 3) Protección ultra-genérica: Logitech Mouse NO debe fusionar con G305 ni M170
+                StoreListing(
+                    store="tottus",
+                    store_sku="LOGI_GEN",
+                    category="accesorios_pc",
+                    title="Mouse Logitech",
+                    brand="Logitech",
+                    price=39.9,
+                    original_price=49.9,
+                    url="https://www.tottus.com.pe/tottus-pe/articulo/11/mouse-logitech/11",
+                    image_url="https://media.falabella.com.pe/logi-gen.jpg",
+                    in_stock=True,
+                ),
+                StoreListing(
+                    store="falabella",
+                    store_sku="LOGI_G305",
+                    category="accesorios_pc",
+                    title="Mouse Gamer Logitech G305 Lightspeed Mint",
+                    brand="Logitech",
+                    price=169.9,
+                    original_price=199.9,
+                    url="https://www.falabella.com.pe/falabella-pe/product/12/logi-g305/12",
+                    image_url="https://media.falabella.com.pe/logi-g305.jpg",
+                    in_stock=True,
+                ),
+                StoreListing(
+                    store="hiraoka",
+                    store_sku="LOGI_M170",
+                    category="accesorios_pc",
+                    title="Mouse Inalámbrico Logitech M170 Rose",
+                    brand="Logitech",
+                    price=49.9,
+                    original_price=59.9,
+                    url="https://hiraoka.com.pe/mouse-logitech-m170-rose",
+                    image_url="https://hiraoka.com.pe/media/m170.jpg",
+                    in_stock=True,
+                ),
+            ]
+        )
+        await session.commit()
+
+        summary = await promote_store_listings(
+            session=session,
+            dry_run=False,
+            in_memory_listings=None,
+            today_peru=date(2026, 4, 21),
+        )
+        assert summary.new_multi_store_groups == 2
+        assert summary.new_single_store_products == 3
+        assert summary.total_promoted_products == 5
+        assert summary.pruned_auto_products_total == 2
+        assert summary.pruned_by_reason.get("duplicado_o_reemplazado") == 2
+
+        prods = list(
+            (
+                await session.execute(
+                    select(ProductEntity).options(selectinload(ProductEntity.store_offers))
+                )
+            ).scalars().all()
+        )
+        assert len(prods) == 5
+
+        jib_prods = [p for p in prods if "skullcandy" in p.title.lower()]
+        assert len(jib_prods) == 1
+        jib = jib_prods[0]
+        assert jib.available_stores_count == 2
+        assert len(jib.store_offers) == 2
+        assert {o.store_id for o in jib.store_offers} == {"curacao", "efe"}
+        assert jib.best_price == 24.9
+        assert "bone" not in jib.title.lower()
+
+        fiddler_prods = [p for p in prods if "fiddler" in p.title.lower()]
+        assert len(fiddler_prods) == 1
+        fid = fiddler_prods[0]
+        assert fid.available_stores_count == 2
+        assert len(fid.store_offers) == 2
+        assert {o.store_id for o in fid.store_offers} == {"tottus", "wong"}
+        wong_offer = next(o for o in fid.store_offers if o.store_id == "wong")
+        assert "?" not in wong_offer.offer_url
+
+        logi_prods = [p for p in prods if "logitech" in p.title.lower()]
+        assert len(logi_prods) == 3
+        assert all(p.available_stores_count == 1 for p in logi_prods)
 
     await test_engine.dispose()

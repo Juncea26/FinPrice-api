@@ -555,8 +555,6 @@ def _cluster_remaining_listings(
         for ma in members_a:
             prof_a = items[ma].variant_profile
             for mb in members_b:
-                if items[ma].eans and items[mb].eans and not (items[ma].eans & items[mb].eans):
-                    return
                 if not are_listings_variant_compatible(prof_a, items[mb].variant_profile):
                     return
 
@@ -575,20 +573,28 @@ def _cluster_remaining_listings(
 
     ean_buckets: Dict[Tuple[str, str], List[int]] = {}
     mpn_buckets: Dict[Tuple[str, str], List[int]] = {}
-    sig_buckets: Dict[Tuple[str, str], List[int]] = {}
+    sig_buckets: Dict[Tuple[str, str, str], List[int]] = {}
     structured_buckets: Dict[Tuple[str, ...], List[int]] = {}
+    same_store_title_buckets: Dict[Tuple[str, str, str, str], List[int]] = {}
 
     for idx, item in enumerate(items):
+        brand_key = strip_accents_lower(item.brand or "")
         for g in sorted(item.eans):
             ean_buckets.setdefault((item.effective_category, g), []).append(idx)
         for m in sorted(item.mpns):
             mpn_buckets.setdefault((item.effective_category, m), []).append(idx)
         if item.is_specific_sig and item.canonical_signature:
-            sig_buckets.setdefault((item.effective_category, item.canonical_signature), []).append(idx)
+            sig_buckets.setdefault((item.effective_category, brand_key, item.canonical_signature), []).append(idx)
         if item.structured_key is not None:
             structured_buckets.setdefault(item.structured_key, []).append(idx)
+        if brand_key:
+            norm_clean_title = re.sub(r"[^a-z0-9]+", " ", strip_accents_lower(item.clean_title or "")).strip()
+            if len(norm_clean_title.split()) >= 3:
+                same_store_title_buckets.setdefault(
+                    (item.store, item.effective_category, brand_key, norm_clean_title), []
+                ).append(idx)
 
-    for bucket_map in (ean_buckets, mpn_buckets, sig_buckets, structured_buckets):
+    for bucket_map in (ean_buckets, mpn_buckets, sig_buckets, structured_buckets, same_store_title_buckets):
         for bucket in bucket_map.values():
             if len(bucket) < 2:
                 continue
@@ -613,6 +619,20 @@ def _cluster_remaining_listings(
     return (clusters, outliers_discarded)
 
 
+def _offer_preference_sort_key(item: _EnrichedListing) -> Tuple[Any, ...]:
+    """Orden determinístico por tienda: menor precio activo, imagen HTTPS válida, URL más limpia."""
+    has_https_img = bool(item.image_url and is_valid_product_image_url(item.image_url))
+    has_query = 1 if "?" in item.offer_url else 0
+    return (
+        item.price,
+        0 if has_https_img else 1,
+        has_query,
+        len(item.offer_url),
+        -item.original_price,
+        item.store_sku,
+    )
+
+
 def _consolidate_cluster_offers(members: Sequence[_EnrichedListing]) -> List[_EnrichedListing]:
     """Consolida como máximo 1 oferta activa por tienda manteniendo el menor precio 1P disponible."""
     by_store: Dict[str, List[_EnrichedListing]] = {}
@@ -621,14 +641,7 @@ def _consolidate_cluster_offers(members: Sequence[_EnrichedListing]) -> List[_En
 
     consolidated: List[_EnrichedListing] = []
     for store_items in by_store.values():
-        store_items.sort(
-            key=lambda x: (
-                x.price,
-                0 if (x.image_url and x.image_url.startswith("https://")) else 1,
-                -x.original_price,
-                x.store_sku,
-            )
-        )
+        store_items.sort(key=_offer_preference_sort_key)
         consolidated.append(store_items[0])
 
     consolidated.sort(key=lambda x: (x.price, x.store))
@@ -914,7 +927,7 @@ async def promote_store_listings(
             )
 
             prev_pair = best_by_store.get(cand.store)
-            if prev_pair is None or cand.price < prev_pair[0].price:
+            if prev_pair is None or _offer_preference_sort_key(cand) < _offer_preference_sort_key(prev_pair[0]):
                 best_by_store[cand.store] = (cand, reason)
 
         if dry_run:
