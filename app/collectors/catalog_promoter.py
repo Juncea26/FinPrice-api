@@ -12,7 +12,7 @@ Fase 2B:
    `store_offers` y el punto diario en `price_history`, con soporte completo de `dry_run=True` sin escrituras.
 """
 from dataclasses import dataclass, field
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 import hashlib
 import json
 import re
@@ -43,10 +43,12 @@ from app.collectors.tech_normalizer import (
     _strip_bundles_and_colors,
     are_listings_variant_compatible,
     build_canonical_product_signature,
+    build_model_core_key,
     build_structured_match_key,
     evaluate_strict_guardrails,
     extract_product_codes,
     extract_variant_profile,
+    is_incomplete_spec_listing,
     is_signature_specific_enough,
     is_strict_tech_product,
     strip_accents_lower,
@@ -54,6 +56,7 @@ from app.collectors.tech_normalizer import (
 from app.collectors.url_utils import (
     canonicalize_store_url,
     ensure_https_image_url,
+    extract_store_parent_product_id,
     is_marketplace_url,
     is_valid_product_image_url,
 )
@@ -127,6 +130,9 @@ class _EnrichedListing:
     variant_profile: Dict[str, Any]
     existing_canonical_product_id: Optional[str]
     structured_key: Optional[Tuple[str, ...]] = None
+    store_parent_id: Optional[str] = None
+    model_core_key: Optional[Tuple[str, str, str, str]] = None
+    is_incomplete_spec: bool = False
 
 
 @dataclass
@@ -246,6 +252,9 @@ def _select_clean_canonical_title(candidates: Sequence[_EnrichedListing]) -> str
 
         if c.brand and c.brand.lower() in pretty.lower():
             score += 10.0
+
+        if not c.is_incomplete_spec:
+            score += 8.0
 
         length = len(pretty)
         if 18 <= length <= 95:
@@ -438,6 +447,14 @@ def _enrich_raw_listing(
         url=eff_url,
         category=effective_category,
     )
+    store_parent_id = extract_store_parent_product_id(store, eff_url)
+    model_core_key = build_model_core_key(
+        title=title,
+        brand=brand,
+        url=eff_url,
+        category=effective_category,
+    )
+    incomplete_spec = is_incomplete_spec_listing(profile)
     clean_title = _prettify_title_casing(
         strip_color_tokens(_strip_bundles_and_colors(title, category=effective_category) or title)
     )
@@ -468,6 +485,9 @@ def _enrich_raw_listing(
         variant_profile=profile,
         existing_canonical_product_id=existing_canon,
         structured_key=structured_key,
+        store_parent_id=store_parent_id,
+        model_core_key=model_core_key,
+        is_incomplete_spec=incomplete_spec,
     )
 
 
@@ -476,20 +496,36 @@ def _match_existing_product(
     base_products_meta: Sequence[Dict[str, Any]],
 ) -> Optional[Tuple[ProductEntity, str]]:
     """
-    Paso 1: Verifica si un listing coincide estrictamente con algún producto existente (`prod_*`)
-    por EAN/MPN exacto o por firma normalizada + identidad/guardrails + cordura de precio.
+    Paso 1: Verifica si un listing coincide estrictamente con algún producto existente (`prod_*`):
+    - Prioridad 1: Misma URL canónica o mismo ID padre de tienda dentro de oferta existente.
+    - Prioridad 2: EAN/MPN exacto o firma normalizada + identidad/guardrails + cordura de precio.
+    - Prioridad 3: Absorción segura de listings con título incompleto (sin RAM/GB) contra un único modelo base compatible.
     """
-    for meta in base_products_meta:
-        prod: ProductEntity = meta["entity"]
+    def _eligible_base(meta: Dict[str, Any]) -> bool:
         if cand.display_category.lower() != meta["display_category"].lower():
-            continue
-
+            return False
         if cand.brand and meta["brand_low"] and cand.brand.lower() != meta["brand_low"]:
-            continue
-
+            return False
         ref_price = meta["ref_price"]
         if ref_price > 0 and not ((ref_price * 0.55) <= cand.price <= (ref_price * 1.85)):
+            return False
+        return True
+
+    # Prioridad 1: URL canónica o ID padre de tienda idéntico
+    if cand.offer_url or cand.store_parent_id:
+        for meta in base_products_meta:
+            if not _eligible_base(meta):
+                continue
+            same_url = bool(cand.offer_url and cand.offer_url in meta["offer_urls"])
+            same_parent = bool(cand.store_parent_id and cand.store_parent_id in meta["store_parent_ids"])
+            if (same_url or same_parent) and are_listings_variant_compatible(meta["profile"], cand.variant_profile):
+                return (meta["entity"], "url_parent_id")
+
+    # Prioridad 2: EAN/MPN o identidad/firma completa
+    for meta in base_products_meta:
+        if not _eligible_base(meta):
             continue
+        prod: ProductEntity = meta["entity"]
 
         exact_ean = bool(cand.eans & meta["eans"])
         exact_mpn = bool(cand.mpns & meta["mpns"])
@@ -520,6 +556,32 @@ def _match_existing_product(
             )
             return (prod, reason)
 
+    # Prioridad 3: Absorción genérica de listing con título incompleto (sin RAM/almacenamiento) sin ambigüedad
+    if cand.is_incomplete_spec and cand.model_core_key is not None:
+        c_cat, c_brand, c_core_sig, c_conn = cand.model_core_key
+        incomplete_cands: List[Dict[str, Any]] = []
+        for meta in base_products_meta:
+            if not _eligible_base(meta):
+                continue
+            m_core = meta.get("model_core_key")
+            if not m_core:
+                continue
+            m_cat, m_brand, m_core_sig, m_conn = m_core
+            if (m_cat, m_brand, m_core_sig) != (c_cat, c_brand, c_core_sig):
+                continue
+            if c_conn and m_conn and c_conn != m_conn:
+                continue
+            if not are_listings_variant_compatible(meta["profile"], cand.variant_profile):
+                continue
+            incomplete_cands.append(meta)
+
+        if len(incomplete_cands) == 1:
+            return (incomplete_cands[0]["entity"], "incomplete_title")
+        if len(incomplete_cands) > 1:
+            same_store_cands = [m for m in incomplete_cands if cand.store in m["offer_stores"]]
+            if len(same_store_cands) == 1:
+                return (same_store_cands[0]["entity"], "incomplete_title")
+
     return None
 
 
@@ -543,25 +605,30 @@ def _cluster_remaining_listings(
             x = parent[x]
         return x
 
-    def _try_union(a_idx: int, b_idx: int) -> None:
-        ra = _find(a_idx)
-        rb = _find(b_idx)
-        if ra == rb:
-            return
-
-        members_a = comp_members[ra]
-        members_b = comp_members[rb]
-
+    def _can_merge_components(members_a: Sequence[int], members_b: Sequence[int]) -> bool:
         for ma in members_a:
             prof_a = items[ma].variant_profile
             for mb in members_b:
                 if not are_listings_variant_compatible(prof_a, items[mb].variant_profile):
-                    return
+                    return False
 
         combined_prices = [items[k].price for k in members_a] + [items[k].price for k in members_b]
         ref_p = max(combined_prices) if len(combined_prices) == 2 else float(statistics.median(combined_prices))
         if ref_p > 0 and min(combined_prices) < (ref_p * 0.50):
-            return
+            return False
+        return True
+
+    def _try_union(a_idx: int, b_idx: int) -> bool:
+        ra = _find(a_idx)
+        rb = _find(b_idx)
+        if ra == rb:
+            return True
+
+        members_a = comp_members[ra]
+        members_b = comp_members[rb]
+
+        if not _can_merge_components(members_a, members_b):
+            return False
 
         if len(members_a) < len(members_b):
             ra, rb = rb, ra
@@ -570,9 +637,12 @@ def _cluster_remaining_listings(
         parent[rb] = ra
         members_a.extend(members_b)
         del comp_members[rb]
+        return True
 
     ean_buckets: Dict[Tuple[str, str], List[int]] = {}
     mpn_buckets: Dict[Tuple[str, str], List[int]] = {}
+    url_buckets: Dict[Tuple[str, str, str], List[int]] = {}
+    parent_id_buckets: Dict[Tuple[str, str], List[int]] = {}
     sig_buckets: Dict[Tuple[str, str, str], List[int]] = {}
     structured_buckets: Dict[Tuple[str, ...], List[int]] = {}
     same_store_title_buckets: Dict[Tuple[str, str, str, str], List[int]] = {}
@@ -583,6 +653,10 @@ def _cluster_remaining_listings(
             ean_buckets.setdefault((item.effective_category, g), []).append(idx)
         for m in sorted(item.mpns):
             mpn_buckets.setdefault((item.effective_category, m), []).append(idx)
+        if item.offer_url:
+            url_buckets.setdefault((item.effective_category, item.store, item.offer_url), []).append(idx)
+        if item.store_parent_id:
+            parent_id_buckets.setdefault((item.effective_category, item.store_parent_id), []).append(idx)
         if item.is_specific_sig and item.canonical_signature:
             sig_buckets.setdefault((item.effective_category, brand_key, item.canonical_signature), []).append(idx)
         if item.structured_key is not None:
@@ -594,13 +668,79 @@ def _cluster_remaining_listings(
                     (item.store, item.effective_category, brand_key, norm_clean_title), []
                 ).append(idx)
 
-    for bucket_map in (ean_buckets, mpn_buckets, sig_buckets, structured_buckets, same_store_title_buckets):
+    for bucket_map in (
+        ean_buckets,
+        mpn_buckets,
+        url_buckets,
+        parent_id_buckets,
+        sig_buckets,
+        structured_buckets,
+        same_store_title_buckets,
+    ):
         for bucket in bucket_map.values():
             if len(bucket) < 2:
                 continue
             anchor = bucket[0]
             for other in bucket[1:]:
                 _try_union(anchor, other)
+
+    # Pasada de absorción de clústeres con título incompleto (sin RAM/almacenamiento) hacia un único grupo completo compatible
+    complete_core_index: Dict[Tuple[str, str, str], List[int]] = {}
+    for root_id, members_idx in list(comp_members.items()):
+        has_complete = any(not items[k].is_incomplete_spec for k in members_idx)
+        if not has_complete:
+            continue
+        seen_cores: Set[Tuple[str, str, str]] = set()
+        for k in members_idx:
+            if not items[k].is_incomplete_spec and items[k].model_core_key is not None:
+                c_cat, c_brand, c_sig, _ = items[k].model_core_key
+                core3 = (c_cat, c_brand, c_sig)
+                if core3 not in seen_cores:
+                    seen_cores.add(core3)
+                    complete_core_index.setdefault(core3, []).append(root_id)
+
+    for inc_root in list(comp_members.keys()):
+        if inc_root not in comp_members:
+            continue
+        members_inc = comp_members[inc_root]
+        if not all(items[k].is_incomplete_spec and items[k].model_core_key is not None for k in members_inc):
+            continue
+        c_cat, c_brand, c_sig, c_conn = items[members_inc[0]].model_core_key
+        cand_roots = complete_core_index.get((c_cat, c_brand, c_sig), [])
+        if not cand_roots:
+            continue
+
+        valid_targets: List[int] = []
+        seen_target_roots: Set[int] = set()
+        for raw_t_root in cand_roots:
+            t_root = _find(raw_t_root)
+            if t_root == inc_root or t_root in seen_target_roots or t_root not in comp_members:
+                continue
+            members_t = comp_members[t_root]
+            conn_ok = True
+            if c_conn:
+                for k in members_t:
+                    mk = items[k].model_core_key
+                    if mk and mk[3] and mk[3] != c_conn:
+                        conn_ok = False
+                        break
+            if conn_ok and _can_merge_components(members_inc, members_t):
+                seen_target_roots.add(t_root)
+                valid_targets.append(t_root)
+
+        chosen_target: Optional[int] = None
+        if len(valid_targets) == 1:
+            chosen_target = valid_targets[0]
+        elif len(valid_targets) > 1:
+            inc_stores = {items[k].store for k in members_inc}
+            same_store_targets = [
+                tr for tr in valid_targets if any(items[k].store in inc_stores for k in comp_members[tr])
+            ]
+            if len(same_store_targets) == 1:
+                chosen_target = same_store_targets[0]
+
+        if chosen_target is not None:
+            _try_union(members_inc[0], comp_members[chosen_target][0])
 
     clusters: List[List[_EnrichedListing]] = []
     outliers_discarded = 0
@@ -620,12 +760,13 @@ def _cluster_remaining_listings(
 
 
 def _offer_preference_sort_key(item: _EnrichedListing) -> Tuple[Any, ...]:
-    """Orden determinístico por tienda: menor precio activo, imagen HTTPS válida, URL más limpia."""
+    """Orden determinístico por tienda: menor precio activo, imagen HTTPS válida, título completo, URL más limpia."""
     has_https_img = bool(item.image_url and is_valid_product_image_url(item.image_url))
     has_query = 1 if "?" in item.offer_url else 0
     return (
         item.price,
         0 if has_https_img else 1,
+        0 if not item.is_incomplete_spec else 1,
         has_query,
         len(item.offer_url),
         -item.original_price,
@@ -681,25 +822,44 @@ async def _upsert_today_price_history(
 ) -> Tuple[float, bool, float, float, int]:
     """
     Mantiene historial diario idempotente para `product` sin modificar ni inventar días pasados.
+    Reindexa los `day_offset` reales al cambiar de día para evitar colisiones `UNIQUE(product_id, day_offset)`.
     Retorna `(historical_min_price, is_historical_min, previous_best_price, price_drop_amount, days_tracked)`.
     """
     t_iso = today_peru.isoformat()
     t_label = format_peru_date_label(today_peru)
+    min_allowed_date = today_peru - timedelta(days=29)
 
     today_row: Optional[PriceHistoryEntity] = None
     past_prices: List[float] = []
     sorted_rows = sorted(existing_history, key=lambda h: h.day_offset)
+    needs_flush_before_insert = False
 
     for h_row in sorted_rows:
         r_date = str(getattr(h_row, "recorded_date", "") or "").strip()
-        if r_date == t_iso or (not r_date and h_row.day_offset == 0):
+        parsed_d: Optional[date] = None
+        if len(r_date) == 10:
+            try:
+                parsed_d = date.fromisoformat(r_date)
+            except ValueError:
+                parsed_d = None
+
+        if parsed_d == today_peru or (parsed_d is None and h_row.day_offset == 0):
             if today_row is None:
                 today_row = h_row
             else:
                 today_row.price = round(min(float(today_row.price), float(h_row.price)), 2)
                 await session.delete(h_row)
-        elif float(h_row.price or 0.0) > 0:
+                needs_flush_before_insert = True
+        elif parsed_d is not None and min_allowed_date <= parsed_d < today_peru and float(h_row.price or 0.0) > 0:
+            expected_offset = (parsed_d - today_peru).days
+            if h_row.day_offset != expected_offset:
+                h_row.day_offset = expected_offset
+                needs_flush_before_insert = True
+            h_row.date_label = format_peru_date_label(parsed_d)
             past_prices.append(float(h_row.price))
+        else:
+            await session.delete(h_row)
+            needs_flush_before_insert = True
 
     if today_row is not None:
         today_row.price = round(min(float(today_row.price), best_price), 2)
@@ -708,6 +868,8 @@ async def _upsert_today_price_history(
         today_row.recorded_date = t_iso
         today_row.recorded_at = now_dt
     else:
+        if needs_flush_before_insert:
+            await session.flush()
         today_row = PriceHistoryEntity(
             product_id=product.id,
             day_offset=0,
@@ -796,6 +958,20 @@ async def promote_store_listings(
             if active_prices
             else float(p.best_price or 0.0)
         )
+        offer_urls_set: Set[str] = set()
+        parent_ids_set: Set[str] = set()
+        offer_stores_set: Set[str] = set()
+        for o in (p.store_offers or []):
+            if o.store_id and o.price and float(o.price) > 0:
+                offer_stores_set.add(o.store_id.lower())
+            if o.offer_url:
+                _, clean_ou = canonicalize_store_url(o.offer_url)
+                eff_ou = clean_ou or o.offer_url
+                offer_urls_set.add(eff_ou)
+                pid_val = extract_store_parent_product_id(o.store_id, eff_ou)
+                if pid_val:
+                    parent_ids_set.add(pid_val)
+
         base_products_meta.append(
             {
                 "entity": p,
@@ -805,6 +981,15 @@ async def promote_store_listings(
                 "tech_specs": raw_specs,
                 "eans": {_normalize_gtin(g) for g in (codes.get("gtin") or []) if _normalize_gtin(g)},
                 "mpns": {_normalize_mpn(m) for m in (codes.get("mpn") or []) if _normalize_mpn(m)},
+                "offer_urls": offer_urls_set,
+                "store_parent_ids": parent_ids_set,
+                "offer_stores": offer_stores_set,
+                "model_core_key": build_model_core_key(
+                    title=p.title,
+                    brand=brand,
+                    url="",
+                    category=cat_slug,
+                ),
                 "canonical_signature": build_canonical_product_signature(
                     title=p.title,
                     brand=brand,
@@ -948,12 +1133,19 @@ async def promote_store_listings(
         )
 
         offers_changed = False
-        for store_id, (cand, _reason) in best_by_store.items():
+        for store_id, (cand, match_reason) in best_by_store.items():
             if ref_med > 0 and cand.price < (ref_med * 0.55):
                 continue
 
             existing_off = existing_offers_map.get(store_id)
             if existing_off is not None:
+                if (
+                    match_reason in {"url_parent_id", "incomplete_title"}
+                    and cand.is_incomplete_spec
+                    and float(existing_off.price or 0.0) > 0.0
+                    and cand.price >= float(existing_off.price)
+                ):
+                    continue
                 if (
                     float(existing_off.price or 0.0) <= 0.0
                     or abs(float(existing_off.price) - cand.price) >= 0.01

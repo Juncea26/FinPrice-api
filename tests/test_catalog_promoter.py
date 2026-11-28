@@ -1386,3 +1386,274 @@ async def test_color_variant_collapse_and_no_digit_deduplication(tmp_path):
         assert all(p.available_stores_count == 1 for p in logi_prods)
 
     await test_engine.dispose()
+
+
+def test_enable_auto_category_discovery_default_and_standalone_mousepad_rejection():
+    from app.collectors.tech_normalizer import is_strict_tech_product
+    from app.core.config import Settings
+
+    assert Settings().ENABLE_AUTO_CATEGORY_DISCOVERY is True
+    assert Settings(ENABLE_AUTO_CATEGORY_DISCOVERY="false").ENABLE_AUTO_CATEGORY_DISCOVERY is False
+
+    # Mousepads sueltos deben rechazarse
+    assert is_strict_tech_product("Mouse Pad Fiddler Gel Negro Fd-Mp01", category="accesorios_pc", brand="Fiddler") is False
+    assert is_strict_tech_product("Mousepad Logitech G840 XL", category="accesorios_pc", brand="Logitech") is False
+    assert is_strict_tech_product("Pad Mouse Gamer RGB Antideslizante", category="accesorios_pc") is False
+    assert is_strict_tech_product("Alfombrilla Ergonómica con Reposamuñecas", category="accesorios_pc") is False
+
+    # Combos con hardware electrónico real SÍ se permiten
+    assert is_strict_tech_product("Combo Xtech Mousepad + Audífonos + Teclado + Mouse", category="accesorios_pc", brand="Xtech") is True
+    assert is_strict_tech_product("Kit gamer Xtrike Me 3 en 1 Teclado + Mouse + Mouse pad", category="accesorios_pc", brand="Xtrike Me") is True
+    assert is_strict_tech_product("Pack Xtech Ghost Spider: Audífonos + Mouse + Mouse PAD", category="audifonos", brand="Xtech") is True
+
+
+def test_structured_key_smartphone_4g_5g_and_tv_resolution_panels():
+    from app.collectors.tech_normalizer import (
+        are_listings_variant_compatible,
+        build_structured_match_key,
+        evaluate_strict_guardrails,
+        extract_variant_profile,
+    )
+
+    # Smartphones: color ignorado, 4G vs 5G estrictamente separado
+    k_s5g_a = build_structured_match_key("Samsung Galaxy A57 5G 256GB 8GB RAM Negro", "Samsung", category="celulares")
+    k_s5g_b = build_structured_match_key("Celular Samsung Galaxy A57 5G 8GB 256GB Azul", "Samsung", category="celulares")
+    k_s4g = build_structured_match_key("Samsung Galaxy A57 4G 256GB 8GB RAM Negro", "Samsung", category="celulares")
+    assert k_s5g_a is not None and k_s5g_a == k_s5g_b
+    assert k_s4g is not None and k_s5g_a != k_s4g
+    assert are_listings_variant_compatible(
+        extract_variant_profile("Samsung Galaxy A57 5G 256GB 8GB", category="celulares", brand="Samsung"),
+        extract_variant_profile("Samsung Galaxy A57 4G 256GB 8GB", category="celulares", brand="Samsung"),
+    ) is False
+    assert evaluate_strict_guardrails("Samsung Galaxy A57 4G 256GB 8GB RAM", "Samsung Galaxy A57 5G 256GB 8GB RAM") is False
+    assert evaluate_strict_guardrails("Samsung Galaxy A57 5G 256GB 8GB RAM", "Samsung Galaxy A57 4G 256GB 8GB RAM") is False
+
+    # Televisores: HD vs Full HD vs 4K y OLED vs QLED vs MiniLED estrictamente separados (omitiendo color)
+    k_tv_hd = build_structured_match_key('Televisor JVC 32" QLED HD LT-32KM1584 Smart TV Negro', "JVC", category="televisores")
+    k_tv_fhd = build_structured_match_key('Televisor JVC 32" QLED Full HD LT-32KM1584 Smart TV Blanco', "JVC", category="televisores")
+    k_tv_4k = build_structured_match_key('Televisor JVC 32" QLED 4K LT-32KM1584 Smart TV Negro', "JVC", category="televisores")
+    assert k_tv_hd is not None and k_tv_fhd is not None and k_tv_4k is not None
+    assert k_tv_hd != k_tv_fhd and k_tv_fhd != k_tv_4k and k_tv_hd != k_tv_4k
+
+    k_oled_a = build_structured_match_key('LG Televisor 65" OLED evo AI C6 4K Smart TV 2026', "LG", category="televisores")
+    k_oled_b = build_structured_match_key("Televisor Smart TV LG OLED 65 OLED65C6PSA", "LG", category="televisores")
+    assert k_oled_a is not None and k_oled_a == k_oled_b
+
+    assert are_listings_variant_compatible(
+        extract_variant_profile('Televisor JVC 43" QLED FHD', category="televisores", brand="JVC"),
+        extract_variant_profile('Televisor JVC 43" QLED 4K', category="televisores", brand="JVC"),
+    ) is False
+    assert evaluate_strict_guardrails('Televisor JVC 43" QLED FHD', 'Televisor JVC 43" QLED 4K') is False
+    assert evaluate_strict_guardrails('Televisor Samsung 55" QLED 4K', 'Televisor Samsung 55" OLED 4K') is False
+
+
+@pytest.mark.asyncio
+async def test_incomplete_a57_absorption_and_scheduled_full_auto_update(tmp_path, monkeypatch):
+    from app.services.catalog_service import catalog_service
+
+    db_file = tmp_path / "phase2d_absorption.db"
+    test_engine = create_async_engine(f"sqlite+aiosqlite:///{db_file}", future=True)
+    SessionMaker = async_sessionmaker(bind=test_engine, class_=AsyncSession, expire_on_commit=False)
+
+    async with test_engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
+    async with SessionMaker() as session:
+        await sync_and_upsert_catalog(session=session, overwrite_live=True)
+
+        # Simular estado legado de producción:
+        # 1) prod_samsung_galaxy_a57 tiene oferta Falabella a S/ 1,499 en URL /product/80007794/...
+        # 2) Se había creado un auto_* duplicado con S/ 1,799 y título incompleto "Samsung Celular Galaxy A57 5G"
+        # 3) Otro listing incompleto en tienda distinta (sin URL coincidente) y caso ambiguo iPhone 16 sin GB
+        # 4) Un Mousepad suelto debe podarse y un combo con Mousepad debe mantenerse
+        a57_prod = await session.get(ProductEntity, "prod_samsung_galaxy_a57")
+        assert a57_prod is not None
+        fal_offer = next((o for o in a57_prod.store_offers if o.store_id == "falabella"), None)
+        assert fal_offer is not None
+        fal_offer.price = 1499.0
+        fal_offer.offer_url = "https://www.falabella.com.pe/falabella-pe/product/80007794/celular-samsung-galaxy-a57-5g/80007798"
+
+        # Agregar una segunda variante de iPhone 16 para verificar bloqueo ante ambigüedad
+        session.add(
+            ProductEntity(
+                id="prod_apple_iphone_16_256gb_test",
+                title="Apple iPhone 16 5G 256GB",
+                category="Smartphones",
+                brand="Apple",
+                best_price=3699.0,
+                original_price=4199.0,
+                best_store_name="Hiraoka",
+                best_store_url="https://hiraoka.com.pe/iphone-16-256gb",
+                available_stores_count=1,
+                image_url="https://hiraoka.com.pe/media/ip16_256.jpg",
+                tech_specs_json=json.dumps({"Marca": "Apple", "Almacenamiento": "256 GB"}),
+            )
+        )
+        session.add(
+            ProductEntity(
+                id="auto_samsung_galaxy_a57_dup",
+                title="Samsung Celular Galaxy A57 5G",
+                category="Smartphones",
+                brand="Samsung",
+                best_price=1799.0,
+                original_price=1999.0,
+                best_store_name="Falabella",
+                best_store_url="https://www.falabella.com.pe/falabella-pe/product/80007794/celular-samsung-galaxy-a57-5g/80007798",
+                available_stores_count=1,
+                image_url="https://media.falabella.com.pe/a57.jpg",
+            )
+        )
+        session.add_all(
+            [
+                StoreListing(
+                    store="falabella",
+                    store_sku="80007798",
+                    category="celulares",
+                    title="Samsung Celular Galaxy A57 5G",
+                    brand="Samsung",
+                    price=1799.0,
+                    original_price=1999.0,
+                    url="https://www.falabella.com.pe/falabella-pe/product/80007794/celular-samsung-galaxy-a57-5g/80007798",
+                    image_url="https://media.falabella.com.pe/a57.jpg",
+                    in_stock=True,
+                    canonical_product_id="auto_samsung_galaxy_a57_dup",
+                ),
+                StoreListing(
+                    store="metro",
+                    store_sku="M_A57_INC",
+                    category="celulares",
+                    title="Celular Samsung Galaxy A57 5G Negro",
+                    brand="Samsung",
+                    price=1549.0,
+                    original_price=1799.0,
+                    url="https://www.metro.pe/celular-samsung-galaxy-a57-5g/p",
+                    image_url="https://metroio.vtexassets.com/a57.jpg",
+                    in_stock=True,
+                ),
+                StoreListing(
+                    store="wong",
+                    store_sku="W_IP16_AMB",
+                    category="celulares",
+                    title="Apple Celular iPhone 16 5G Blanco",
+                    brand="Apple",
+                    price=3499.0,
+                    original_price=3899.0,
+                    url="https://www.wong.pe/apple-iphone-16-5g/p",
+                    image_url="https://wongfood.vtexassets.com/ip16.jpg",
+                    in_stock=True,
+                ),
+                StoreListing(
+                    store="metro",
+                    store_sku="MP_GEL_BAD",
+                    category="accesorios_pc",
+                    title="Mouse Pad Fiddler Gel Negro Fd-Mp01",
+                    brand="Fiddler",
+                    price=39.9,
+                    original_price=49.9,
+                    url="https://www.metro.pe/mousepad-fiddler-gel/p",
+                    image_url="https://metroio.vtexassets.com/mp.jpg",
+                    in_stock=True,
+                ),
+                StoreListing(
+                    store="efe",
+                    store_sku="COMBO_MP_OK",
+                    category="accesorios_pc",
+                    title="Combo Xtech Mousepad + Audífonos + Teclado + Mouse",
+                    brand="Xtech",
+                    price=99.0,
+                    original_price=129.0,
+                    url="https://www.efe.com.pe/combo-xtech-mousepad.html",
+                    image_url="https://www.efe.com.pe/media/combo-xtech.jpg",
+                    in_stock=True,
+                ),
+            ]
+        )
+        await session.commit()
+
+        from app.collectors.orchestrator import get_today_peru
+        yesterday_peru = get_today_peru() - timedelta(days=1)
+
+        summary = await promote_store_listings(
+            session=session,
+            dry_run=False,
+            in_memory_listings=None,
+            today_peru=yesterday_peru,
+        )
+        # Ambos A57 incompletos se absorben en prod_samsung_galaxy_a57; iPhone 16 ambiguo no se adivina; mousepad se poda
+        assert summary.linked_to_existing_products == 2
+        assert summary.pruned_non_tech_listings == 1
+        assert summary.pruned_auto_products_total == 1
+        assert summary.pruned_by_reason.get("duplicado_o_reemplazado") == 1
+
+        # Verificar que no existe ningún auto_* duplicado de A57 y que prod_samsung_galaxy_a57 conserva S/ 1,499 en Falabella
+        a57_autos = [
+            p
+            for p in (await session.execute(select(ProductEntity))).scalars().all()
+            if p.id.startswith("auto_") and "a57" in (p.title or "").lower()
+        ]
+        assert a57_autos == []
+        a57_reloaded = (
+            await session.execute(
+                select(ProductEntity)
+                .options(selectinload(ProductEntity.store_offers))
+                .where(ProductEntity.id == "prod_samsung_galaxy_a57")
+                .execution_options(populate_existing=True)
+            )
+        ).scalar_one()
+        fal_after = next(o for o in a57_reloaded.store_offers if o.store_id == "falabella")
+        assert fal_after.price == 1499.0
+        assert any(o.store_id == "metro" and o.price == 1549.0 for o in a57_reloaded.store_offers)
+
+        # Combo con mousepad sí promovido, Mousepad suelto no
+        combo_prods = [
+            p
+            for p in (await session.execute(select(ProductEntity))).scalars().all()
+            if p.id.startswith("auto_") and "combo xtech" in (p.title or "").lower()
+        ]
+        assert len(combo_prods) == 1
+
+        # Verificar flujo de run_scheduled_price_update: actualiza prod_* + crawl + promote (auto_*) + invalida y precalienta caché
+        calls_order = []
+
+        async def fake_sync_all_catalog_products(session, on_cache_invalidate=None, **kwargs):
+            calls_order.append("sync_prod")
+            return {"status": "success", "updated_products": 25}
+
+        async def fake_crawl_categories(stores=None, max_pages=1, dry_run=False, session=None):
+            from app.collectors.category_crawler import CategoryCrawlSummary
+            calls_order.append("crawl_categories")
+            # Simular caída de precio en Combo Xtech (99 -> 79) para validar refresco completo de auto_*
+            res_l = (
+                await session.execute(
+                    select(StoreListing).where(StoreListing.store_sku == "COMBO_MP_OK")
+                )
+            ).scalar_one()
+            res_l.price = 79.0
+            await session.flush()
+            return CategoryCrawlSummary(extracted_1p=1, updated=1)
+
+        catalog_service.invalidate_cache()
+        monkeypatch.setattr(orchestrator, "sync_all_catalog_products", fake_sync_all_catalog_products)
+        monkeypatch.setattr("app.collectors.category_crawler.crawl_categories", fake_crawl_categories)
+
+        run_res = await orchestrator.run_scheduled_price_update(
+            session=session,
+            on_cache_invalidate=catalog_service.invalidate_cache,
+        )
+        assert calls_order == ["sync_prod", "crawl_categories"]
+        assert "auto_category_discovery" in run_res
+        assert run_res["auto_category_discovery"]["updated_listings"] == 1
+        assert run_res["cache_prewarmed_bytes"] > 100
+        assert len(catalog_service._products_json_cache) >= 1
+
+        # Verificar que el auto_* reflejó nuevo best_price=79.0, ahorro, descuento e historial
+        combo_updated = await session.get(ProductEntity, combo_prods[0].id)
+        assert combo_updated is not None
+        assert combo_updated.best_price == 79.0
+        assert combo_updated.original_price == 129.0
+        assert combo_updated.price_drop_amount == 50.0
+        assert combo_updated.discount_percentage == 39
+        assert len(combo_updated.price_history) >= 1
+
+    catalog_service.invalidate_cache()
+    await test_engine.dispose()

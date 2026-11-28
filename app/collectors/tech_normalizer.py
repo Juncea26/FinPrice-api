@@ -56,7 +56,7 @@ STANDARD_STORAGE_TOKENS: Set[str] = {
 }
 
 TV_STANDARD_INCHES: Set[int] = {
-    32, 40, 42, 43, 48, 50, 55, 58, 60, 65, 70, 75, 77, 83, 85, 86, 98
+    32, 40, 42, 43, 48, 50, 55, 58, 60, 65, 70, 75, 77, 83, 85, 86, 98, 100
 }
 
 MONITOR_STANDARD_INCHES: Set[str] = {
@@ -1184,11 +1184,14 @@ def evaluate_strict_guardrails(
             if any(_word_in_text(w, f"{cand_title_norm} {cand_url_norm}") for w in ("cellular", "lte", "5g", "4g")):
                 return False
     else:
+        cand_primary_net = f"{cand_title_norm} {cand_url_norm}"
+        has_4g_or_lte = _word_in_text("4g", cand_primary_net) or _word_in_text("lte", cand_primary_net)
+        has_5g = _word_in_text("5g", cand_primary_net) or _word_in_text("5g", specs_norm)
         if _word_in_text("5g", canon_norm):
-            cand_primary_net = f"{cand_title_norm} {cand_url_norm}"
-            has_4g_or_lte = _word_in_text("4g", cand_primary_net) or _word_in_text("lte", cand_primary_net)
-            has_5g = _word_in_text("5g", cand_primary_net) or _word_in_text("5g", specs_norm)
             if has_4g_or_lte and not has_5g:
+                return False
+        elif _word_in_text("4g", canon_norm) or _word_in_text("lte", canon_norm):
+            if _word_in_text("5g", cand_primary_net) and not has_4g_or_lte:
                 return False
 
     # 7. Guardrails multi-categoría (consolas, monitores, smartwatches, packs)
@@ -2027,6 +2030,24 @@ def extract_refresh_rate_hz(raw_text: str) -> Optional[str]:
     return f"{m.group(1)}hz" if m else None
 
 
+def extract_tv_panel_tech(raw_text: str) -> Optional[str]:
+    """Extrae la tecnología de panel en televisores (OLED, QNED, MiniLED, QLED, NanoCell)."""
+    if not raw_text:
+        return None
+    low = strip_accents_lower(raw_text)
+    if re.search(r"\b(?:qd\s*-?\s*)?oled\b", low):
+        return "oled"
+    if re.search(r"\bqned\b", low):
+        return "qned"
+    if re.search(r"\b(?:(?:qd|sqd)\s*-?\s*)?mini\s*-?\s*led\b", low) or _word_in_text("miniled", low):
+        return "miniled"
+    if re.search(r"\b(?:hi\s*-?\s*|neo\s+)?qled\b", low):
+        return "qled"
+    if re.search(r"\bnano\s*cell\b|\bnano\b", low):
+        return "nanocell"
+    return None
+
+
 def extract_panel_and_resolution(raw_text: str) -> Tuple[Optional[str], Optional[str], Optional[bool]]:
     if not raw_text:
         return (None, None, None)
@@ -2045,7 +2066,9 @@ def extract_panel_and_resolution(raw_text: str) -> Tuple[Optional[str], Optional
         panel = "tn"
 
     res: Optional[str] = None
-    if re.search(r"\b(?:4k|uhd|ultra\s+hd|2160p|3840\s*x\s*2160)\b", low):
+    if re.search(r"\b(?:8k|4320p|7680\s*x\s*4320)\b", low):
+        res = "8k"
+    elif re.search(r"\b(?:4k|uhd|ultra\s+hd|2160p|3840\s*x\s*2160)\b", low):
         res = "4k"
     elif re.search(r"\b(?:uwqhd|wqhd|qhd|quad\s+hd|2k|1440p|2560\s*x\s*1440|3440\s*x\s*1440)\b", low):
         res = "qhd"
@@ -2639,7 +2662,8 @@ def extract_variant_profile(
 
     mon_inch = extract_monitor_inches(clean_title, allow_implicit=is_mon) if is_mon else None
     hz = extract_refresh_rate_hz(clean_title) if (is_mon or is_tv or cat_low == "laptops") else None
-    panel, res, curved = extract_panel_and_resolution(clean_title) if (is_mon or is_tv) else (None, None, None)
+    tv_or_mon_panel, res, curved = extract_panel_and_resolution(clean_title) if (is_mon or is_tv) else (None, None, None)
+    panel = extract_tv_panel_tech(clean_title) if is_tv else tv_or_mon_panel
 
     is_watch = cat_low == "smartwatches" or any(
         w in norm_text for w in ("smartwatch", "apple watch", "galaxy watch", "huawei watch", "watch")
@@ -2918,6 +2942,22 @@ def _check_extended_category_guardrails(
         if res_c and res_k and res_c != res_k:
             return False
 
+    # Televisores (resolución HD/FHD/4K/8K y panel OLED/QNED/MiniLED/QLED/NanoCell)
+    if (
+        not any(_word_in_text(w, canon_low) for w in ("monitor", "ultragear", "odyssey", "zenscreen"))
+        and any(_word_in_text(w, canon_low) for w in ("televisor", "smart tv", "tv", "qled", "oled", "qned", "nanocell"))
+    ):
+        _, res_c, _ = extract_panel_and_resolution(canonical_title)
+        _, res_k, _ = extract_panel_and_resolution(cand_title)
+        if res_c and res_k and res_c != res_k:
+            return False
+        tpan_c = extract_tv_panel_tech(canonical_title)
+        tpan_k = extract_tv_panel_tech(cand_title)
+        if (tpan_c == "oled") != (tpan_k == "oled"):
+            return False
+        if tpan_c and tpan_k and tpan_c != tpan_k:
+            return False
+
     # Audífonos (ANC y modelo cableado '530 C' vs inalámbrico)
     if any(_word_in_text(w, canon_low) for w in ("audifono", "audifonos", "auricular", "auriculares", "airpods", "headphone", "headset")):
         wired_c = bool(
@@ -3016,10 +3056,20 @@ _STRICT_TECH_WHITELIST_RE = re.compile(
     r"camara|gopro|instax|osmo|dron|drone|dji|webcam|camara\s+web|lente|gimbal|"
     r"disco\s+(?:duro|externo|solido)|estado\s+solido|ssd|hdd|nvme|memoria\s+usb|pendrive|flash\s+drive|micro\s*sd|sdxc|sdhc|tarjeta\s+de\s+memoria|"
     r"router|mesh|deco|repetidor|extensor\s+(?:wifi|rango)|access\s+point|switch\s+(?:ethernet|gigabit|red)|nas|adaptador\s+(?:wifi|ethernet|red|usb|hdmi)|"
-    r"teclado|keyboard|mouse|raton|hub\s+usb|docking|pad\s+mouse|mouse\s*pad|mousepad|cargador|power\s+bank|powerbank|ups|estabilizador|supresor|tableta\s+grafica|wacom|apple\s+pencil|base\s+enfriadora|"
+    r"teclado|keyboard|mouse|raton|hub\s+usb|docking|cargador|power\s+bank|powerbank|ups|estabilizador|supresor|tableta\s+grafica|wacom|apple\s+pencil|base\s+enfriadora|"
     r"alexa|echo\s+(?:dot|pop|show|spot|studio|hub)|google\s+nest|nest\s+(?:mini|hub|audio)|chromecast|apple\s+tv|fire\s+tv|roku|mi\s+tv\s+stick|"
     r"foco\s+inteligente|ampolleta\s+inteligente|enchufe\s+inteligente|toma\s+inteligente|camara\s+(?:de\s+)?seguridad|camara\s+wifi|tapo|ezviz|imou|timbre\s+inteligente|cerradura\s+(?:digital|inteligente)|aspiradora\s+robot|robot\s+aspirador"
     r")\b",
+    re.I,
+)
+
+_STRICT_MOUSEPAD_RE = re.compile(
+    r"\b(?:mouse\s*pad|mousepad|pad\s+mouse|alfombrilla|reposa\s*munecas|reposamunecas)\b",
+    re.I,
+)
+_STRICT_ELECTRONIC_COMBO_HARDWARE_RE = re.compile(
+    r"\b(?:teclado|keyboard|mouse|raton|audifono|audifonos|auricular|auriculares|"
+    r"headset|headphone|microfono|parlante|speaker|webcam|laptop|notebook|monitor|consola)\b",
     re.I,
 )
 
@@ -3032,8 +3082,8 @@ def is_strict_tech_product(
 ) -> bool:
     """
     Doble candado obligatorio SOLO TECNOLOGÍA (blacklist + whitelist positiva).
-    Rechaza moda, equipaje, cocina, línea blanca, muebles, librería y coolers de camping,
-    mientras conserva bundles legítimos cuyo dispositivo principal es hardware tech.
+    Rechaza moda, equipaje, cocina, línea blanca, muebles, librería, mousepads sueltos
+    y coolers de camping, mientras conserva bundles legítimos de hardware tech.
     """
     raw_title = (title or "").strip()
     if not raw_title or len(raw_title) < 4:
@@ -3052,6 +3102,11 @@ def is_strict_tech_product(
     brand_low = strip_accents_lower(brand or "").strip()
     if _STRICT_NON_TECH_BLACKLIST_RE.search(f"{title_for_blacklist} {brand_low}".strip()):
         return False
+
+    if _STRICT_MOUSEPAD_RE.search(title_for_blacklist):
+        without_pad = _STRICT_MOUSEPAD_RE.sub(" ", title_for_blacklist)
+        if not _STRICT_ELECTRONIC_COMBO_HARDWARE_RE.search(without_pad):
+            return False
 
     if "karaoke" in low_title and not _STRICT_REAL_AUDIO_CARRIER_RE.search(low_title):
         w_match = re.search(r"\b(\d{2,4})\s*(?:w|watts?|rms)\b", low_title)
@@ -3210,6 +3265,77 @@ def _extract_tv_series_code(norm_text: str) -> Optional[str]:
     return None
 
 
+_SCREEN_INCH_CORE_TOKENS: Set[str] = ALL_TABLET_LAPTOP_SCREEN_SIZES | {
+    "11.0", "13.0", "14.0", "15.0", "16.0", "17.0",
+}
+_CONNECTIVITY_CORE_TOKENS: Set[str] = {"5g", "4g", "lte", "cellular", "wifi", "wi", "fi"}
+
+
+def build_model_core_key(
+    title: str,
+    brand: str = "",
+    url: str = "",
+    category: str = "",
+) -> Optional[Tuple[str, str, str, str]]:
+    """
+    Construye una clave genérica de modelo sin capacidad/RAM ni pulgadas ni colores
+    `(category, brand, core_sig, connectivity)` para absorber listings incompletos
+    dentro de un producto existente sin ambigüedad.
+    """
+    from app.collectors.spec_extractor import normalize_brand
+
+    cat_low = strip_accents_lower(category or "").strip()
+    if cat_low not in {"celulares", "tablets", "laptops"} or not title:
+        return None
+
+    clean_title = _strip_bundles_and_colors(title, category=cat_low)
+    resolved_brand = normalize_brand(brand, clean_title or title)
+    brand_low = strip_accents_lower(resolved_brand).strip()
+    if not brand_low:
+        return None
+
+    pre = _preprocess_canonical_text(clean_title, category=cat_low)
+    norm_text = normalize_tech_text(pre, expand_abbrevs=True, strip_colors=True)
+    sig = build_canonical_product_signature(clean_title, resolved_brand, url, cat_low)
+    if not sig:
+        return None
+
+    core_tokens = [
+        t
+        for t in sig.split()
+        if not re.match(r"^\d{1,4}(?:gb|tb)$", t)
+        and t not in _CONNECTIVITY_CORE_TOKENS
+        and not (cat_low in {"tablets", "laptops"} and t in _SCREEN_INCH_CORE_TOKENS)
+    ]
+    core_sig = " ".join(core_tokens).strip()
+    if not core_sig or not is_signature_specific_enough(core_sig, brand=resolved_brand, category=cat_low):
+        return None
+
+    conn_tok = ""
+    if cat_low == "celulares":
+        if _word_in_text("5g", norm_text):
+            conn_tok = "5g"
+        elif _word_in_text("4g", norm_text) or _word_in_text("lte", norm_text):
+            conn_tok = "4g"
+    elif cat_low == "tablets":
+        if any(_word_in_text(w, norm_text) for w in ("cellular", "lte", "4g", "5g")):
+            conn_tok = "cellular"
+        else:
+            conn_tok = "wifi"
+
+    return (cat_low, brand_low, core_sig, conn_tok)
+
+
+def is_incomplete_spec_listing(profile: Dict[str, Any]) -> bool:
+    """Indica si un perfil de listing omite especificaciones clave definitorias en el título."""
+    cat_low = str(profile.get("category") or "").strip().lower()
+    if cat_low in {"celulares", "tablets"}:
+        return not bool(profile.get("storages"))
+    if cat_low == "laptops":
+        return not bool(profile.get("storages")) or not bool(profile.get("rams"))
+    return False
+
+
 def build_structured_match_key(
     title: str,
     brand: str = "",
@@ -3217,10 +3343,12 @@ def build_structured_match_key(
     category: str = "",
 ) -> Optional[Tuple[str, ...]]:
     """
-    Construye una clave de Huella Estructurada determinística por categoría para unir
-    productos idénticos entre tiendas con formatos de título distintos, sin mezclar variantes:
-    - Laptops: (category, brand, product_line, cpu_tier, ram_gb, storage_gb, screen_inches_bucket, gpu_or_none)
-    - TVs / Monitores / Smartphones / Tablets / Consolas / Audífonos: claves estructuradas + firma limpia.
+    Construye una clave de Huella Estructurada determinística por categoría (omitiendo siempre el color)
+    para unir productos idénticos entre tiendas sin cruzar variantes ni resoluciones/conectividades:
+    - Smartphones / Tablets: (cat, brand, model_core, storage, ram, connectivity)
+    - TVs: (cat, brand, model_or_series, inches, resolution, tv_panel, storage_ram_or_none)
+    - Laptops: (cat, brand, product_line, cpu_tier, ram_gb, storage_gb, screen_inches_bucket, gpu_or_none)
+    - Resto de las 14 categorías tech: (cat, brand, sig, specs clave de categoría)
     """
     from app.collectors.spec_extractor import normalize_brand
 
@@ -3260,13 +3388,105 @@ def build_structured_match_key(
                     tv_inch = float(sz)
                     break
         series = _extract_tv_series_code(norm_text)
-        if series and tv_inch is not None:
-            return ("televisores", brand_low, series, str(int(round(tv_inch))))
+        _, res, _ = extract_panel_and_resolution(clean_title)
+        tv_panel = extract_tv_panel_tech(clean_title)
+        if res is None and (
+            tv_panel in {"oled", "miniled", "qned"}
+            or (tv_panel in {"qled", "nanocell"} and (tv_inch or 0) >= 50)
+        ):
+            res = "4k"
+        tv_stors = sorted(extract_storage_tokens(norm_text))
+        tv_rams = sorted(extract_ram_tokens(norm_text))
+        cap_tok = "+".join(tv_rams + tv_stors) or "none"
+        if tv_inch is not None and (series or (sig and is_signature_specific_enough(sig, brand=resolved_brand, category=cat_low))):
+            inch_str = str(int(round(tv_inch)))
+            if series:
+                model_id = series
+            else:
+                strip_tv = {inch_str, "oled", "qned", "miniled", "qled", "nanocell", "led", "8k", "4k", "qhd", "fhd", "hd"}
+                rem_tokens = [
+                    t
+                    for t in sig.split()
+                    if t not in strip_tv and not re.match(r"^\d{1,4}(?:gb|tb)$", t)
+                ]
+                model_id = " ".join(rem_tokens).strip() or sig
+            return ("televisores", brand_low, model_id, inch_str, res or "unspecified", tv_panel or "led", cap_tok)
         return None
 
-    if cat_low in {"celulares", "tablets", "consolas", "monitores", "audifonos"}:
-        if sig and is_signature_specific_enough(sig, brand=resolved_brand, category=cat_low):
-            return (cat_low, brand_low, sig)
+    if not sig or not is_signature_specific_enough(sig, brand=resolved_brand, category=cat_low):
         return None
+
+    if cat_low == "celulares":
+        core_key = build_model_core_key(clean_title, resolved_brand, url, cat_low)
+        stors = sorted(extract_storage_tokens(norm_text))
+        rams = sorted(extract_ram_tokens(_strip_gpu_vram_tokens(norm_text)))
+        if core_key is None or len(stors) != 1:
+            return None
+        conn_tok = "5g" if _word_in_text("5g", norm_text) else (
+            "4g" if (_word_in_text("4g", norm_text) or _word_in_text("lte", norm_text)) else "unspecified"
+        )
+        return ("celulares", brand_low, core_key[2], stors[0], rams[0] if len(rams) == 1 else "none", conn_tok)
+
+    if cat_low == "tablets":
+        core_key = build_model_core_key(clean_title, resolved_brand, url, cat_low)
+        stors = sorted(extract_storage_tokens(norm_text))
+        rams = sorted(extract_ram_tokens(_strip_gpu_vram_tokens(norm_text)))
+        if core_key is None or len(stors) != 1:
+            return None
+        conn_tok = "5g" if _word_in_text("5g", norm_text) else (
+            "lte" if (_word_in_text("lte", norm_text) or _word_in_text("4g", norm_text) or _word_in_text("cellular", norm_text)) else "wifi"
+        )
+        model_tokens = [
+            t
+            for t in sig.split()
+            if not re.match(r"^\d{1,4}(?:gb|tb)$", t) and t not in _CONNECTIVITY_CORE_TOKENS
+        ]
+        model_part = " ".join(model_tokens).strip() or core_key[2]
+        return ("tablets", brand_low, model_part, stors[0], rams[0] if len(rams) == 1 else "none", conn_tok)
+
+    if cat_low == "consolas":
+        con = extract_console_profile(clean_title)
+        stors = sorted(extract_storage_tokens(norm_text))
+        ed_flags = (
+            f"slim={int(con['is_slim'])}_pro={int(con['is_pro'])}_"
+            f"oled={int(con['is_oled'])}_lite={int(con['is_lite'])}_dig={int(con['is_digital'])}"
+        )
+        games_tok = ",".join(sorted(con["bundle_games"])) or "base"
+        return ("consolas", brand_low, sig, ed_flags, stors[0] if len(stors) == 1 else "none", games_tok)
+
+    if cat_low == "monitores":
+        mon_in = extract_monitor_inches(clean_title, allow_implicit=True)
+        hz = extract_refresh_rate_hz(clean_title)
+        mon_panel, mon_res, _ = extract_panel_and_resolution(clean_title)
+        return ("monitores", brand_low, sig, mon_in or "none", hz or "none", mon_res or "none", mon_panel or "none")
+
+    if cat_low == "smartwatches":
+        w_mm = extract_watch_size_mm(clean_title)
+        w_conn = extract_watch_connectivity(clean_title) or "gps"
+        return ("smartwatches", brand_low, sig, w_mm or "none", w_conn)
+
+    if cat_low == "audifonos":
+        prof_aud = extract_variant_profile(clean_title, url=url, category=cat_low, brand=resolved_brand)
+        return (
+            "audifonos",
+            brand_low,
+            sig,
+            "anc" if prof_aud.get("has_anc") else "std",
+            "wired" if prof_aud.get("wired_audio") else "wireless",
+            str(prof_aud.get("audio_form") or "any"),
+        )
+
+    if cat_low == "audio":
+        return ("audio", brand_low, sig, extract_speaker_wattage(clean_title) or "none")
+
+    if cat_low == "almacenamiento_redes":
+        stors = sorted(extract_storage_tokens(norm_text, allow_small_external=True))
+        wifi_std = extract_wifi_standard(clean_title)
+        pack_n = extract_pack_count(clean_title)
+        return ("almacenamiento_redes", brand_low, sig, stors[0] if len(stors) == 1 else "none", wifi_std or "none", f"pack{pack_n}")
+
+    if cat_low in {"camaras", "impresoras", "accesorios_pc", "smart_home"}:
+        pack_n = extract_pack_count(clean_title)
+        return (cat_low, brand_low, sig, f"pack{pack_n}")
 
     return None

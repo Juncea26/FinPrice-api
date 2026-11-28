@@ -137,6 +137,43 @@ def canonicalize_store_url(url: str) -> Tuple[str, str]:
     return (store_id, canonical_url)
 
 
+def extract_store_parent_product_id(store_id: str, url: str) -> Optional[str]:
+    """
+    Extrae un identificador canónico de producto padre por tienda desde su URL oficial
+    (p. ej. `/product/{parent_id}/...` en Falabella, `/articulo/{parent_id}/...` en Tottus,
+    `-{part_number}p` en Ripley, `/{slug}/p` en VTEX y `/{slug}` en Efe/Curacao/Hiraoka).
+    """
+    if not url or not str(url).strip():
+        return None
+    det_store, clean_u = canonicalize_store_url(url)
+    s_id = (store_id or det_store or "").strip().lower()
+    if not s_id or not clean_u:
+        return None
+    path = (urlparse(clean_u).path or "").rstrip("/").lower()
+    if not path:
+        return None
+
+    if s_id == "falabella":
+        m = re.match(r"^/falabella-pe/product/(\d+)(?:/|$)", path)
+        return f"falabella:{m.group(1)}" if m else None
+    if s_id == "tottus":
+        m = re.match(r"^/tottus-pe/(?:articulo|product)/(\d+)(?:/|$)", path)
+        return f"tottus:{m.group(1)}" if m else None
+    if s_id == "ripley":
+        m = re.search(r"-(\d{7,15})p?$", path)
+        return f"ripley:{m.group(1)}" if m else None
+    if s_id in {"metro", "wong"}:
+        m = re.match(r"^/([a-z0-9\-]+)/p$", path)
+        return f"{s_id}:{m.group(1)}" if m else None
+    if s_id in {"efe", "curacao"}:
+        m = re.match(r"^/([a-z0-9\-_]+?)(?:\.html)?$", path)
+        return f"{s_id}:{m.group(1)}" if m else None
+    if s_id == "hiraoka":
+        m = re.match(r"^/([a-z0-9\-_]+)$", path)
+        return f"hiraoka:{m.group(1)}" if m else None
+    return None
+
+
 def is_marketplace_url(store_id: str, url: str) -> bool:
     """Detecta patrones de URL exclusivos de vendedores externos (Marketplace) para rechazo inmediato."""
     u_low = (url or "").lower().strip()

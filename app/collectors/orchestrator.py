@@ -1613,8 +1613,6 @@ class CollectorOrchestrator:
                     session=session,
                     dry_run=False,
                 )
-                if on_cache_invalidate:
-                    on_cache_invalidate()
                 result["auto_category_discovery"] = {
                     "extracted_1p": crawl_res.extracted_1p,
                     "inserted_listings": crawl_res.inserted,
@@ -1622,11 +1620,30 @@ class CollectorOrchestrator:
                     "promoted_multi_store": promo_res.new_multi_store_groups,
                     "promoted_single_store": promo_res.new_single_store_products,
                     "linked_existing": promo_res.linked_to_existing_products,
+                    "total_promoted_products": promo_res.total_promoted_products,
+                    "offers_promoted": promo_res.offers_promoted,
+                    "history_points_upserted": promo_res.history_points_upserted,
+                    "pruned_auto_products": promo_res.pruned_auto_products_total,
                 }
             except Exception as exc:
+                try:
+                    await session.rollback()
+                except Exception:
+                    pass
                 logger.warning(
                     f"Auto category discovery/promotion falló sin bloquear flujo principal: {exc}"
                 )
+
+        if on_cache_invalidate:
+            on_cache_invalidate()
+        try:
+            from app.services.catalog_service import catalog_service
+
+            catalog_service.invalidate_cache()
+            warmed_bytes = await catalog_service.prewarm_default_products_cache(session=session)
+            result["cache_prewarmed_bytes"] = warmed_bytes
+        except Exception as exc:
+            logger.warning(f"No se pudo invalidar/pre-calentar caché de catálogo al cierre del corte: {exc}")
 
         gc.collect()
         logger.info(f"Actualización programada completada exitosamente: {result}")
