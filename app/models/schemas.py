@@ -407,3 +407,13 @@ class CancellationSuggestionSchema(CamelModel):
     feedback: Optional[str] = ""
     created_at: Optional[str] = None
 
+
+class CategoryCountSchema(BaseModel):
+    name: str
+    count: int
+
+
+class CategoriesResponseSchema(BaseModel):
+    total_products: int
+    categories: List[CategoryCountSchema]
+

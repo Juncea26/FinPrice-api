@@ -253,7 +253,7 @@ async def security_and_logging_middleware(request: Request, call_next):
     response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
     response.headers["X-Process-Time"] = f"{latency_ms:.2f}ms"
 
-    if request.method == "GET" and "/api/v1/products" in request.url.path:
+    if request.method == "GET" and ("/api/v1/products" in request.url.path or "/api/v1/categories" in request.url.path):
         response.headers["Cache-Control"] = f"public, max-age={settings.CACHE_TTL_SECONDS}"
 
     # No saturar logs con pings de UptimeRobot

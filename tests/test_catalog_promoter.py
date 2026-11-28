@@ -1657,3 +1657,267 @@ async def test_incomplete_a57_absorption_and_scheduled_full_auto_update(tmp_path
 
     catalog_service.invalidate_cache()
     await test_engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_api_categories_dynamic_counts_filtering_cache_and_prewarm(tmp_path):
+    from httpx import ASGITransport, AsyncClient
+    from main import app
+    from app.core.database import get_read_db
+    from app.services.catalog_service import catalog_service
+
+    db_file = tmp_path / "api_categories.db"
+    test_engine = create_async_engine(f"sqlite+aiosqlite:///{db_file}", future=True)
+    SessionMaker = async_sessionmaker(bind=test_engine, class_=AsyncSession, expire_on_commit=False)
+
+    async with test_engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
+    async with SessionMaker() as s:
+        s.add_all(
+            [
+                ProductEntity(
+                    id="prod_cat_phone_1",
+                    title="Samsung Galaxy A57 5G 256GB",
+                    category="Smartphones",
+                    brand="Samsung",
+                    best_price=1499.0,
+                    original_price=1799.0,
+                    best_store_name="Falabella",
+                    best_store_url="https://www.falabella.com.pe/falabella-pe/product/1/a57/1",
+                    available_stores_count=1,
+                    image_url="https://media.falabella.com.pe/a57.jpg",
+                ),
+                ProductEntity(
+                    id="auto_cat_aud_1",
+                    title="Audífonos Sony WH-CH520",
+                    category="Audífonos",
+                    brand="Sony",
+                    best_price=129.0,
+                    original_price=199.0,
+                    best_store_name="Hiraoka",
+                    best_store_url="https://hiraoka.com.pe/sony-wh-ch520",
+                    available_stores_count=1,
+                    image_url="https://hiraoka.com.pe/media/ch520.jpg",
+                ),
+                ProductEntity(
+                    id="auto_cat_laptop_1",
+                    title="Laptop Asus Vivobook 15",
+                    category="Laptops",
+                    brand="ASUS",
+                    best_price=1999.0,
+                    original_price=2499.0,
+                    best_store_name="Hiraoka",
+                    best_store_url="https://hiraoka.com.pe/asus-vivobook-15",
+                    available_stores_count=1,
+                    image_url="https://hiraoka.com.pe/media/vv15.jpg",
+                ),
+                # Categorías dinámicas nuevas fuera de las 14 base
+                ProductEntity(
+                    id="auto_dyn_robotica_1",
+                    title="Kit Arduino Robot Educativo",
+                    category="Robótica",
+                    brand="Arduino",
+                    best_price=299.0,
+                    original_price=349.0,
+                    best_store_name="Falabella",
+                    best_store_url="https://www.falabella.com.pe/falabella-pe/product/2/robot/2",
+                    available_stores_count=1,
+                    image_url="https://media.falabella.com.pe/robot.jpg",
+                ),
+                ProductEntity(
+                    id="auto_dyn_drones_1",
+                    title="Drone DJI Mini 4 Pro",
+                    category="Drones",
+                    brand="DJI",
+                    best_price=3499.0,
+                    original_price=3899.0,
+                    best_store_name="Hiraoka",
+                    best_store_url="https://hiraoka.com.pe/drone-dji-mini-4-pro",
+                    available_stores_count=1,
+                    image_url="https://hiraoka.com.pe/media/dji.jpg",
+                ),
+                # Producto sin oferta activa (price=0) NO debe contarse
+                ProductEntity(
+                    id="auto_cat_inactive",
+                    title="Televisor LG Sin Stock",
+                    category="TVs",
+                    brand="LG",
+                    best_price=1299.0,
+                    original_price=1599.0,
+                    best_store_name="Ripley",
+                    best_store_url="https://simple.ripley.com.pe/tv-lg-20041234p",
+                    available_stores_count=1,
+                    image_url="https://home.ripley.com.pe/tv.webp",
+                ),
+            ]
+        )
+        s.add_all(
+            [
+                StoreOfferEntity(
+                    product_id="prod_cat_phone_1",
+                    store_id="falabella",
+                    store_name="Falabella",
+                    price=1499.0,
+                    original_price=1799.0,
+                    offer_url="https://www.falabella.com.pe/falabella-pe/product/1/a57/1",
+                    is_best_price=True,
+                ),
+                StoreOfferEntity(
+                    product_id="prod_cat_phone_1",
+                    store_id="hiraoka",
+                    store_name="Hiraoka",
+                    price=1599.0,
+                    original_price=1799.0,
+                    offer_url="https://hiraoka.com.pe/samsung-a57",
+                    is_best_price=False,
+                ),
+                StoreOfferEntity(
+                    product_id="auto_cat_aud_1",
+                    store_id="hiraoka",
+                    store_name="Hiraoka",
+                    price=129.0,
+                    original_price=199.0,
+                    offer_url="https://hiraoka.com.pe/sony-wh-ch520",
+                    is_best_price=True,
+                ),
+                StoreOfferEntity(
+                    product_id="auto_cat_laptop_1",
+                    store_id="hiraoka",
+                    store_name="Hiraoka",
+                    price=1999.0,
+                    original_price=2499.0,
+                    offer_url="https://hiraoka.com.pe/asus-vivobook-15",
+                    is_best_price=True,
+                ),
+                StoreOfferEntity(
+                    product_id="auto_dyn_robotica_1",
+                    store_id="falabella",
+                    store_name="Falabella",
+                    price=299.0,
+                    original_price=349.0,
+                    offer_url="https://www.falabella.com.pe/falabella-pe/product/2/robot/2",
+                    is_best_price=True,
+                ),
+                StoreOfferEntity(
+                    product_id="auto_dyn_drones_1",
+                    store_id="hiraoka",
+                    store_name="Hiraoka",
+                    price=3499.0,
+                    original_price=3899.0,
+                    offer_url="https://hiraoka.com.pe/drone-dji-mini-4-pro",
+                    is_best_price=True,
+                ),
+                StoreOfferEntity(
+                    product_id="auto_cat_inactive",
+                    store_id="ripley",
+                    store_name="Ripley",
+                    price=0.0,
+                    original_price=1599.0,
+                    offer_url="https://simple.ripley.com.pe/tv-lg-20041234p",
+                    is_best_price=False,
+                ),
+            ]
+        )
+        await s.commit()
+
+    async def _override_read_db():
+        async with SessionMaker() as read_s:
+            yield read_s
+
+    catalog_service.invalidate_cache()
+    app.dependency_overrides[get_read_db] = _override_read_db
+    try:
+        # Pre-warm debe poblar tanto /products como /categories
+        async with SessionMaker() as s_warm:
+            warmed = await catalog_service.prewarm_default_products_cache(session=s_warm)
+            assert warmed > 100
+            assert len(catalog_service._products_json_cache) >= 1
+            assert ("", "") in catalog_service._categories_cache
+
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver") as api_client:
+            r_all = await api_client.get("/api/v1/categories")
+            assert r_all.status_code == 200
+            body_all = r_all.json()
+            assert body_all == {
+                "total_products": 5,
+                "categories": [
+                    {"name": "Smartphones", "count": 1},
+                    {"name": "Laptops", "count": 1},
+                    {"name": "Audífonos", "count": 1},
+                    {"name": "Drones", "count": 1},
+                    {"name": "Robótica", "count": 1},
+                ],
+            }
+
+            r_store = await api_client.get("/api/v1/categories?store=hiraoka")
+            assert r_store.status_code == 200
+            assert r_store.json() == {
+                "total_products": 4,
+                "categories": [
+                    {"name": "Smartphones", "count": 1},
+                    {"name": "Laptops", "count": 1},
+                    {"name": "Audífonos", "count": 1},
+                    {"name": "Drones", "count": 1},
+                ],
+            }
+
+            r_enabled = await api_client.get("/api/v1/categories?enabled_stores=falabella")
+            assert r_enabled.status_code == 200
+            assert r_enabled.json() == {
+                "total_products": 2,
+                "categories": [
+                    {"name": "Smartphones", "count": 1},
+                    {"name": "Robótica", "count": 1},
+                ],
+            }
+
+            # Verificar caché TTL 1800s + invalidación
+            async with SessionMaker() as s2:
+                s2.add(
+                    ProductEntity(
+                        id="auto_dyn_vr_1",
+                        title="Visor Realidad Virtual Meta Quest 3S",
+                        category="Realidad Virtual",
+                        brand="Meta",
+                        best_price=1499.0,
+                        original_price=1699.0,
+                        best_store_name="Falabella",
+                        best_store_url="https://www.falabella.com.pe/falabella-pe/product/3/quest/3",
+                        available_stores_count=1,
+                        image_url="https://media.falabella.com.pe/quest.jpg",
+                    )
+                )
+                s2.add(
+                    StoreOfferEntity(
+                        product_id="auto_dyn_vr_1",
+                        store_id="falabella",
+                        store_name="Falabella",
+                        price=1499.0,
+                        original_price=1699.0,
+                        offer_url="https://www.falabella.com.pe/falabella-pe/product/3/quest/3",
+                        is_best_price=True,
+                    )
+                )
+                await s2.commit()
+
+            # Hit en caché mantiene total_products=5 antes de invalidar
+            assert (await api_client.get("/api/v1/categories")).json()["total_products"] == 5
+
+            catalog_service.invalidate_cache()
+            r_fresh = await api_client.get("/api/v1/categories")
+            assert r_fresh.status_code == 200
+            fresh_json = r_fresh.json()
+            assert fresh_json["total_products"] == 6
+            assert [c["name"] for c in fresh_json["categories"]] == [
+                "Smartphones",
+                "Laptops",
+                "Audífonos",
+                "Drones",
+                "Realidad Virtual",
+                "Robótica",
+            ]
+    finally:
+        app.dependency_overrides.pop(get_read_db, None)
+        catalog_service.invalidate_cache()
+        await test_engine.dispose()

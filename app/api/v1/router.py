@@ -12,7 +12,7 @@ from app.api.v1.community import router as community_router
 from app.api.v1.complaints import router as complaints_router
 from app.api.v1.filters import router as filters_router
 from app.api.v1.image_proxy import router as image_proxy_router
-from app.api.v1.products import router as products_router
+from app.api.v1.products import categories_router, router as products_router
 from app.api.v1.stores import router as stores_router
 from app.api.v1.sync import router as sync_router
 from app.core.config import settings
@@ -38,6 +38,7 @@ api_v1_router = APIRouter(prefix="/api/v1")
 
 # Subrouters
 api_v1_router.include_router(products_router)
+api_v1_router.include_router(categories_router)
 api_v1_router.include_router(filters_router)
 api_v1_router.include_router(stores_router)
 api_v1_router.include_router(community_router)

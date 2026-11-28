@@ -17,7 +17,7 @@ from typing import Any, Dict, List, Literal, Optional, Tuple
 
 from fastapi import HTTPException, status
 from pydantic import TypeAdapter
-from sqlalchemy import delete, select
+from sqlalchemy import delete, exists, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import noload
 
@@ -133,6 +133,7 @@ class CatalogService:
         self._cache_timestamp: float = 0.0
         self._products_query_cache: Dict[Tuple[Any, ...], Tuple[float, float, List[ProductSchema]]] = {}
         self._products_json_cache: Dict[Tuple[Any, ...], Tuple[float, float, bytes]] = {}
+        self._categories_cache: Dict[Tuple[str, str], Tuple[float, Dict[str, Any], bytes]] = {}
 
     def invalidate_cache(self) -> None:
         """Invalida la caché en memoria para forzar lectura fresca de BD."""
@@ -140,6 +141,7 @@ class CatalogService:
         self._cache_timestamp = 0.0
         self._products_query_cache.clear()
         self._products_json_cache.clear()
+        self._categories_cache.clear()
 
     @staticmethod
     def _build_products_cache_key(
@@ -810,16 +812,112 @@ class CatalogService:
         self._products_json_cache[cache_key] = (time.time(), self._cache_timestamp, payload_bytes)
         return payload_bytes
 
+    async def _get_or_build_categories_entry(
+        self,
+        session: AsyncSession,
+        *,
+        store: Optional[str] = None,
+        enabled_stores: Optional[str] = None,
+    ) -> Tuple[Dict[str, Any], bytes]:
+        """Obtiene o construye por `GROUP BY` el resumen ligero de categorías activas con caché TTL 1800s."""
+        clean_store = (
+            store.strip().lower()
+            if store and store.strip().lower() not in {"", "todos", "todas", "all"}
+            else ""
+        )
+        allowed_store_ids = sorted(
+            {s.strip().lower() for s in enabled_stores.split(",") if s.strip()}
+        ) if enabled_stores else []
+
+        cache_key = (clean_store, ",".join(allowed_store_ids))
+        now = time.time()
+        cached_entry = self._categories_cache.get(cache_key)
+        if (
+            cached_entry is not None
+            and (now - cached_entry[0]) < _PRODUCTS_RESPONSE_CACHE_TTL_SECONDS
+        ):
+            return (cached_entry[1], cached_entry[2])
+
+        offer_conditions: List[Any] = [
+            StoreOfferEntity.product_id == ProductEntity.id,
+            StoreOfferEntity.price > 0,
+        ]
+        if hasattr(StoreOfferEntity, "in_stock"):
+            offer_conditions.append(getattr(StoreOfferEntity, "in_stock").is_(True))
+        if allowed_store_ids:
+            offer_conditions.append(func.lower(StoreOfferEntity.store_id).in_(allowed_store_ids))
+        if clean_store:
+            offer_conditions.append(
+                or_(
+                    func.lower(StoreOfferEntity.store_id) == clean_store,
+                    func.lower(StoreOfferEntity.store_name) == clean_store,
+                )
+            )
+
+        stmt = (
+            select(ProductEntity.category, func.count(ProductEntity.id))
+            .where(
+                ProductEntity.category.is_not(None),
+                ProductEntity.category != "",
+                exists(select(1).where(*offer_conditions)),
+            )
+            .group_by(ProductEntity.category)
+        )
+        rows = (await session.execute(stmt)).all()
+
+        order_idx = {cat_name: idx for idx, cat_name in enumerate(STANDARD_CATEGORY_ORDER)}
+        active_rows = [(str(cat_name).strip(), int(cnt)) for cat_name, cnt in rows if cat_name and int(cnt) > 0]
+        active_rows.sort(
+            key=lambda kv: (0, order_idx[kv[0]], "") if kv[0] in order_idx else (1, 0, kv[0].lower())
+        )
+
+        payload: Dict[str, Any] = {
+            "total_products": sum(cnt for _, cnt in active_rows),
+            "categories": [{"name": cat_name, "count": cnt} for cat_name, cnt in active_rows],
+        }
+        payload_bytes = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+
+        if len(self._categories_cache) > 128:
+            self._categories_cache.clear()
+        self._categories_cache[cache_key] = (time.time(), payload, payload_bytes)
+        return (payload, payload_bytes)
+
+    async def get_categories(
+        self,
+        session: AsyncSession,
+        store: Optional[str] = None,
+        enabled_stores: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Retorna las categorías activas y conteo real por categoría."""
+        payload, _ = await self._get_or_build_categories_entry(
+            session=session, store=store, enabled_stores=enabled_stores
+        )
+        return payload
+
+    async def get_categories_serialized_json(
+        self,
+        session: AsyncSession,
+        store: Optional[str] = None,
+        enabled_stores: Optional[str] = None,
+    ) -> bytes:
+        """Retorna el JSON UTF-8 pre-serializado de `GET /api/v1/categories` con caché 1800s."""
+        _, payload_bytes = await self._get_or_build_categories_entry(
+            session=session, store=store, enabled_stores=enabled_stores
+        )
+        return payload_bytes
+
     async def prewarm_default_products_cache(
         self,
         session: Optional[AsyncSession] = None,
     ) -> int:
-        """Pre-calienta en RAM el JSON completo por defecto de `GET /api/v1/products` (sin filtros)."""
+        """Pre-calienta en RAM el JSON completo por defecto de `GET /api/v1/products` y `GET /api/v1/categories`."""
         if session is not None:
             payload = await self.get_products_serialized_json(session=session)
+            await self.get_categories_serialized_json(session=session)
             return len(payload)
         async with ReaderSessionLocal() as read_session:
             payload = await self.get_products_serialized_json(session=read_session)
+            await self.get_categories_serialized_json(session=read_session)
             return len(payload)
 
     async def get_product_by_id(

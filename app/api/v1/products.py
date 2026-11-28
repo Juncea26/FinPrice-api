@@ -13,10 +13,11 @@ from app.core.database import WriterSessionLocal, get_read_db, is_test
 from app.core.security import check_read_rate_limit, sanitize_input_text, verify_api_token_or_client
 from app.collectors.orchestrator import get_today_peru, orchestrator
 from app.collectors.spec_extractor import CANONICAL_SPEC_MAP, map_to_canonical_key
-from app.models.schemas import PricePointSchema, ProductSchema
+from app.models.schemas import CategoriesResponseSchema, PricePointSchema, ProductSchema
 from app.services.catalog_service import catalog_service
 
 router = APIRouter(prefix="/products", tags=["Productos"])
+categories_router = APIRouter(prefix="/categories", tags=["Categorías"])
 
 
 async def _run_catchup_in_background() -> None:
@@ -223,3 +224,28 @@ async def get_product_price_history(
             detail=f"Producto con ID '{clean_id}' no encontrado en FinPrice API.",
         )
     return product.price_history_30_days
+
+
+@categories_router.get(
+    "",
+    response_model=CategoriesResponseSchema,
+    summary="Listado dinámico de categorías activas y conteo real de productos",
+    dependencies=[Depends(check_read_rate_limit), Depends(verify_api_token_or_client)],
+)
+async def get_active_categories(
+    store: Optional[str] = Query(None, max_length=50, description="Filtra conteos por tienda oficial"),
+    enabled_stores: Optional[str] = Query(None, max_length=150, description="Lista de tiendas habilitadas separadas por coma"),
+    session: AsyncSession = Depends(get_read_db),
+):
+    """
+    Devuelve dinámicamente todas las categorías con al menos un producto activo (`price > 0` y stock)
+    mediante `GROUP BY`, ordenadas según `STANDARD_CATEGORY_ORDER` y luego alfabéticamente.
+    """
+    clean_store = sanitize_input_text(store, max_length=50)
+    clean_stores = sanitize_input_text(enabled_stores, max_length=150)
+    payload_bytes = await catalog_service.get_categories_serialized_json(
+        session=session,
+        store=clean_store,
+        enabled_stores=clean_stores,
+    )
+    return Response(content=payload_bytes, media_type="application/json")
